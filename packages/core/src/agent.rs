@@ -25,6 +25,13 @@ struct DeltaEvent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ReasoningEvent {
+    run_id: String,
+    text: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ToolStartEvent {
     run_id: String,
     id: String,
@@ -79,6 +86,12 @@ struct ToolCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+#[derive(Debug, Default)]
+struct StreamDelta {
+    content: Option<String>,
+    reasoning: Option<String>,
 }
 
 fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
@@ -151,7 +164,7 @@ pub async fn run(
             return;
         }
 
-        let (content, calls) =
+        let (content, reasoning, calls) =
             match stream_step(&app, &run_id, &client, &config, &tools, &messages, &cancel).await {
                 Ok(result) => result,
                 Err(err) => {
@@ -169,7 +182,7 @@ pub async fn run(
             return;
         }
 
-        messages.push(assistant_message(&content, &calls));
+        messages.push(assistant_message(&content, &reasoning, &calls));
         if calls.is_empty() {
             emit(
                 &app,
@@ -276,7 +289,7 @@ async fn stream_step(
     tools: &ToolRegistry,
     messages: &[Value],
     cancel: &Cancel,
-) -> Result<(String, Vec<ToolCall>), String> {
+) -> Result<(String, String, Vec<ToolCall>), String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = json!({
         "model": config.model,
@@ -304,6 +317,7 @@ async fn stream_step(
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
 
     loop {
@@ -320,16 +334,8 @@ async fn stream_step(
                 while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = buffer.drain(..=pos).collect();
                     let line = String::from_utf8_lossy(&line);
-                    if let Some(text) = apply_sse_line(&line, &mut content, &mut calls)? {
-                        emit(
-                            app,
-                            "agent:delta",
-                            DeltaEvent {
-                                run_id: run_id.to_string(),
-                                text,
-                            },
-                        );
-                    }
+                    let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)?;
+                    emit_stream_delta(app, run_id, delta);
                 }
             }
         }
@@ -337,16 +343,8 @@ async fn stream_step(
 
     if !buffer.is_empty() {
         let line = String::from_utf8_lossy(&buffer);
-        if let Some(text) = apply_sse_line(&line, &mut content, &mut calls)? {
-            emit(
-                app,
-                "agent:delta",
-                DeltaEvent {
-                    run_id: run_id.to_string(),
-                    text,
-                },
-            );
-        }
+        let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)?;
+        emit_stream_delta(app, run_id, delta);
     }
 
     let mut calls: Vec<ToolCall> = calls.into_values().collect();
@@ -355,7 +353,30 @@ async fn stream_step(
             call.id = format!("call_{index}");
         }
     }
-    Ok((content, calls))
+    Ok((content, reasoning, calls))
+}
+
+fn emit_stream_delta(app: &AppHandle, run_id: &str, delta: StreamDelta) {
+    if let Some(text) = delta.reasoning {
+        emit(
+            app,
+            "agent:reasoning",
+            ReasoningEvent {
+                run_id: run_id.to_string(),
+                text,
+            },
+        );
+    }
+    if let Some(text) = delta.content {
+        emit(
+            app,
+            "agent:delta",
+            DeltaEvent {
+                run_id: run_id.to_string(),
+                text,
+            },
+        );
+    }
 }
 
 struct TauriApprover<'a> {
@@ -446,14 +467,15 @@ async fn request_approval(
 fn apply_sse_line(
     line: &str,
     content: &mut String,
+    reasoning: &mut String,
     calls: &mut BTreeMap<usize, ToolCall>,
-) -> Result<Option<String>, String> {
+) -> Result<StreamDelta, String> {
     let Some(data) = line.trim_end().strip_prefix("data:") else {
-        return Ok(None);
+        return Ok(StreamDelta::default());
     };
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
-        return Ok(None);
+        return Ok(StreamDelta::default());
     }
 
     let value: Value =
@@ -468,15 +490,24 @@ fn apply_sse_line(
     }
 
     let Some(delta) = value.pointer("/choices/0/delta") else {
-        return Ok(None);
+        return Ok(StreamDelta::default());
     };
 
-    let mut emitted = None;
+    let mut emitted = StreamDelta::default();
     if let Some(text) = delta.get("content").and_then(Value::as_str)
         && !text.is_empty()
     {
         content.push_str(text);
-        emitted = Some(text.to_string());
+        emitted.content = Some(text.to_string());
+    }
+
+    // DeepSeek-compatible chat completions stream reasoning under
+    // `reasoning_content`.
+    if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        reasoning.push_str(text);
+        emitted.reasoning = Some(text.to_string());
     }
 
     if let Some(items) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -525,11 +556,16 @@ fn parse_args(raw: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-fn assistant_message(content: &str, calls: &[ToolCall]) -> Value {
+fn assistant_message(content: &str, reasoning: &str, calls: &[ToolCall]) -> Value {
     let mut message = json!({
         "role": "assistant",
         "content": content,
     });
+    // Thinking mode requires every prior turn's reasoning to be replayed while
+    // tools are offered, including final answers without tool calls.
+    if !reasoning.is_empty() {
+        message["reasoning_content"] = json!(reasoning);
+    }
     if !calls.is_empty() {
         let calls: Vec<Value> = calls
             .iter()
@@ -588,32 +624,47 @@ mod tests {
     }
 
     #[test]
-    fn accumulates_content_and_streamed_tool_calls() {
+    fn accumulates_content_reasoning_and_streamed_tool_calls() {
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut calls = BTreeMap::new();
 
         let delta = apply_sse_line(
             r#"data: {"choices":[{"delta":{"content":"Let me look."}}]}"#,
             &mut content,
+            &mut reasoning,
             &mut calls,
         )
         .unwrap();
-        assert_eq!(delta.as_deref(), Some("Let me look."));
+        assert_eq!(delta.content.as_deref(), Some("Let me look."));
+        assert_eq!(delta.reasoning, None);
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"Check the path first.\n"}}]}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(delta.reasoning.as_deref(), Some("Check the path first.\n"));
 
         apply_sse_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read_file","arguments":"{\"pa"}}]}}]}"#,
             &mut content,
+            &mut reasoning,
             &mut calls,
         )
         .unwrap();
         apply_sse_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"src\"}"}}]}}]}"#,
             &mut content,
+            &mut reasoning,
             &mut calls,
         )
         .unwrap();
 
         assert_eq!(content, "Let me look.");
+        assert_eq!(reasoning, "Check the path first.\n");
         let calls: Vec<ToolCall> = calls.into_values().collect();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "call_a");
@@ -624,19 +675,19 @@ mod tests {
     #[test]
     fn ignores_comments_done_and_surfaces_model_errors() {
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut calls = BTreeMap::new();
-        assert_eq!(
-            apply_sse_line(": keep-alive", &mut content, &mut calls).unwrap(),
-            None
-        );
-        assert_eq!(
-            apply_sse_line("data: [DONE]", &mut content, &mut calls).unwrap(),
-            None
-        );
+        let delta =
+            apply_sse_line(": keep-alive", &mut content, &mut reasoning, &mut calls).unwrap();
+        assert!(delta.content.is_none() && delta.reasoning.is_none());
+        let delta =
+            apply_sse_line("data: [DONE]", &mut content, &mut reasoning, &mut calls).unwrap();
+        assert!(delta.content.is_none() && delta.reasoning.is_none());
         assert!(
             apply_sse_line(
                 r#"data: {"error":{"message":"bad key"}}"#,
                 &mut content,
+                &mut reasoning,
                 &mut calls
             )
             .unwrap_err()
@@ -677,12 +728,20 @@ mod tests {
             name: "read_file".into(),
             arguments: "{\"path\":\"a\"}".into(),
         };
-        let message = assistant_message("", &[call]);
+        let message = assistant_message("", "why", &[call]);
         assert_eq!(message["content"], "");
+        assert_eq!(message["reasoning_content"], "why");
         assert_eq!(message["tool_calls"][0]["id"], "call_1");
         assert_eq!(
             tool_message("call_1", "hi".into())["tool_call_id"],
             "call_1"
         );
+    }
+
+    #[test]
+    fn final_answers_keep_reasoning_for_thinking_mode_replay() {
+        let message = assistant_message("Done.", "private reasoning", &[]);
+        assert_eq!(message["content"], "Done.");
+        assert_eq!(message["reasoning_content"], "private reasoning");
     }
 }
