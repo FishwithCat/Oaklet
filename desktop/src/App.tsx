@@ -8,12 +8,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  FolderOpen,
-  Gear,
-  PaperPlaneRight,
-  ShieldCheck,
-  Stop,
-  X,
+  FolderOpenIcon,
+  GearIcon,
+  PaperPlaneRightIcon,
+  ShieldCheckIcon,
+  StopIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
@@ -198,7 +198,7 @@ function SettingsPanel({
           aria-label="Close settings"
           title="Close"
         >
-          <X size={16} />
+          <XIcon size={16} />
         </button>
         <h2 id="settings-title">{firstRun ? "Connect a model" : "Settings"}</h2>
         <p className="modal-sub">
@@ -266,7 +266,7 @@ function SettingsPanel({
               aria-label="Browse"
               title="Browse"
             >
-              <FolderOpen size={16} />
+              <FolderOpenIcon size={16} />
             </button>
           </div>
         </div>
@@ -590,7 +590,7 @@ function App() {
               onClick={revokeAllowAll}
               title="All commands in this workspace run without approval. Click to ask again."
             >
-              <ShieldCheck size={14} />
+              <ShieldCheckIcon size={14} />
               All commands allowed
             </button>
           )}
@@ -610,7 +610,7 @@ function App() {
             aria-label="Settings"
             title="Settings"
           >
-            <Gear size={16} />
+            <GearIcon size={16} />
           </button>
         </div>
       </header>
@@ -738,7 +738,7 @@ function App() {
                 aria-label="Stop"
                 title="Stop"
               >
-                <Stop size={14} weight="fill" />
+                <StopIcon size={14} weight="fill" />
               </button>
             ) : (
               <button
@@ -748,7 +748,7 @@ function App() {
                 aria-label="Send"
                 title="Send"
               >
-                <PaperPlaneRight size={16} weight="fill" />
+                <PaperPlaneRightIcon size={16} weight="fill" />
               </button>
             )}
           </div>
