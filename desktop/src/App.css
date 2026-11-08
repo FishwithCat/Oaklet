@@ -100,6 +100,14 @@ button.ghost:hover:not(:disabled) {
   color: var(--text);
 }
 
+button.icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
@@ -699,6 +707,7 @@ textarea:focus-visible {
 }
 
 .modal {
+  position: relative;
   width: min(560px, 100%);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -709,9 +718,16 @@ textarea:focus-visible {
 
 .modal h2 {
   margin: 0 0 6px;
+  padding-right: 40px;
   font-size: 18px;
   font-weight: 620;
   letter-spacing: -0.2px;
+}
+
+.modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
 }
 
 .modal-sub {
@@ -762,6 +778,10 @@ textarea:focus-visible {
 
 .field-row button {
   flex: none;
+}
+
+.field-row .icon-button {
+  height: auto;
 }
 
 .error-text {

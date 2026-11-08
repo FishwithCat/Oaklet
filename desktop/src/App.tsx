@@ -9,6 +9,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  FolderOpen,
+  Gear,
+  PaperPlaneRight,
+  Stop,
+  Terminal,
+  X,
+} from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./App.css";
@@ -237,6 +245,15 @@ function SettingsPanel({
         aria-modal="true"
         aria-labelledby="settings-title"
       >
+        <button
+          type="button"
+          className="ghost icon-button modal-close"
+          onClick={onClose}
+          aria-label="Close settings"
+          title="Close"
+        >
+          <X size={16} />
+        </button>
         <h2 id="settings-title">{firstRun ? "Connect a model" : "Settings"}</h2>
         <p className="modal-sub">
           Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is
@@ -295,8 +312,15 @@ function SettingsPanel({
                 }))
               }
             />
-            <button type="button" onClick={browse} disabled={browsing}>
-              {browsing ? "..." : "Browse"}
+            <button
+              type="button"
+              className="icon-button"
+              onClick={browse}
+              disabled={browsing}
+              aria-label="Browse"
+              title="Browse"
+            >
+              <FolderOpen size={16} />
             </button>
           </div>
         </div>
@@ -559,10 +583,12 @@ function App() {
           </button>
           <button
             type="button"
-            className="ghost"
+            className="ghost icon-button"
             onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings"
           >
-            Settings
+            <Gear size={16} />
           </button>
         </div>
       </header>
@@ -621,7 +647,9 @@ function App() {
               if (item.kind === "tool") {
                 return (
                   <div className="msg tool" key={index}>
-                    <span className="avatar tool-avatar">$</span>
+                    <span className="avatar tool-avatar">
+                      <Terminal size={13} />
+                    </span>
                     <div className="tool-card-wrap">
                       <ToolCard item={item} onApproval={respondToApproval} />
                     </div>
@@ -672,16 +700,24 @@ function App() {
               Enter to send · Shift+Enter for a new line
             </span>
             {running ? (
-              <button type="button" className="stop" onClick={stop}>
-                Stop
+              <button
+                type="button"
+                className="stop icon-button"
+                onClick={stop}
+                aria-label="Stop"
+                title="Stop"
+              >
+                <Stop size={14} weight="fill" />
               </button>
             ) : (
               <button
                 type="submit"
-                className="primary"
+                className="primary icon-button"
                 disabled={!input.trim()}
+                aria-label="Send"
+                title="Send"
               >
-                Send
+                <PaperPlaneRight size={16} weight="fill" />
               </button>
             )}
           </div>
