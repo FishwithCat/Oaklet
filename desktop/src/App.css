@@ -194,6 +194,22 @@ textarea:focus-visible {
   margin-right: 4px;
 }
 
+button.allow-all-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--green);
+  border-color: rgba(47, 125, 85, 0.3);
+  background: rgba(47, 125, 85, 0.08);
+}
+
+button.allow-all-chip:hover:not(:disabled) {
+  color: var(--green);
+  border-color: rgba(47, 125, 85, 0.5);
+  background: rgba(47, 125, 85, 0.14);
+}
+
 .chat {
   flex: 1;
   overflow-y: auto;

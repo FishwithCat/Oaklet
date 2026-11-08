@@ -11,7 +11,8 @@ enough to read in one sitting.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`.
-- Asks before every shell command; the approval card shows the exact command.
+- Asks before every shell command; the approval card shows the exact command
+  and can allow all commands in the workspace.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
 - Stores the API key in the app config directory (`0600` on Unix), never in the
   repository.
@@ -71,6 +72,11 @@ as `qwen2.5-coder`.
 - `run_command` runs through the user's shell in the workspace and blocks on an
   in-app approval before starting. It times out after 120 seconds and caps
   captured output.
+- **Allow all in workspace** stops prompting for `run_command` in that workspace
+  for the rest of the app session. The header shows an active indicator you can
+  click to revoke; the grant is in memory only and never applies to file tools
+  or another workspace. Commands can still touch files outside the workspace,
+  so only grant this in a project you trust.
 - The agent can still run any command the user approves, including commands that
   touch files outside the workspace. Read the approval card before allowing it.
 

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -11,7 +12,7 @@ use tokio::sync::oneshot;
 use crate::tools::{
     ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
 };
-use crate::{AppConfig, PendingApproval, SharedState};
+use crate::{AppConfig, PendingApproval, SharedState, auto_approves_command};
 
 const MAX_STEPS: usize = 32;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -250,6 +251,7 @@ pub async fn run(
                 state: &state,
                 run_id: &run_id,
                 call_id: &call.id,
+                workspace: tool_context.workspace.root(),
                 cancel: &cancel,
             };
             let outcome = tools
@@ -384,6 +386,7 @@ struct TauriApprover<'a> {
     state: &'a SharedState,
     run_id: &'a str,
     call_id: &'a str,
+    workspace: &'a Path,
     cancel: &'a Cancel,
 }
 
@@ -395,6 +398,7 @@ impl Approver for TauriApprover<'_> {
                 self.state,
                 self.run_id,
                 self.call_id,
+                self.workspace,
                 request,
                 self.cancel,
             )
@@ -415,11 +419,21 @@ async fn request_approval(
     state: &SharedState,
     run_id: &str,
     id: &str,
+    workspace: &Path,
     request: ApprovalRequest,
     cancel: &Cancel,
 ) -> bool {
     if cancel.is_cancelled() {
         return false;
+    }
+
+    let granted = state
+        .command_allow_all
+        .lock()
+        .ok()
+        .and_then(|granted| granted.clone());
+    if auto_approves_command(request.tool, workspace, granted.as_deref()) {
+        return true;
     }
 
     let request_id = state.next_id();
@@ -429,6 +443,7 @@ async fn request_approval(
             request_id.clone(),
             PendingApproval {
                 run_id: run_id.to_string(),
+                workspace: workspace.to_path_buf(),
                 sender,
             },
         );

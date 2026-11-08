@@ -19,6 +19,7 @@ import {
   reasoningSummary,
   toolCategory,
   toolTitle,
+  type ApprovalChoice,
   type ProcessItem,
   type ReasoningItem,
   type ToolCategory,
@@ -113,20 +114,29 @@ function Approval({
   onApproval,
 }: {
   item: ToolItem;
-  onApproval: (item: ToolItem, allow: boolean) => void;
+  onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
 }) {
   return (
     <div className="approval">
       <p>{item.approvalPrompt ?? "Approve this tool call?"}</p>
       <pre>{item.approvalDetail ?? ""}</pre>
       <div className="approval-actions">
-        <button type="button" onClick={() => onApproval(item, false)}>
+        <button type="button" onClick={() => onApproval(item, "deny")}>
           Deny
         </button>
+        {item.name === "run_command" && (
+          <button
+            type="button"
+            onClick={() => onApproval(item, "allowAll")}
+            title="Run every command in this workspace without asking until you turn it off."
+          >
+            Allow all in workspace
+          </button>
+        )}
         <button
           type="button"
           className="primary"
-          onClick={() => onApproval(item, true)}
+          onClick={() => onApproval(item, "allow")}
         >
           Allow
         </button>
@@ -140,7 +150,7 @@ function ToolRow({
   onApproval,
 }: {
   item: ToolItem;
-  onApproval: (item: ToolItem, allow: boolean) => void;
+  onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
 }) {
   const [open, setOpen] = useState(false);
   const category = toolCategory(item.name);
@@ -198,7 +208,7 @@ export function ProcessGroup({
 }: {
   items: readonly ProcessItem[];
   live: boolean;
-  onApproval: (item: ToolItem, allow: boolean) => void;
+  onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
 }) {
   // An approval must stay visible: collapsing the group must not hide the
   // only way to unblock the run.

@@ -20,11 +20,16 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub approvals: Mutex<HashMap<String, PendingApproval>>,
     pub runs: Mutex<HashMap<String, CancelHandle>>,
+    /// Canonical workspace where `run_command` approvals were waived for this
+    /// session. `None` means every command is confirmed.
+    pub command_allow_all: Mutex<Option<PathBuf>>,
     ids: AtomicU64,
 }
 
 pub struct PendingApproval {
     pub run_id: String,
+    /// Workspace the command will run in, so a grant stays scoped to it.
+    pub workspace: PathBuf,
     pub sender: oneshot::Sender<bool>,
 }
 
@@ -37,6 +42,12 @@ impl AppState {
         let seq = self.ids.fetch_add(1, Ordering::Relaxed);
         format!("{millis:x}-{seq:x}")
     }
+}
+
+/// Only shell commands in the exact workspace the user granted may skip the
+/// approval prompt; every other request still asks.
+fn auto_approves_command(tool: &str, workspace: &Path, granted: Option<&Path>) -> bool {
+    tool == "run_command" && granted == Some(workspace)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,7 +139,13 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
         config.workspace = canonical.to_string_lossy().into_owned();
     }
 
+    let previous_workspace = state.config.lock().unwrap().workspace.clone();
     write_config(&state.config_path, &config)?;
+    if previous_workspace != config.workspace
+        && let Ok(mut granted) = state.command_allow_all.lock()
+    {
+        *granted = None;
+    }
     *state.config.lock().unwrap() = config.clone();
     Ok(config)
 }
@@ -197,18 +214,46 @@ fn approve_tool(
     state: State<'_, SharedState>,
     request_id: String,
     allow: bool,
+    always: bool,
 ) -> Result<(), String> {
     let pending = state
         .approvals
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
         .remove(&request_id);
-    match pending {
-        Some(pending) => pending
-            .sender
-            .send(allow)
-            .map_err(|_| "The agent is no longer waiting for this action.".to_string()),
-        None => Err("This approval request has expired.".into()),
+    let Some(pending) = pending else {
+        return Err("This approval request has expired.".into());
+    };
+
+    pending
+        .sender
+        .send(allow)
+        .map_err(|_| "The agent is no longer waiting for this action.".to_string())?;
+
+    // A grant is session-only and scoped to the workspace the approved command
+    // runs in, not to whatever workspace settings show later.
+    if allow
+        && always
+        && let Ok(mut granted) = state.command_allow_all.lock()
+    {
+        *granted = Some(pending.workspace);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn command_allow_all_active(state: State<'_, SharedState>) -> bool {
+    state
+        .command_allow_all
+        .lock()
+        .map(|granted| granted.is_some())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn revoke_command_allow_all(state: State<'_, SharedState>) {
+    if let Ok(mut granted) = state.command_allow_all.lock() {
+        *granted = None;
     }
 }
 
@@ -228,6 +273,7 @@ pub fn run() {
                 config_path,
                 approvals: Mutex::new(HashMap::new()),
                 runs: Mutex::new(HashMap::new()),
+                command_allow_all: Mutex::new(None),
                 ids: AtomicU64::new(0),
             }));
             Ok(())
@@ -237,8 +283,40 @@ pub fn run() {
             save_config,
             agent_send,
             agent_stop,
-            approve_tool
+            approve_tool,
+            command_allow_all_active,
+            revoke_command_allow_all
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::auto_approves_command;
+
+    #[test]
+    fn auto_approves_only_commands_in_the_granted_workspace() {
+        let workspace = Path::new("/tmp/oaklet-workspace");
+        let other = Path::new("/tmp/oaklet-other");
+
+        assert!(auto_approves_command(
+            "run_command",
+            workspace,
+            Some(workspace)
+        ));
+        assert!(!auto_approves_command(
+            "run_command",
+            other,
+            Some(workspace)
+        ));
+        assert!(!auto_approves_command("run_command", workspace, None));
+        assert!(!auto_approves_command(
+            "write_file",
+            workspace,
+            Some(workspace)
+        ));
+    }
 }

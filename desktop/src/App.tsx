@@ -11,12 +11,17 @@ import {
   FolderOpen,
   Gear,
   PaperPlaneRight,
+  ShieldCheck,
   Stop,
   X,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
-import type { ProcessItem, ToolItem } from "./process-model";
+import type {
+  ApprovalChoice,
+  ProcessItem,
+  ToolItem,
+} from "./process-model";
 import "./App.css";
 
 type AppConfig = {
@@ -288,6 +293,7 @@ function App() {
   const [running, setRunning] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [allowAll, setAllowAll] = useState(false);
 
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
@@ -305,6 +311,12 @@ function App() {
       .catch((error) => {
         setItems([{ kind: "notice", tone: "error", text: errorText(error) }]);
       });
+  }, []);
+
+  useEffect(() => {
+    invoke<boolean>("command_allow_all_active")
+      .then(setAllowAll)
+      .catch(() => setAllowAll(false));
   }, []);
 
   useEffect(() => {
@@ -506,7 +518,7 @@ function App() {
     textareaRef.current?.focus();
   }
 
-  function respondToApproval(item: ToolItem, allow: boolean) {
+  function respondToApproval(item: ToolItem, choice: ApprovalChoice) {
     if (!item.requestId) return;
     const requestId = item.requestId;
     setItems((previous) =>
@@ -516,12 +528,31 @@ function App() {
           : entry,
       ),
     );
-    invoke("approve_tool", { requestId, allow }).catch((error) => {
-      setItems((previous) => [
-        ...previous,
-        { kind: "notice", tone: "error", text: errorText(error) },
-      ]);
-    });
+    invoke("approve_tool", {
+      requestId,
+      allow: choice !== "deny",
+      always: choice === "allowAll",
+    })
+      .then(() => {
+        if (choice === "allowAll") setAllowAll(true);
+      })
+      .catch((error) => {
+        setItems((previous) => [
+          ...previous,
+          { kind: "notice", tone: "error", text: errorText(error) },
+        ]);
+      });
+  }
+
+  function revokeAllowAll() {
+    invoke("revoke_command_allow_all")
+      .then(() => setAllowAll(false))
+      .catch((error) => {
+        setItems((previous) => [
+          ...previous,
+          { kind: "notice", tone: "error", text: errorText(error) },
+        ]);
+      });
   }
 
   if (!config) {
@@ -552,6 +583,17 @@ function App() {
           {config.workspace}
         </span>
         <div className="topbar-actions">
+          {allowAll && (
+            <button
+              type="button"
+              className="ghost allow-all-chip"
+              onClick={revokeAllowAll}
+              title="All commands in this workspace run without approval. Click to ask again."
+            >
+              <ShieldCheck size={14} />
+              All commands allowed
+            </button>
+          )}
           <span className="model">{config.model}</span>
           <button
             type="button"
@@ -580,8 +622,10 @@ function App() {
             <h1>What should we build?</h1>
             <p>
               Oaklet reads and edits files in{" "}
-              <code>{config.workspace}</code> and asks before running any
-              command.
+              <code>{config.workspace}</code> and{" "}
+              {allowAll
+                ? "runs commands without asking until you revoke it."
+                : "asks before running any command."}
             </p>
             <div className="suggestions">
               {SUGGESTIONS.map((suggestion) => (
@@ -719,6 +763,9 @@ function App() {
           onSaved={(saved) => {
             setConfig(saved);
             setSettingsOpen(false);
+            invoke<boolean>("command_allow_all_active")
+              .then(setAllowAll)
+              .catch(() => setAllowAll(false));
           }}
         />
       )}

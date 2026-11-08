@@ -1,5 +1,7 @@
 export type ToolStatus = "pending" | "awaiting" | "running" | "ok" | "error";
 
+export type ApprovalChoice = "deny" | "allow" | "allowAll";
+
 export type ReasoningItem = {
   kind: "reasoning";
   runId: string;
