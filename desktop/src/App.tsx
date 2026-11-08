@@ -2,23 +2,21 @@ import {
   useEffect,
   useRef,
   useState,
-  type ComponentPropsWithoutRef,
   type FormEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   FolderOpen,
   Gear,
   PaperPlaneRight,
   Stop,
-  Terminal,
   X,
 } from "@phosphor-icons/react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownText } from "./Markdown";
+import { ProcessGroup } from "./Process";
+import type { ProcessItem, ToolItem } from "./process-model";
 import "./App.css";
 
 type AppConfig = {
@@ -28,27 +26,14 @@ type AppConfig = {
   workspace: string;
 };
 
-type ToolStatus = "pending" | "awaiting" | "running" | "ok" | "error";
-
-type ToolItem = {
-  kind: "tool";
-  id: string;
-  name: string;
-  status: ToolStatus;
-  output?: string;
-  requestId?: string;
-  summary?: string;
-  approvalPrompt?: string;
-  approvalDetail?: string;
-};
-
 type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; streaming: boolean }
-  | ToolItem
+  | ProcessItem
   | { kind: "notice"; text: string; tone: "error" | "muted" };
 
 type DeltaEvent = { runId: string; text: string };
+type ReasoningEvent = { runId: string; text: string };
 type ToolStartEvent = {
   runId: string;
   id: string;
@@ -92,88 +77,44 @@ function errorText(error: unknown): string {
   return JSON.stringify(error);
 }
 
-function finalizeStreaming(items: Item[]): Item[] {
-  return items.map((item, index) =>
-    item.kind === "assistant" && index === items.length - 1
+function settleStreaming(items: Item[]): Item[] {
+  return items.map((item) =>
+    (item.kind === "assistant" || item.kind === "reasoning") && item.streaming
       ? { ...item, streaming: false }
       : item,
   );
 }
 
-function MarkdownLink({ href, children }: ComponentPropsWithoutRef<"a">) {
-  return (
-    <a
-      href={href}
-      onClick={(event) => {
-        event.preventDefault();
-        if (href && /^https?:\/\//i.test(href)) {
-          void openUrl(href).catch(() => {});
-        }
-      }}
-    >
-      {children}
-    </a>
-  );
-}
+type Block =
+  | { kind: "process"; start: number; items: ProcessItem[] }
+  | { kind: "single"; index: number; item: Item };
 
-function MessageText({ text }: { text: string }) {
-  return (
-    <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
+/** Reasoning and tool rows between replies become one compact process group. */
+function toBlocks(items: Item[]): Block[] {
+  const blocks: Block[] = [];
+  let process: ProcessItem[] | null = null;
+  let start = 0;
 
-function ToolCard({
-  item,
-  onApproval,
-}: {
-  item: ToolItem;
-  onApproval: (item: ToolItem, allow: boolean) => void;
-}) {
-  const summary = item.summary ?? "";
-  return (
-    <div className="tool-card">
-      <div className="tool-head">
-        <span className={`status-dot ${item.status}`} />
-        <span className="tool-name">{item.name}</span>
-        <span className="tool-summary" title={summary}>
-          {summary}
-        </span>
-      </div>
+  items.forEach((item, index) => {
+    if (item.kind === "reasoning" || item.kind === "tool") {
+      if (process === null) {
+        process = [];
+        start = index;
+      }
+      process.push(item);
+      return;
+    }
+    if (process !== null) {
+      blocks.push({ kind: "process", start, items: process });
+      process = null;
+    }
+    blocks.push({ kind: "single", index, item });
+  });
 
-      {item.status === "awaiting" && item.requestId && (
-        <div className="approval">
-          <p>{item.approvalPrompt ?? "Approve this tool call?"}</p>
-          <pre>{item.approvalDetail ?? ""}</pre>
-          <div className="approval-actions">
-            <button
-              type="button"
-              onClick={() => onApproval(item, false)}
-            >
-              Deny
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => onApproval(item, true)}
-            >
-              Allow
-            </button>
-          </div>
-        </div>
-      )}
-
-      {item.output && (
-        <details open={item.status === "error"}>
-          <summary>{item.status === "ok" ? "Output" : "Error"}</summary>
-          <pre className="tool-output">{item.output}</pre>
-        </details>
-      )}
-    </div>
-  );
+  if (process !== null) {
+    blocks.push({ kind: "process", start, items: process });
+  }
+  return blocks;
 }
 
 function SettingsPanel({
@@ -346,6 +287,7 @@ function App() {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
@@ -372,26 +314,51 @@ function App() {
     const register = async () => {
       const subscriptions = await Promise.all([
         listen<DeltaEvent>("agent:delta", (event) => {
+          const { runId, text } = event.payload;
+          setActiveRunId(runId);
           setItems((previous) => {
             const last = previous[previous.length - 1];
             if (last?.kind === "assistant" && last.streaming) {
               return [
                 ...previous.slice(0, -1),
-                { ...last, text: last.text + event.payload.text },
+                { ...last, text: last.text + text },
               ];
             }
             return [
-              ...previous,
-              { kind: "assistant", text: event.payload.text, streaming: true },
+              ...settleStreaming(previous),
+              { kind: "assistant", text, streaming: true },
+            ];
+          });
+        }),
+        listen<ReasoningEvent>("agent:reasoning", (event) => {
+          const { runId, text } = event.payload;
+          setActiveRunId(runId);
+          setItems((previous) => {
+            const last = previous[previous.length - 1];
+            if (
+              last?.kind === "reasoning" &&
+              last.streaming &&
+              last.runId === runId
+            ) {
+              return [
+                ...previous.slice(0, -1),
+                { ...last, text: last.text + text },
+              ];
+            }
+            return [
+              ...settleStreaming(previous),
+              { kind: "reasoning", runId, text, streaming: true },
             ];
           });
         }),
         listen<ToolStartEvent>("agent:tool_start", (event) => {
-          const { id, name, summary } = event.payload;
+          const { runId, id, name, summary } = event.payload;
+          setActiveRunId(runId);
           setItems((previous) => [
-            ...finalizeStreaming(previous),
+            ...settleStreaming(previous),
             {
               kind: "tool",
+              runId,
               id,
               name,
               status: "pending",
@@ -428,22 +395,25 @@ function App() {
         listen<DoneEvent>("agent:done", (event) => {
           messagesRef.current = event.payload.messages;
           runIdRef.current = null;
+          setActiveRunId(null);
           setRunning(false);
-          setItems(finalizeStreaming);
+          setItems(settleStreaming);
         }),
         listen<ErrorEvent>("agent:error", (event) => {
           runIdRef.current = null;
+          setActiveRunId(null);
           setRunning(false);
           setItems((previous) => [
-            ...finalizeStreaming(previous),
+            ...settleStreaming(previous),
             { kind: "notice", tone: "error", text: event.payload.message },
           ]);
         }),
         listen<RunIdEvent>("agent:stopped", () => {
           runIdRef.current = null;
+          setActiveRunId(null);
           setRunning(false);
           setItems((previous) => [
-            ...finalizeStreaming(previous),
+            ...settleStreaming(previous),
             { kind: "notice", tone: "muted", text: "Stopped." },
           ]);
         }),
@@ -502,6 +472,7 @@ function App() {
     setInput("");
     stickToBottomRef.current = true;
     setRunning(true);
+    setActiveRunId(null);
 
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
@@ -529,6 +500,7 @@ function App() {
     if (running) return;
     messagesRef.current = [];
     runIdRef.current = null;
+    setActiveRunId(null);
     setItems([]);
     setInput("");
     textareaRef.current?.focus();
@@ -558,6 +530,15 @@ function App() {
         {items.length > 0 ? "Could not load Oaklet." : "Loading Oaklet..."}
       </div>
     );
+  }
+
+  const blocks = toBlocks(items);
+  let lastProcessBlock = -1;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index]?.kind === "process") {
+      lastProcessBlock = index;
+      break;
+    }
   }
 
   return (
@@ -625,39 +606,46 @@ function App() {
           </div>
         ) : (
           <div className="thread" aria-live="polite">
-            {items.map((item, index) => {
+            {blocks.map((block, blockIndex) => {
+              if (block.kind === "process") {
+                return (
+                  <ProcessGroup
+                    key={`process-${block.start}`}
+                    items={block.items}
+                    live={
+                      running &&
+                      blockIndex === lastProcessBlock &&
+                      block.items[0]?.runId === activeRunId
+                    }
+                    onApproval={respondToApproval}
+                  />
+                );
+              }
+
+              const item = block.item;
               if (item.kind === "user") {
                 return (
-                  <div className="msg user" key={index}>
+                  <div className="msg user" key={`user-${block.index}`}>
                     <div className="bubble">{item.text}</div>
                   </div>
                 );
               }
               if (item.kind === "assistant") {
                 return (
-                  <div className="msg assistant" key={index}>
-                    <span className="avatar">O</span>
+                  <div className="msg assistant" key={`assistant-${block.index}`}>
                     <div className="bubble">
-                      <MessageText text={item.text} />
+                      <MarkdownText text={item.text} />
                       {item.streaming && <span className="caret" />}
                     </div>
                   </div>
                 );
               }
-              if (item.kind === "tool") {
-                return (
-                  <div className="msg tool" key={index}>
-                    <span className="avatar tool-avatar">
-                      <Terminal size={13} />
-                    </span>
-                    <div className="tool-card-wrap">
-                      <ToolCard item={item} onApproval={respondToApproval} />
-                    </div>
-                  </div>
-                );
-              }
+              if (item.kind !== "notice") return null;
               return (
-                <div className={`notice ${item.tone}`} key={index}>
+                <div
+                  className={`notice ${item.tone}`}
+                  key={`notice-${block.index}`}
+                >
                   {item.text}
                 </div>
               );

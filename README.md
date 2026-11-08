@@ -8,8 +8,8 @@ enough to read in one sitting.
 ## What it does
 
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
-- Streams assistant text, renders Markdown replies, and shows tool calls and
-  results inline.
+- Streams assistant text and model reasoning, renders Markdown replies, and
+  folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`.
 - Asks before every shell command; the approval card shows the exact command.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
