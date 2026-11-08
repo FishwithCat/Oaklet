@@ -1,14 +1,242 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod agent;
+mod tools;
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
+use tokio::sync::oneshot;
+
+pub type SharedState = Arc<AppState>;
+
+pub struct AppState {
+    pub config: Mutex<AppConfig>,
+    pub config_path: PathBuf,
+    pub approvals: Mutex<HashMap<String, PendingApproval>>,
+    pub runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    ids: AtomicU64,
+}
+
+pub struct PendingApproval {
+    pub run_id: String,
+    pub sender: oneshot::Sender<bool>,
+}
+
+impl AppState {
+    pub fn next_id(&self) -> String {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let seq = self.ids.fetch_add(1, Ordering::Relaxed);
+        format!("{millis:x}-{seq:x}")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
+}
+
+fn default_base_url() -> String {
+    "https://api.deepseek.com".into()
+}
+
+fn default_model() -> String {
+    "deepseek-flash".into()
+}
+
+fn default_workspace() -> String {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_base_url(),
+            api_key: String::new(),
+            model: default_model(),
+            workspace: default_workspace(),
+        }
+    }
+}
+
+fn read_config(path: &Path) -> Option<AppConfig> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_config(path: &Path, config: &AppConfig) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not create config dir: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Could not encode config: {e}"))?;
+    std::fs::write(path, text).map_err(|e| format!("Could not write config: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+fn load_config(state: State<'_, SharedState>) -> AppConfig {
+    state.config.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<AppConfig, String> {
+    config.base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    config.api_key = config.api_key.trim().to_string();
+    config.model = config.model.trim().to_string();
+    config.workspace = config.workspace.trim().to_string();
+
+    if !(config.base_url.starts_with("http://") || config.base_url.starts_with("https://")) {
+        return Err("Base URL must start with http:// or https://.".into());
+    }
+    if config.model.is_empty() {
+        return Err("Model is required.".into());
+    }
+    if !Path::new(&config.workspace).is_dir() {
+        return Err(format!(
+            "Workspace is not a directory: {}",
+            config.workspace
+        ));
+    }
+    if let Ok(canonical) = Path::new(&config.workspace).canonicalize() {
+        config.workspace = canonical.to_string_lossy().into_owned();
+    }
+
+    write_config(&state.config_path, &config)?;
+    *state.config.lock().unwrap() = config.clone();
+    Ok(config)
+}
+
+#[tauri::command]
+fn agent_send(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    messages: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .clone();
+    if !Path::new(&config.workspace).is_dir() {
+        return Err("Choose an existing workspace folder first.".into());
+    }
+
+    let run_id = state.next_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    state
+        .runs
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .insert(run_id.clone(), cancel.clone());
+
+    let shared = state.inner().clone();
+    let id = run_id.clone();
+    tauri::async_runtime::spawn(async move {
+        agent::run(app, shared.clone(), id.clone(), messages, config, cancel).await;
+        if let Ok(mut runs) = shared.runs.lock() {
+            runs.remove(&id);
+        }
+    });
+
+    Ok(run_id)
+}
+
+#[tauri::command]
+fn agent_stop(state: State<'_, SharedState>, run_id: String) {
+    if let Ok(runs) = state.runs.lock()
+        && let Some(cancel) = runs.get(&run_id)
+    {
+        cancel.store(true, Ordering::SeqCst);
+    }
+
+    let mut approvals = match state.approvals.lock() {
+        Ok(approvals) => approvals,
+        Err(_) => return,
+    };
+    let ids: Vec<String> = approvals
+        .iter()
+        .filter(|(_, pending)| pending.run_id == run_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        if let Some(pending) = approvals.remove(&id) {
+            let _ = pending.sender.send(false);
+        }
+    }
+}
+
+#[tauri::command]
+fn approve_tool(
+    state: State<'_, SharedState>,
+    request_id: String,
+    allow: bool,
+) -> Result<(), String> {
+    let pending = state
+        .approvals
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .remove(&request_id);
+    match pending {
+        Some(pending) => pending
+            .sender
+            .send(allow)
+            .map_err(|_| "The agent is no longer waiting for this action.".to_string()),
+        None => Err("This approval request has expired.".into()),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let config_path = app.path().app_config_dir()?.join("config.json");
+            let mut config = read_config(&config_path).unwrap_or_default();
+            if config.workspace.trim().is_empty() || !Path::new(&config.workspace).is_dir() {
+                config.workspace = default_workspace();
+            }
+            app.manage(Arc::new(AppState {
+                config: Mutex::new(config),
+                config_path,
+                approvals: Mutex::new(HashMap::new()),
+                runs: Mutex::new(HashMap::new()),
+                ids: AtomicU64::new(0),
+            }));
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            load_config,
+            save_config,
+            agent_send,
+            agent_stop,
+            approve_tool
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
