@@ -2,7 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
-  type FormEvent,
+  type SubmitEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -164,7 +164,7 @@ function SettingsPanel({
     }
   }
 
-  async function save(event: FormEvent) {
+  async function save(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     setError("");
