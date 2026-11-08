@@ -547,7 +547,6 @@ function App() {
         <div className="brand">
           <span className="brand-mark">O</span>
           <span>Oaklet</span>
-          <span className="tag">local agent</span>
         </div>
         <span className="workspace" title={config.workspace}>
           {config.workspace}
