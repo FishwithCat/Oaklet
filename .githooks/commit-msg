@@ -1,0 +1,3 @@
+#!/bin/sh
+# Conventional Commits check. `pnpm install` at the repo root sets core.hooksPath.
+pnpm exec commitlint --edit "$1"

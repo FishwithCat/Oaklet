@@ -1,0 +1,9 @@
+# <type>(<scope>): <summary>
+#
+# <body: what changed and why, wrap at 100 chars>
+#
+# <footer: BREAKING CHANGE / refs>
+#
+# type:    feat fix docs style refactor perf test build ci chore revert
+# scope:   optional, e.g. desktop, core, deps, config
+# summary: imperative mood, lowercase, no trailing period, <= 100 chars
