@@ -1,19 +1,20 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use futures_util::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
-use crate::{AppConfig, PendingApproval, SharedState, tools};
+use crate::tools::{
+    ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
+};
+use crate::{AppConfig, PendingApproval, SharedState};
 
 const MAX_STEPS: usize = 32;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
-const MAX_TOOL_RESULT_CHARS: usize = 30_000;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +30,7 @@ struct ToolStartEvent {
     id: String,
     name: String,
     args: Value,
+    summary: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -46,8 +48,10 @@ struct ApprovalEvent {
     run_id: String,
     id: String,
     request_id: String,
-    tool: String,
+    tool: &'static str,
     args: Value,
+    prompt: String,
+    detail: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -108,7 +112,7 @@ pub async fn run(
     run_id: String,
     input: Vec<Value>,
     config: AppConfig,
-    cancel: Arc<AtomicBool>,
+    cancel: Cancel,
 ) {
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -126,19 +130,32 @@ pub async fn run(
         }
     };
 
-    let mut messages = initial_messages(&config, input);
+    let tools = ToolRegistry::new();
+    let workspace = match Workspace::new(&config.workspace) {
+        Ok(workspace) => workspace,
+        Err(message) => {
+            fail(&app, &run_id, message);
+            return;
+        }
+    };
+    let tool_context = ToolContext {
+        workspace,
+        cancel: cancel.clone(),
+    };
+
+    let mut messages = initial_messages(&config, &tools, input);
 
     for _ in 0..MAX_STEPS {
-        if cancel.load(Ordering::SeqCst) {
+        if cancel.is_cancelled() {
             stopped(&app, &run_id);
             return;
         }
 
         let (content, calls) =
-            match stream_step(&app, &run_id, &client, &config, &messages, &cancel).await {
+            match stream_step(&app, &run_id, &client, &config, &tools, &messages, &cancel).await {
                 Ok(result) => result,
                 Err(err) => {
-                    if cancel.load(Ordering::SeqCst) {
+                    if cancel.is_cancelled() {
                         stopped(&app, &run_id);
                     } else {
                         fail(&app, &run_id, err);
@@ -168,7 +185,7 @@ pub async fn run(
         }
 
         for call in &calls {
-            if cancel.load(Ordering::SeqCst) {
+            if cancel.is_cancelled() {
                 stopped(&app, &run_id);
                 return;
             }
@@ -184,6 +201,7 @@ pub async fn run(
                             id: call.id.clone(),
                             name: call.name.clone(),
                             args: Value::Null,
+                            summary: String::new(),
                         },
                     );
                     emit(
@@ -201,6 +219,7 @@ pub async fn run(
                 }
             };
 
+            let summary = tools.summary(&call.name, &args);
             emit(
                 &app,
                 "agent:tool_start",
@@ -209,51 +228,36 @@ pub async fn run(
                     id: call.id.clone(),
                     name: call.name.clone(),
                     args: args.clone(),
+                    summary,
                 },
             );
 
-            if call.name == "run_command"
-                && !request_approval(&app, &state, &run_id, &call.id, &args, &cancel).await
-            {
-                let output = if cancel.load(Ordering::SeqCst) {
-                    "Command cancelled.".to_string()
-                } else {
-                    "The user denied this command.".to_string()
-                };
-                emit(
-                    &app,
-                    "agent:tool_result",
-                    ToolResultEvent {
-                        run_id: run_id.clone(),
-                        id: call.id.clone(),
-                        ok: false,
-                        output: output.clone(),
-                    },
-                );
-                messages.push(tool_message(&call.id, output));
-                if cancel.load(Ordering::SeqCst) {
-                    stopped(&app, &run_id);
-                    return;
-                }
-                continue;
-            }
-
-            let result = tools::execute(&config.workspace, &call.name, &args).await;
-            let (ok, output) = match result {
-                Ok(output) => (true, cap(output, MAX_TOOL_RESULT_CHARS)),
-                Err(error) => (false, error),
+            let approver = TauriApprover {
+                app: &app,
+                state: &state,
+                run_id: &run_id,
+                call_id: &call.id,
+                cancel: &cancel,
             };
+            let outcome = tools
+                .execute(&tool_context, &approver, &call.name, args)
+                .await;
             emit(
                 &app,
                 "agent:tool_result",
                 ToolResultEvent {
                     run_id: run_id.clone(),
                     id: call.id.clone(),
-                    ok,
-                    output: output.clone(),
+                    ok: outcome.ok,
+                    output: outcome.output.clone(),
                 },
             );
-            messages.push(tool_message(&call.id, output));
+            messages.push(tool_message(&call.id, outcome.output));
+
+            if cancel.is_cancelled() {
+                stopped(&app, &run_id);
+                return;
+            }
         }
     }
 
@@ -269,14 +273,15 @@ async fn stream_step(
     run_id: &str,
     client: &reqwest::Client,
     config: &AppConfig,
+    tools: &ToolRegistry,
     messages: &[Value],
-    cancel: &Arc<AtomicBool>,
+    cancel: &Cancel,
 ) -> Result<(String, Vec<ToolCall>), String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = json!({
         "model": config.model,
         "messages": messages,
-        "tools": tools::schemas(),
+        "tools": tools.schemas(),
         "stream": true,
     });
 
@@ -301,15 +306,11 @@ async fn stream_step(
     let mut content = String::new();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
 
-    let mut cancel_tick = tokio::time::interval(Duration::from_millis(200));
-    cancel_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             biased;
-            _ = cancel_tick.tick() => {
-                if cancel.load(Ordering::SeqCst) {
-                    return Err("Stopped.".into());
-                }
+            _ = cancel.cancelled() => {
+                return Err("Stopped.".into());
             }
             item = stream.next() => {
                 let Some(chunk) = item else { break };
@@ -357,15 +358,46 @@ async fn stream_step(
     Ok((content, calls))
 }
 
+struct TauriApprover<'a> {
+    app: &'a AppHandle,
+    state: &'a SharedState,
+    run_id: &'a str,
+    call_id: &'a str,
+    cancel: &'a Cancel,
+}
+
+impl Approver for TauriApprover<'_> {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, ApprovalDecision> {
+        Box::pin(async move {
+            let allowed = request_approval(
+                self.app,
+                self.state,
+                self.run_id,
+                self.call_id,
+                request,
+                self.cancel,
+            )
+            .await;
+            if allowed {
+                ApprovalDecision::Allow
+            } else if self.cancel.is_cancelled() {
+                ApprovalDecision::Cancelled
+            } else {
+                ApprovalDecision::Deny
+            }
+        })
+    }
+}
+
 async fn request_approval(
     app: &AppHandle,
     state: &SharedState,
     run_id: &str,
     id: &str,
-    args: &Value,
-    cancel: &Arc<AtomicBool>,
+    request: ApprovalRequest,
+    cancel: &Cancel,
 ) -> bool {
-    if cancel.load(Ordering::SeqCst) {
+    if cancel.is_cancelled() {
         return false;
     }
 
@@ -382,7 +414,7 @@ async fn request_approval(
     } else {
         return false;
     }
-    if cancel.load(Ordering::SeqCst) {
+    if cancel.is_cancelled() {
         if let Ok(mut approvals) = state.approvals.lock() {
             approvals.remove(&request_id);
         }
@@ -396,8 +428,10 @@ async fn request_approval(
             run_id: run_id.to_string(),
             id: id.to_string(),
             request_id: request_id.clone(),
-            tool: "run_command".into(),
-            args: args.clone(),
+            tool: request.tool,
+            args: request.args,
+            prompt: request.prompt,
+            detail: request.detail,
         },
     );
 
@@ -406,10 +440,7 @@ async fn request_approval(
         approvals.remove(&request_id);
     }
 
-    match decision {
-        Ok(Ok(allow)) => allow && !cancel.load(Ordering::SeqCst),
-        _ => false,
-    }
+    matches!(decision, Ok(Ok(true)))
 }
 
 fn apply_sse_line(
@@ -471,9 +502,9 @@ fn apply_sse_line(
     Ok(emitted)
 }
 
-fn initial_messages(config: &AppConfig, input: Vec<Value>) -> Vec<Value> {
+fn initial_messages(config: &AppConfig, tools: &ToolRegistry, input: Vec<Value>) -> Vec<Value> {
     let mut messages = Vec::with_capacity(input.len() + 1);
-    messages.push(json!({ "role": "system", "content": system_prompt(config) }));
+    messages.push(json!({ "role": "system", "content": system_prompt(config, tools) }));
     messages.extend(
         input
             .into_iter()
@@ -526,42 +557,28 @@ fn tool_message(id: &str, content: String) -> Value {
     })
 }
 
-fn cap(text: String, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text;
-    }
-    let mut capped: String = text.chars().take(max_chars).collect();
-    capped.push_str("\n... [truncated]");
-    capped
-}
+fn system_prompt(config: &AppConfig, tools: &ToolRegistry) -> String {
+    let mut rules: Vec<&str> = vec![
+        "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.",
+        "Paths are relative to the workspace; absolute paths inside it also work.",
+    ];
+    rules.extend(tools.guidance());
+    rules.push("Keep the final answer short: what changed and how to verify it.");
 
-fn system_prompt(config: &AppConfig) -> String {
     format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
 inspect and change the project in their workspace.\n\n\
 Workspace: {workspace}\nPlatform: {platform}\n\n\
-Rules:\n\
-- Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.\n\
-- Paths are relative to the workspace; absolute paths inside it also work.\n\
-- Read a file before editing it. Prefer edit_file for small changes; write_file replaces the whole file, so include its complete contents.\n\
-- run_command executes in the workspace. The user must approve every command, so keep commands focused.\n\
-- Keep the final answer short: what changed and how to verify it.",
+Rules:\n- {rules}",
         workspace = config.workspace,
         platform = std::env::consts::OS,
+        rules = rules.join("\n- "),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn caps_long_output_at_char_boundaries() {
-        let text = "日本語".repeat(10);
-        let capped = cap(text, 5);
-        assert!(capped.starts_with("日本語日本"));
-        assert!(capped.ends_with("[truncated]"));
-    }
 
     #[test]
     fn parses_empty_and_invalid_arguments() {
@@ -630,8 +647,10 @@ mod tests {
     #[test]
     fn rebuilds_the_system_prompt_and_drops_stale_ones() {
         let config = AppConfig::default();
+        let tools = ToolRegistry::new();
         let messages = initial_messages(
             &config,
+            &tools,
             vec![
                 json!({ "role": "system", "content": "stale prompt" }),
                 json!({ "role": "user", "content": "hi" }),
@@ -641,6 +660,14 @@ mod tests {
         assert_eq!(messages[0]["role"], "system");
         assert_ne!(messages[0]["content"], "stale prompt");
         assert_eq!(messages[1]["content"], "hi");
+    }
+
+    #[test]
+    fn system_prompt_includes_registered_tool_guidance() {
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new());
+        assert!(prompt.contains("The user must approve every command"));
+        assert!(prompt.contains("Prefer edit_file"));
+        assert!(prompt.contains("Read a file before editing it"));
     }
 
     #[test]

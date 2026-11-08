@@ -3,7 +3,7 @@ mod tools;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,13 +11,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::oneshot;
 
+use tools::CancelHandle;
+
 pub type SharedState = Arc<AppState>;
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
     pub approvals: Mutex<HashMap<String, PendingApproval>>,
-    pub runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub runs: Mutex<HashMap<String, CancelHandle>>,
     ids: AtomicU64,
 }
 
@@ -147,12 +149,12 @@ fn agent_send(
     }
 
     let run_id = state.next_id();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let (cancel_handle, cancel) = CancelHandle::new();
     state
         .runs
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
-        .insert(run_id.clone(), cancel.clone());
+        .insert(run_id.clone(), cancel_handle);
 
     let shared = state.inner().clone();
     let id = run_id.clone();
@@ -171,7 +173,7 @@ fn agent_stop(state: State<'_, SharedState>, run_id: String) {
     if let Ok(runs) = state.runs.lock()
         && let Some(cancel) = runs.get(&run_id)
     {
-        cancel.store(true, Ordering::SeqCst);
+        cancel.cancel();
     }
 
     let mut approvals = match state.approvals.lock() {

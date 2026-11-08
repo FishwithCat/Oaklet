@@ -21,6 +21,12 @@ enough to read in one sitting.
 - `desktop/` — React/TypeScript UI (Vite)
 - `packages/core/` — Rust backend (Tauri app, agent loop, tools)
 
+Tools live in `packages/core/src/tools/`. Each tool owns its schema,
+system-prompt guidance, pending-call summary, approval policy, timeout, and
+body; the registry projects the model-facing schemas and the execution pipeline
+owns lookup, approval, deadlines, and result normalization. Adding a tool does
+not touch the agent loop or the chat UI.
+
 The Rust side owns the conversation for a turn. It streams model deltas to the
 UI over Tauri events, executes tools locally, and returns the updated message
 history when the turn ends. The UI never executes files or commands itself.

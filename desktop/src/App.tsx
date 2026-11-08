@@ -26,10 +26,12 @@ type ToolItem = {
   kind: "tool";
   id: string;
   name: string;
-  args: Record<string, unknown> | null;
   status: ToolStatus;
   output?: string;
   requestId?: string;
+  summary?: string;
+  approvalPrompt?: string;
+  approvalDetail?: string;
 };
 
 type Item =
@@ -39,14 +41,20 @@ type Item =
   | { kind: "notice"; text: string; tone: "error" | "muted" };
 
 type DeltaEvent = { runId: string; text: string };
-type ToolStartEvent = { runId: string; id: string; name: string; args: unknown };
+type ToolStartEvent = {
+  runId: string;
+  id: string;
+  name: string;
+  summary: string;
+};
 type ToolResultEvent = { runId: string; id: string; ok: boolean; output: string };
 type ApprovalEvent = {
   runId: string;
   id: string;
   requestId: string;
   tool: string;
-  args: Record<string, unknown>;
+  prompt: string;
+  detail: string;
 };
 type DoneEvent = { runId: string; messages: unknown[] };
 type ErrorEvent = { runId: string; message: string };
@@ -110,13 +118,6 @@ function MessageText({ text }: { text: string }) {
   );
 }
 
-function toolSummary(item: ToolItem): string {
-  const args = item.args ?? {};
-  const value =
-    item.name === "run_command" ? args.command : args.path;
-  return typeof value === "string" ? value : "";
-}
-
 function ToolCard({
   item,
   onApproval,
@@ -124,7 +125,7 @@ function ToolCard({
   item: ToolItem;
   onApproval: (item: ToolItem, allow: boolean) => void;
 }) {
-  const summary = toolSummary(item);
+  const summary = item.summary ?? "";
   return (
     <div className="tool-card">
       <div className="tool-head">
@@ -137,8 +138,8 @@ function ToolCard({
 
       {item.status === "awaiting" && item.requestId && (
         <div className="approval">
-          <p>Run this command in the workspace?</p>
-          <pre>{String(item.args?.command ?? "")}</pre>
+          <p>{item.approvalPrompt ?? "Approve this tool call?"}</p>
+          <pre>{item.approvalDetail ?? ""}</pre>
           <div className="approval-actions">
             <button
               type="button"
@@ -362,18 +363,15 @@ function App() {
           });
         }),
         listen<ToolStartEvent>("agent:tool_start", (event) => {
-          const { id, name, args } = event.payload;
+          const { id, name, summary } = event.payload;
           setItems((previous) => [
             ...finalizeStreaming(previous),
             {
               kind: "tool",
               id,
               name,
-              args:
-                args && typeof args === "object"
-                  ? (args as Record<string, unknown>)
-                  : null,
               status: "pending",
+              summary,
             },
           ]);
         }),
@@ -388,11 +386,17 @@ function App() {
           );
         }),
         listen<ApprovalEvent>("agent:approval", (event) => {
-          const { id, requestId, args } = event.payload;
+          const { id, requestId, prompt, detail } = event.payload;
           setItems((previous) =>
             previous.map((item) =>
               item.kind === "tool" && item.id === id
-                ? { ...item, status: "awaiting", requestId, args }
+                ? {
+                    ...item,
+                    status: "awaiting",
+                    requestId,
+                    approvalPrompt: prompt,
+                    approvalDetail: detail,
+                  }
                 : item,
             ),
           );
