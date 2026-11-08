@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  ChatDotsIcon,
   FolderOpenIcon,
   GearIcon,
   PaperPlaneRightIcon,
@@ -574,35 +575,29 @@ function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">O</span>
-          <span>Oaklet</span>
-        </div>
-        <span className="workspace" title={config.workspace}>
-          {config.workspace}
-        </span>
-        <div className="topbar-actions">
+      <aside className="sidebar">
+        <button
+          type="button"
+          className="ghost icon-button new-chat"
+          onClick={newChat}
+          disabled={running}
+          aria-label="New chat"
+          title="New chat"
+        >
+          <ChatDotsIcon size={18} />
+        </button>
+        <div className="sidebar-foot">
           {allowAll && (
             <button
               type="button"
-              className="ghost allow-all-chip"
+              className="ghost icon-button allow-all-chip"
               onClick={revokeAllowAll}
+              aria-label="Revoke allowance for all commands"
               title="All commands in this workspace run without approval. Click to ask again."
             >
-              <ShieldCheckIcon size={14} />
-              All commands allowed
+              <ShieldCheckIcon size={16} />
             </button>
           )}
-          <span className="model">{config.model}</span>
-          <button
-            type="button"
-            className="ghost"
-            onClick={newChat}
-            disabled={running}
-          >
-            New chat
-          </button>
           <button
             type="button"
             className="ghost icon-button"
@@ -613,146 +608,151 @@ function App() {
             <GearIcon size={16} />
           </button>
         </div>
-      </header>
+      </aside>
 
-      <main className="chat" ref={chatRef} onScroll={onScroll}>
-        {items.length === 0 ? (
-          <div className="empty">
-            <div className="empty-mark">O</div>
-            <h1>What should we build?</h1>
-            <p>
-              Oaklet reads and edits files in{" "}
-              <code>{config.workspace}</code> and{" "}
-              {allowAll
-                ? "runs commands without asking until you revoke it."
-                : "asks before running any command."}
-            </p>
-            <div className="suggestions">
-              {SUGGESTIONS.map((suggestion) => (
+      <div className="main">
+        <main className="chat" ref={chatRef} onScroll={onScroll}>
+          {items.length === 0 ? (
+            <div className="empty">
+              <div className="empty-mark">O</div>
+              <h1>What should we build?</h1>
+              <p>
+                Oaklet reads and edits files in{" "}
+                <code>{config.workspace}</code> and{" "}
+                {allowAll
+                  ? "runs commands without asking until you revoke it."
+                  : "asks before running any command."}
+              </p>
+              <div className="suggestions">
+                {SUGGESTIONS.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion.title}
+                    className="suggestion"
+                    onClick={() => {
+                      setInput(suggestion.prompt);
+                      requestAnimationFrame(() => {
+                        resizeComposer();
+                        textareaRef.current?.focus();
+                      });
+                    }}
+                  >
+                    <strong>{suggestion.title}</strong>
+                    <span>{suggestion.prompt}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="thread" aria-live="polite">
+              {blocks.map((block, blockIndex) => {
+                if (block.kind === "process") {
+                  return (
+                    <ProcessGroup
+                      key={`process-${block.start}`}
+                      items={block.items}
+                      live={
+                        running &&
+                        blockIndex === lastProcessBlock &&
+                        block.items[0]?.runId === activeRunId
+                      }
+                      onApproval={respondToApproval}
+                    />
+                  );
+                }
+
+                const item = block.item;
+                if (item.kind === "user") {
+                  return (
+                    <div className="msg user" key={`user-${block.index}`}>
+                      <div className="bubble">{item.text}</div>
+                    </div>
+                  );
+                }
+                if (item.kind === "assistant") {
+                  return (
+                    <div
+                      className="msg assistant"
+                      key={`assistant-${block.index}`}
+                    >
+                      <div className="bubble">
+                        <MarkdownText text={item.text} />
+                        {item.streaming && <span className="caret" />}
+                      </div>
+                    </div>
+                  );
+                }
+                if (item.kind !== "notice") return null;
+                return (
+                  <div
+                    className={`notice ${item.tone}`}
+                    key={`notice-${block.index}`}
+                  >
+                    {item.text}
+                  </div>
+                );
+              })}
+              <div ref={endRef} />
+            </div>
+          )}
+        </main>
+
+        <div className="composer-wrap">
+          <form
+            className="composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              send();
+            }}
+          >
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={input}
+              placeholder="Ask Oaklet to build, fix, or explain something..."
+              onChange={(event) => {
+                setInput(event.target.value);
+                resizeComposer();
+              }}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+            />
+            <div className="composer-footer">
+              <span className="hint">
+                Enter to send · Shift+Enter for a new line
+              </span>
+              {running ? (
                 <button
                   type="button"
-                  key={suggestion.title}
-                  className="suggestion"
-                  onClick={() => {
-                    setInput(suggestion.prompt);
-                    requestAnimationFrame(() => {
-                      resizeComposer();
-                      textareaRef.current?.focus();
-                    });
-                  }}
+                  className="stop icon-button"
+                  onClick={stop}
+                  aria-label="Stop"
+                  title="Stop"
                 >
-                  <strong>{suggestion.title}</strong>
-                  <span>{suggestion.prompt}</span>
+                  <StopIcon size={14} weight="fill" />
                 </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="thread" aria-live="polite">
-            {blocks.map((block, blockIndex) => {
-              if (block.kind === "process") {
-                return (
-                  <ProcessGroup
-                    key={`process-${block.start}`}
-                    items={block.items}
-                    live={
-                      running &&
-                      blockIndex === lastProcessBlock &&
-                      block.items[0]?.runId === activeRunId
-                    }
-                    onApproval={respondToApproval}
-                  />
-                );
-              }
-
-              const item = block.item;
-              if (item.kind === "user") {
-                return (
-                  <div className="msg user" key={`user-${block.index}`}>
-                    <div className="bubble">{item.text}</div>
-                  </div>
-                );
-              }
-              if (item.kind === "assistant") {
-                return (
-                  <div className="msg assistant" key={`assistant-${block.index}`}>
-                    <div className="bubble">
-                      <MarkdownText text={item.text} />
-                      {item.streaming && <span className="caret" />}
-                    </div>
-                  </div>
-                );
-              }
-              if (item.kind !== "notice") return null;
-              return (
-                <div
-                  className={`notice ${item.tone}`}
-                  key={`notice-${block.index}`}
+              ) : (
+                <button
+                  type="submit"
+                  className="primary icon-button"
+                  disabled={!input.trim()}
+                  aria-label="Send"
+                  title="Send"
                 >
-                  {item.text}
-                </div>
-              );
-            })}
-            <div ref={endRef} />
-          </div>
-        )}
-      </main>
-
-      <div className="composer-wrap">
-        <form
-          className="composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            send();
-          }}
-        >
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={input}
-            placeholder="Ask Oaklet to build, fix, or explain something..."
-            onChange={(event) => {
-              setInput(event.target.value);
-              resizeComposer();
-            }}
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                send();
-              }
-            }}
-          />
-          <div className="composer-footer">
-            <span className="hint">
-              Enter to send · Shift+Enter for a new line
-            </span>
-            {running ? (
-              <button
-                type="button"
-                className="stop icon-button"
-                onClick={stop}
-                aria-label="Stop"
-                title="Stop"
-              >
-                <StopIcon size={14} weight="fill" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                className="primary icon-button"
-                disabled={!input.trim()}
-                aria-label="Send"
-                title="Send"
-              >
-                <PaperPlaneRightIcon size={16} weight="fill" />
-              </button>
-            )}
-          </div>
-        </form>
+                  <PaperPlaneRightIcon size={16} weight="fill" />
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
       </div>
 
       {settingsOpen && (

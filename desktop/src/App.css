@@ -125,32 +125,22 @@ textarea:focus-visible {
 
 .app {
   display: flex;
-  flex-direction: column;
   height: 100%;
 }
 
-.topbar {
+.sidebar {
+  flex: none;
+  width: 56px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 14px;
-  padding: 10px 18px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  padding: 14px 0;
+  border-right: 1px solid var(--border);
   background: rgba(250, 249, 247, 0.86);
   backdrop-filter: blur(10px);
-  flex: none;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 650;
-  font-size: 14px;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-}
-
-.brand-mark,
 .empty-mark {
   display: grid;
   place-items: center;
@@ -159,46 +149,29 @@ textarea:focus-visible {
   font-weight: 800;
 }
 
-.brand-mark {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  font-size: 13px;
+.sidebar .new-chat {
+  width: 36px;
+  height: 36px;
 }
 
-.workspace {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--muted);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  padding: 4px 9px;
-  border-radius: 7px;
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.topbar-actions {
-  margin-left: auto;
+.sidebar-foot {
+  margin-top: auto;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
-.model {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  margin-right: 4px;
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 button.allow-all-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
+  width: 32px;
+  height: 32px;
   color: var(--green);
   border-color: rgba(47, 125, 85, 0.3);
   background: rgba(47, 125, 85, 0.08);
@@ -965,14 +938,6 @@ button.allow-all-chip:hover:not(:disabled) {
 }
 
 @media (max-width: 760px) {
-  .model {
-    display: none;
-  }
-
-  .workspace {
-    max-width: 180px;
-  }
-
   .suggestions {
     grid-template-columns: 1fr;
   }

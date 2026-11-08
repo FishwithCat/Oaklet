@@ -73,7 +73,7 @@ as `qwen2.5-coder`.
   in-app approval before starting. It times out after 120 seconds and caps
   captured output.
 - **Allow all in workspace** stops prompting for `run_command` in that workspace
-  for the rest of the app session. The header shows an active indicator you can
+  for the rest of the app session. The sidebar shows an active indicator you can
   click to revoke; the grant is in memory only and never applies to file tools
   or another workspace. Commands can still touch files outside the workspace,
   so only grant this in a project you trust.
