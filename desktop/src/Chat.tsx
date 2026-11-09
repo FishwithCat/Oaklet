@@ -1,20 +1,25 @@
 import {
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type Ref,
 } from "react";
 import {
+  ChatDotsIcon,
   PaperPlaneRightIcon,
+  PlusIcon,
   QuestionIcon,
   TerminalWindowIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
 import { mergeDraft } from "./architecture-prompt";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
+import type { ChatTabInfo } from "./useAgentSession";
 
 export type ChatHandle = {
   reset: () => void;
@@ -24,6 +29,11 @@ export type ChatHandle = {
 export function Chat({
   ref,
   active,
+  tabs,
+  activeTabId,
+  onSelectTab,
+  onNewTab,
+  onCloseTab,
   items,
   running,
   activeRunId,
@@ -33,6 +43,11 @@ export function Chat({
 }: {
   ref?: Ref<ChatHandle>;
   active: boolean;
+  tabs: ChatTabInfo[];
+  activeTabId: string;
+  onSelectTab: (id: string) => void;
+  onNewTab: () => void;
+  onCloseTab: (id: string) => void;
   items: Item[];
   running: boolean;
   activeRunId: string | null;
@@ -55,10 +70,22 @@ export function Chat({
   const helpPopoverRef = useRef<HTMLDivElement>(null);
   const selectionButtonRef = useRef<HTMLButtonElement>(null);
   const stickToBottomRef = useRef(true);
+  const draftsRef = useRef(new Map<string, string>());
+  const lastTabIdRef = useRef(activeTabId);
 
   useEffect(() => {
     if (!active) setHelpOpen(false);
   }, [active]);
+
+  useLayoutEffect(() => {
+    if (lastTabIdRef.current === activeTabId) return;
+    lastTabIdRef.current = activeTabId;
+    setInput(draftsRef.current.get(activeTabId) ?? "");
+    setHelpOpen(false);
+    setSelectionAction(null);
+    stickToBottomRef.current = true;
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [activeTabId]);
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -87,6 +114,10 @@ export function Chat({
       endRef.current?.scrollIntoView({ block: "end" });
     }
   }, [items]);
+
+  useLayoutEffect(() => {
+    resizeComposer();
+  }, [active, activeTabId, input]);
 
   useEffect(() => {
     if (!active) {
@@ -177,20 +208,23 @@ export function Chat({
     ref,
     () => ({
       reset: () => {
+        draftsRef.current.delete(activeTabId);
         setInput("");
         setHelpOpen(false);
         if (textareaRef.current) textareaRef.current.style.height = "auto";
         textareaRef.current?.focus();
       },
       prefill: (prompt: string) => {
-        setInput((current) => mergeDraft(current, prompt));
+        const next = mergeDraft(input, prompt);
+        draftsRef.current.set(activeTabId, next);
+        setInput(next);
         requestAnimationFrame(() => {
           resizeComposer();
           textareaRef.current?.focus();
         });
       },
     }),
-    [],
+    [activeTabId, input],
   );
 
   function onScroll() {
@@ -208,14 +242,20 @@ export function Chat({
     element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
   }
 
+  function updateDraft(value: string) {
+    draftsRef.current.set(activeTabId, value);
+    setInput(value);
+  }
+
   function submit() {
     if (!onSend(input)) return;
-    setInput("");
+    updateDraft("");
     stickToBottomRef.current = true;
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
 
   const blocks = toBlocks(items);
+  const showTabs = items.length > 0 || tabs.length > 1;
   let lastProcessBlock = -1;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     if (blocks[index]?.kind === "process") {
@@ -226,6 +266,58 @@ export function Chat({
 
   return (
     <>
+      <header className="view-head" hidden={!active || !showTabs}>
+        <span className="view-icon" aria-hidden="true">
+          <ChatDotsIcon size={14} />
+        </span>
+        <div className="view-tabs" role="tablist" aria-label="Chats">
+          {tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={`view-tab chat-tab${
+                tab.id === activeTabId ? " active" : ""
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab.id === activeTabId}
+                className="view-tab-label"
+                onClick={() => {
+                  onSelectTab(tab.id);
+                  requestAnimationFrame(() => textareaRef.current?.focus());
+                }}
+              >
+                {tab.title}
+              </button>
+              <button
+                type="button"
+                className="view-tab-close"
+                onClick={() => onCloseTab(tab.id)}
+                disabled={tab.running}
+                aria-label={`Close ${tab.title}`}
+                title={
+                  tab.running
+                    ? "Stop the run before closing"
+                    : "Close chat"
+                }
+              >
+                <XIcon size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="ghost icon-button view-add"
+          onClick={onNewTab}
+          aria-label="New chat"
+          title="New chat"
+        >
+          <PlusIcon size={14} />
+        </button>
+      </header>
+
       <main
         className="chat"
         hidden={!active}
@@ -325,7 +417,7 @@ export function Chat({
               value={input}
               placeholder="Ask Oaklet to build, fix, or explain something..."
               onChange={(event) => {
-                setInput(event.target.value);
+                updateDraft(event.target.value);
                 resizeComposer();
               }}
               onKeyDown={(event) => {

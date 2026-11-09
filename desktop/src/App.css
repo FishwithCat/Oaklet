@@ -265,7 +265,7 @@ button.allow-all-chip:hover:not(:disabled) {
   display: none;
 }
 
-.terminal-head {
+.view-head {
   flex: none;
   display: flex;
   align-items: center;
@@ -274,13 +274,17 @@ button.allow-all-chip:hover:not(:disabled) {
   border-bottom: 1px solid var(--border);
 }
 
-.terminal-icon {
+.view-head[hidden] {
+  display: none;
+}
+
+.view-icon {
   flex: none;
   display: flex;
   color: var(--muted);
 }
 
-.terminal-tabs {
+.view-tabs {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -290,11 +294,11 @@ button.allow-all-chip:hover:not(:disabled) {
   scrollbar-width: none;
 }
 
-.terminal-tabs::-webkit-scrollbar {
+.view-tabs::-webkit-scrollbar {
   display: none;
 }
 
-.terminal-tab {
+.view-tab {
   flex: none;
   display: flex;
   align-items: center;
@@ -302,16 +306,16 @@ button.allow-all-chip:hover:not(:disabled) {
   color: var(--muted);
 }
 
-.terminal-tab:hover {
+.view-tab:hover {
   background: var(--panel-2);
 }
 
-.terminal-tab.active {
+.view-tab.active {
   background: var(--accent-soft);
   color: var(--text);
 }
 
-.terminal-tab-label {
+.view-tab-label {
   border: 0;
   background: transparent;
   border-radius: 6px 0 0 6px;
@@ -321,12 +325,12 @@ button.allow-all-chip:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.terminal-tab-label:hover:not(:disabled) {
+.view-tab-label:hover:not(:disabled) {
   background: transparent;
   border-color: transparent;
 }
 
-.terminal-tab-close {
+.view-tab-close {
   display: grid;
   place-items: center;
   width: 18px;
@@ -340,35 +344,44 @@ button.allow-all-chip:hover:not(:disabled) {
   opacity: 0;
 }
 
-.terminal-tab:hover .terminal-tab-close,
-.terminal-tab.active .terminal-tab-close,
-.terminal-tab-close:focus-visible {
+.view-tab:hover .view-tab-close,
+.view-tab.active .view-tab-close,
+.view-tab-close:focus-visible {
   opacity: 1;
 }
 
-.terminal-tab-close:hover:not(:disabled) {
-  background: var(--hover-overlay);
+.chat-tab.active .view-tab-close {
+  opacity: 0;
+}
+
+.chat-tab:hover .view-tab-close,
+.chat-tab .view-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.view-tab-close:hover:not(:disabled) {
+  background: transparent;
   border-color: transparent;
   color: var(--text);
 }
 
-.terminal-head .icon-button.terminal-add {
+.view-head .icon-button.view-add {
   flex: none;
   width: 24px;
   height: 24px;
 }
 
-.terminal-head .terminal-add:hover:not(:disabled) {
+.view-head .view-add:hover:not(:disabled) {
   border-color: transparent;
   background: var(--panel-2);
 }
 
-.terminal-head .terminal-add:focus,
-.terminal-head .terminal-add:focus-visible {
+.view-head .view-add:focus,
+.view-head .view-add:focus-visible {
   outline: none;
 }
 
-.terminal-head .icon-button {
+.view-head .icon-button {
   width: 28px;
   height: 28px;
 }

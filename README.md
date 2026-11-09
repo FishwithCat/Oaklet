@@ -8,6 +8,8 @@ enough to read in one sitting.
 ## What it does
 
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
+- Multiple chat tabs, each with its own conversation and draft. Runs keep
+  streaming while you switch tabs; Command+N opens a new chat tab.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
@@ -216,5 +218,6 @@ as `qwen2.5-coder`.
 
 ## Status
 
-Initial MVP. The conversation is in memory (restarting the app clears it), and
-there is no syntax highlighting or context compaction yet.
+Initial MVP. Open chat tabs are in memory (restarting the app clears them;
+completed sessions remain in history), and there is no syntax highlighting or
+context compaction yet.

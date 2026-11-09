@@ -76,10 +76,8 @@ function App() {
   }, [config?.workspace, workspaceTick]);
 
   function newChat() {
-    if (session.running) return;
     setView("chat");
-    session.reset();
-    chatRef.current?.reset();
+    session.newTab();
   }
 
   function showChat() {
@@ -269,6 +267,11 @@ function App() {
         <Chat
           ref={chatRef}
           active={view === "chat"}
+          tabs={session.tabs}
+          activeTabId={session.activeTabId}
+          onSelectTab={session.selectTab}
+          onNewTab={session.newTab}
+          onCloseTab={session.closeTab}
           items={session.items}
           running={session.running}
           activeRunId={session.activeRunId}

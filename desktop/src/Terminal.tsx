@@ -337,21 +337,21 @@ export function Terminal({
 
   return (
     <section className="terminal" hidden={!active} aria-label="Terminal">
-      <header className="terminal-head">
-        <span className="terminal-icon" aria-hidden="true">
+      <header className="view-head">
+        <span className="view-icon" aria-hidden="true">
           <TerminalWindowIcon size={14} />
         </span>
-        <div className="terminal-tabs" role="tablist" aria-label="Terminals">
+        <div className="view-tabs" role="tablist" aria-label="Terminals">
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className={`terminal-tab${tab.id === activeId ? " active" : ""}`}
+              className={`view-tab${tab.id === activeId ? " active" : ""}`}
             >
               <button
                 type="button"
                 role="tab"
                 aria-selected={tab.id === activeId}
-                className="terminal-tab-label"
+                className="view-tab-label"
                 onClick={() => {
                   setSelected(tab.id);
                   handles.current.get(tab.id)?.focus();
@@ -361,7 +361,7 @@ export function Terminal({
               </button>
               <button
                 type="button"
-                className="terminal-tab-close"
+                className="view-tab-close"
                 onClick={() => closeTab(tab.id)}
                 aria-label={`Close ${tab.title}`}
                 title="Close terminal"
@@ -373,7 +373,7 @@ export function Terminal({
         </div>
         <button
           type="button"
-          className="ghost icon-button terminal-add"
+          className="ghost icon-button view-add"
           onClick={addTab}
           aria-label="New terminal"
           title="New terminal"
