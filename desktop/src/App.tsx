@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import { Chat, type ChatHandle } from "./Chat";
 import { SettingsPanel, type AppConfig } from "./SettingsPanel";
+import { SessionHistory } from "./SessionHistory";
 import { SourceControl } from "./SourceControl";
 import { Terminal } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
@@ -21,6 +22,7 @@ const Architecture = lazy(() => import("./Architecture"));
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [view, setView] = useState<
     "chat" | "terminal" | "git" | "architecture"
   >("chat");
@@ -80,12 +82,27 @@ function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (settingsOpen) return;
       const action = agentShortcut(event, view, session.running);
       if (!action) return;
+
+      if (settingsOpen) {
+        if (action === "history") event.preventDefault();
+        return;
+      }
+      if (historyOpen) {
+        event.preventDefault();
+        if (action === "history") setHistoryOpen(false);
+        return;
+      }
+
       event.preventDefault();
-      if (action === "new-session") newChat();
-      else session.stop();
+      if (action === "new-session") {
+        newChat();
+      } else if (action === "history") {
+        if (!session.running) setHistoryOpen(true);
+      } else {
+        session.stop();
+      }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -254,6 +271,19 @@ function App() {
             setConfig(saved);
             setSettingsOpen(false);
             session.reloadAllowance();
+          }}
+        />
+      )}
+
+      {historyOpen && (
+        <SessionHistory
+          sessions={session.history}
+          onClose={() => setHistoryOpen(false)}
+          onPick={(id) => {
+            session.restore(id);
+            chatRef.current?.reset();
+            setView("chat");
+            setHistoryOpen(false);
           }}
         />
       )}

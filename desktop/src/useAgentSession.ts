@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { settleStreaming, type Item } from "./chat-model";
+import {
+  loadSessions,
+  saveSession,
+  sessionTitle,
+  type SessionSnapshot,
+} from "./session-history";
 
 type DeltaEvent = { runId: string; text: string };
 type ReasoningEvent = { runId: string; text: string };
@@ -42,10 +48,20 @@ export function useAgentSession({
   const [running, setRunning] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [allowAll, setAllowAll] = useState(false);
+  const [history, setHistory] = useState<SessionSnapshot[]>(loadSessions);
 
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
+  const currentIdRef = useRef<string | null>(null);
+  const pendingSaveRef = useRef<unknown[] | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
+
+  useEffect(() => {
+    const messages = pendingSaveRef.current;
+    if (!messages) return;
+    pendingSaveRef.current = null;
+    persist(items, messages);
+  }, [items]);
 
   useEffect(() => {
     onWorkspaceRefreshRef.current = onWorkspaceRefresh;
@@ -53,6 +69,26 @@ export function useAgentSession({
 
   function addNotice(tone: "error" | "muted", text: string) {
     setItems((previous) => [...previous, { kind: "notice", tone, text }]);
+  }
+
+  function persist(nextItems: Item[], messages: unknown[]) {
+    const title = sessionTitle(nextItems);
+    if (!title) return;
+
+    const id =
+      currentIdRef.current ??
+      crypto.randomUUID?.() ??
+      `session-${Date.now()}`;
+    currentIdRef.current = id;
+    setHistory(
+      saveSession({
+        id,
+        title,
+        updatedAt: Date.now(),
+        messages,
+        items: nextItems,
+      }),
+    );
   }
 
   function loadAllowance() {
@@ -152,6 +188,7 @@ export function useAgentSession({
         }),
         listen<DoneEvent>("agent:done", (event) => {
           messagesRef.current = event.payload.messages;
+          pendingSaveRef.current = event.payload.messages;
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
@@ -235,8 +272,21 @@ export function useAgentSession({
     if (running) return;
     messagesRef.current = [];
     runIdRef.current = null;
+    currentIdRef.current = null;
     setActiveRunId(null);
     setItems([]);
+  }
+
+  function restore(id: string) {
+    if (running) return;
+    const snapshot = history.find((session) => session.id === id);
+    if (!snapshot) return;
+
+    messagesRef.current = snapshot.messages;
+    runIdRef.current = null;
+    currentIdRef.current = snapshot.id;
+    setActiveRunId(null);
+    setItems(snapshot.items);
   }
 
   function respondToApproval(item: ToolItem, choice: ApprovalChoice) {
@@ -275,9 +325,11 @@ export function useAgentSession({
     running,
     activeRunId,
     allowAll,
+    history,
     send,
     stop,
     reset,
+    restore,
     respondToApproval,
     revokeAllowAll,
     reloadAllowance: loadAllowance,

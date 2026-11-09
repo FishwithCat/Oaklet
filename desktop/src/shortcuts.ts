@@ -3,7 +3,7 @@ type KeyEvent = Pick<
   "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "repeat"
 >;
 
-export type AgentShortcut = "new-session" | "stop";
+export type AgentShortcut = "new-session" | "history" | "stop";
 
 /** Chat-view shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
 export function agentShortcut(
@@ -17,6 +17,7 @@ export function agentShortcut(
 
   const key = event.key.toLowerCase();
   if (event.metaKey && !event.ctrlKey && key === "n") return "new-session";
+  if (event.metaKey && !event.ctrlKey && key === "r") return "history";
   if (event.ctrlKey && !event.metaKey && key === "c" && running) return "stop";
   return null;
 }

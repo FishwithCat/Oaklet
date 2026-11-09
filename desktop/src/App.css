@@ -2026,6 +2026,93 @@ button.arch-generate {
   margin-top: 20px;
 }
 
+.palette-backdrop {
+  place-items: start center;
+  padding: 10vh 24px 24px;
+}
+
+.session-palette {
+  width: min(560px, 100%);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.session-search {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+}
+
+.session-search::placeholder {
+  color: var(--muted);
+}
+
+.session-search:focus,
+.session-search:focus-visible {
+  outline: none;
+}
+
+.session-results {
+  margin: 0;
+  padding: 6px;
+  max-height: min(380px, 55vh);
+  overflow-y: auto;
+  list-style: none;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.session-row.active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.session-row-icon {
+  flex: none;
+  opacity: 0.65;
+}
+
+.session-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-row.active .session-row-meta {
+  color: color-mix(in srgb, var(--on-accent) 72%, transparent);
+}
+
+.session-empty {
+  margin: 0;
+  padding: 16px 14px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

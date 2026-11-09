@@ -28,6 +28,21 @@ test("Command+N opens a new session only in the chat view", () => {
   assert.equal(agentShortcut(press({ key: "n" }), "chat", false), null);
 });
 
+test("Command+R opens session history only in the chat view", () => {
+  assert.equal(
+    agentShortcut(press({ key: "r", metaKey: true }), "chat", false),
+    "history",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "r", metaKey: true }), "terminal", false),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "r", metaKey: true, shiftKey: true }), "chat", false),
+    null,
+  );
+});
+
 test("Control+C stops a running session without hijacking the terminal or copy", () => {
   assert.equal(
     agentShortcut(press({ key: "c", ctrlKey: true }), "chat", true),
