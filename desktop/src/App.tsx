@@ -80,14 +80,6 @@ function App() {
     session.newTab();
   }
 
-  function showChat() {
-    if (view !== "chat") {
-      setView("chat");
-      return;
-    }
-    newChat();
-  }
-
   async function chooseWorkspace() {
     if (!config || browsingWorkspace) return;
     setBrowsingWorkspace(true);
@@ -160,9 +152,9 @@ function App() {
           className={`ghost icon-button new-chat${
             view === "chat" ? " active" : ""
           }`}
-          onClick={showChat}
-          aria-label={view !== "chat" ? "Chat" : "New chat"}
-          title={view !== "chat" ? "Chat" : "New chat"}
+          onClick={() => setView("chat")}
+          aria-label="Chat"
+          title="Chat"
         >
           <ChatDotsIcon size={18} />
         </button>
@@ -171,9 +163,7 @@ function App() {
           className={`ghost icon-button terminal-toggle${
             view === "terminal" ? " active" : ""
           }`}
-          onClick={() =>
-            setView((current) => (current === "terminal" ? "chat" : "terminal"))
-          }
+          onClick={() => setView("terminal")}
           aria-label="Terminal"
           aria-pressed={view === "terminal"}
           title="Terminal"
@@ -187,7 +177,7 @@ function App() {
           }`}
           onClick={() => {
             if (view !== "git") setWorkspaceTick((value) => value + 1);
-            setView((current) => (current === "git" ? "chat" : "git"));
+            setView("git");
           }}
           aria-label={
             unstaged
@@ -215,9 +205,7 @@ function App() {
           }`}
           onClick={() => {
             setArchitectureOpened(true);
-            setView((current) =>
-              current === "architecture" ? "chat" : "architecture",
-            );
+            setView("architecture");
           }}
           aria-label="Architecture"
           aria-pressed={view === "architecture"}
