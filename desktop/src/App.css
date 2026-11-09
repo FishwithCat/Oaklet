@@ -1807,17 +1807,26 @@ button.arch-generate {
 }
 
 .approval {
-  margin: 3px 0 5px 23px;
-  padding: 10px 12px;
-  border: 1px solid var(--warning-border);
-  border-radius: 8px;
-  background: var(--warning-bg);
+  margin: 4px 0 6px 23px;
+  padding: 10px 12px 11px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 24%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--yellow) 3%, var(--panel));
 }
 
-.approval p {
+.approval-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 0 0 8px;
-  color: var(--yellow);
+  color: var(--text);
   font-size: 12px;
+  font-weight: 500;
+}
+
+.approval-prompt svg {
+  flex: none;
+  color: var(--yellow);
 }
 
 .approval pre {
@@ -1827,7 +1836,7 @@ button.arch-generate {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: var(--panel-2);
+  background: var(--bg);
   color: var(--text);
   font-size: 11.5px;
   white-space: pre-wrap;
@@ -1836,8 +1845,22 @@ button.arch-generate {
 
 .approval-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.approval-actions button {
+  padding: 5px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.approval-actions .approval-allow-all {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
 .notice {

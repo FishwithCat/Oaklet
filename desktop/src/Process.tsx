@@ -9,6 +9,7 @@ import {
   PencilSimple,
   Sparkle,
   Terminal,
+  WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
@@ -118,21 +119,25 @@ function Approval({
 }) {
   return (
     <div className="approval">
-      <p>{item.approvalPrompt ?? "Approve this tool call?"}</p>
+      <p className="approval-prompt">
+        <WarningCircle size={14} weight="fill" aria-hidden />
+        {item.approvalPrompt ?? "Approve this tool call?"}
+      </p>
       <pre>{item.approvalDetail ?? ""}</pre>
       <div className="approval-actions">
-        <button type="button" onClick={() => onApproval(item, "deny")}>
-          Deny
-        </button>
         {item.name === "run_command" && (
           <button
             type="button"
+            className="ghost approval-allow-all"
             onClick={() => onApproval(item, "allowAll")}
             title="Run every command in this workspace without asking until you turn it off."
           >
             Allow all in workspace
           </button>
         )}
+        <button type="button" onClick={() => onApproval(item, "deny")}>
+          Deny
+        </button>
         <button
           type="button"
           className="primary"
