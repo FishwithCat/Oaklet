@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ApprovalChoice, ToolItem } from "./process-model";
+import { createStreamBatch } from "./stream-batch";
 import { settleStreaming, type Item } from "./chat-model";
 import {
   loadSessions,
@@ -52,6 +53,7 @@ export function useAgentSession({
   const [allowAll, setAllowAll] = useState(false);
   const [history, setHistory] = useState<SessionSnapshot[]>([]);
 
+  const streamBatchRef = useRef<ReturnType<typeof createStreamBatch> | null>(null);
   const workspaceRef = useRef(workspace);
   const runWorkspaceRef = useRef(workspace);
   const messagesRef = useRef<unknown[]>([]);
@@ -64,6 +66,7 @@ export function useAgentSession({
     const switched = workspaceRef.current !== workspace;
     workspaceRef.current = workspace;
     if (switched) {
+      streamBatchRef.current?.clear();
       if (runIdRef.current) {
         void invoke("agent_stop", { runId: runIdRef.current });
       }
@@ -127,51 +130,38 @@ export function useAgentSession({
     const unlisteners: UnlistenFn[] = [];
     let disposed = false;
 
+    const batch = createStreamBatch((deltas) => {
+      setActiveRunId(deltas[deltas.length - 1].runId);
+      setItems((previous) => {
+        let next = previous;
+        for (const delta of deltas) {
+          const last = next[next.length - 1];
+          if (last?.kind === delta.kind && last.streaming &&
+              (last.kind === "assistant" || last.runId === delta.runId)) {
+            next = [...next.slice(0, -1), { ...last, text: last.text + delta.text }];
+          } else {
+            next = [...settleStreaming(next), { ...delta, streaming: true }];
+          }
+        }
+        return next;
+      });
+    });
+    streamBatchRef.current = batch;
+
     const register = async () => {
       const subscriptions = await Promise.all([
         listen<DeltaEvent>("agent:delta", (event) => {
-          const { runId, text } = event.payload;
           if (runWorkspaceRef.current !== workspaceRef.current) return;
-          setActiveRunId(runId);
-          setItems((previous) => {
-            const last = previous[previous.length - 1];
-            if (last?.kind === "assistant" && last.streaming) {
-              return [
-                ...previous.slice(0, -1),
-                { ...last, text: last.text + text },
-              ];
-            }
-            return [
-              ...settleStreaming(previous),
-              { kind: "assistant", text, streaming: true },
-            ];
-          });
+          batch.push({ ...event.payload, kind: "assistant" });
         }),
         listen<ReasoningEvent>("agent:reasoning", (event) => {
-          const { runId, text } = event.payload;
           if (runWorkspaceRef.current !== workspaceRef.current) return;
-          setActiveRunId(runId);
-          setItems((previous) => {
-            const last = previous[previous.length - 1];
-            if (
-              last?.kind === "reasoning" &&
-              last.streaming &&
-              last.runId === runId
-            ) {
-              return [
-                ...previous.slice(0, -1),
-                { ...last, text: last.text + text },
-              ];
-            }
-            return [
-              ...settleStreaming(previous),
-              { kind: "reasoning", runId, text, streaming: true },
-            ];
-          });
+          batch.push({ ...event.payload, kind: "reasoning" });
         }),
         listen<ToolStartEvent>("agent:tool_start", (event) => {
           const { runId, id, name, summary } = event.payload;
           if (runWorkspaceRef.current !== workspaceRef.current) return;
+          batch.flush();
           setActiveRunId(runId);
           setItems((previous) => [
             ...settleStreaming(previous),
@@ -263,6 +253,7 @@ export function useAgentSession({
 
     return () => {
       disposed = true;
+      batch.clear();
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, []);

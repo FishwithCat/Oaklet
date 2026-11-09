@@ -1,4 +1,4 @@
-import type { ComponentPropsWithoutRef } from "react";
+import { memo, type ComponentPropsWithoutRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -19,7 +19,7 @@ function MarkdownLink({ href, children }: ComponentPropsWithoutRef<"a">) {
   );
 }
 
-export function MarkdownText({
+export const MarkdownText = memo(function MarkdownText({
   text,
   compact = false,
 }: {
@@ -36,4 +36,4 @@ export function MarkdownText({
       </ReactMarkdown>
     </div>
   );
-}
+});
