@@ -9,6 +9,11 @@
   --bg: #ffffff;
   --panel: #ffffff;
   --panel-2: #edf4e7;
+  /* Neutral gray surfaces and borders for markdown blocks and the user bubble. */
+  --panel-muted: #f6f7f6;
+  --panel-muted-strong: #eff0ef;
+  --panel-muted-border: #e4e6e5;
+  --panel-muted-border-strong: #cbcecb;
   --border: #d6e2cf;
   --border-strong: #a8bfa4;
   --text: #1d3027;

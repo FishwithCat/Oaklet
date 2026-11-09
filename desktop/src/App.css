@@ -1387,7 +1387,7 @@ button.arch-generate {
 
 .msg.user .bubble {
   background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--palette-primary) 28%, transparent);
+  border: 1px solid var(--panel-muted-border-strong);
   border-radius: 14px 14px 4px 14px;
   padding: 10px 14px;
   max-width: 78%;
@@ -1474,8 +1474,8 @@ button.arch-generate {
 }
 
 .markdown pre {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--panel-muted);
+  border: 1px solid var(--panel-muted-border);
   border-radius: 10px;
   padding: 12px 14px;
   overflow-x: auto;
@@ -1528,13 +1528,13 @@ button.arch-generate {
 
 .markdown th,
 .markdown td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-muted-border);
   padding: 6px 10px;
   text-align: left;
 }
 
 .markdown th {
-  background: var(--panel-2);
+  background: var(--panel-muted-strong);
   font-weight: 600;
 }
 
