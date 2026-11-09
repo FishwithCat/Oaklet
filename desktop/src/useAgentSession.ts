@@ -205,6 +205,7 @@ export function useAgentSession({
         }),
         listen<DoneEvent>("agent:done", (event) => {
           if (runWorkspaceRef.current !== workspaceRef.current) return;
+          batch.flush();
           messagesRef.current = event.payload.messages;
           pendingSaveRef.current = event.payload.messages;
           runIdRef.current = null;
@@ -215,6 +216,7 @@ export function useAgentSession({
         }),
         listen<ErrorEvent>("agent:error", (event) => {
           if (runWorkspaceRef.current !== workspaceRef.current) return;
+          batch.flush();
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
@@ -226,6 +228,7 @@ export function useAgentSession({
         }),
         listen<RunIdEvent>("agent:stopped", () => {
           if (runWorkspaceRef.current !== workspaceRef.current) return;
+          batch.flush();
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
