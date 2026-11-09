@@ -1,5 +1,6 @@
+use std::io::Read;
 use std::path::{Component, Path};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Serialize;
 
@@ -59,25 +60,48 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn run_git_allow_one(workspace: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+const MAX_PATCH_BYTES: usize = 1024 * 1024;
+
+fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String, String> {
+    let mut child = Command::new("git")
         .arg("-C")
         .arg(workspace)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("Could not run git: {error}"))?;
-
-    if !output.status.success() && output.status.code() != Some(1) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr.trim();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take(64 * 1024).read_to_end(&mut bytes);
+        bytes
+    });
+    let mut bytes = Vec::new();
+    let read = stdout
+        .take((MAX_PATCH_BYTES + 1) as u64)
+        .read_to_end(&mut bytes);
+    let oversized = bytes.len() > MAX_PATCH_BYTES;
+    if oversized || read.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    let errors = errors.join().unwrap_or_default();
+    read.map_err(|error| format!("Could not read git diff: {error}"))?;
+    if oversized {
+        return Err("Diff exceeds the 1 MiB preview limit. Inspect it in your terminal with git diff or git show.".into());
+    }
+    let status = status.map_err(|error| format!("Could not wait for git: {error}"))?;
+    if !status.success() && !(allow_one && status.code() == Some(1)) {
+        let message = String::from_utf8_lossy(&errors).trim().to_string();
         return Err(if message.is_empty() {
-            "git exited with an error.".to_string()
+            "git exited with an error.".into()
         } else {
-            message.to_string()
+            message
         });
     }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn is_repository(workspace: &Path) -> bool {
@@ -189,7 +213,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
     // version to compare against. Compare those with an empty file instead.
     if code == "??" || code.contains('A') {
         if workspace.join(path).symlink_metadata().is_ok() {
-            return run_git_allow_one(
+            return run_patch(
                 workspace,
                 &[
                     "diff",
@@ -200,12 +224,13 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
                     NULL_DEVICE,
                     path,
                 ],
+                true,
             );
         }
 
         // Added to the index and then deleted from the worktree: show the
         // still-staged version rather than a missing-file error.
-        return run_git(
+        return run_patch(
             workspace,
             &[
                 "diff",
@@ -216,10 +241,11 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
                 "--",
                 path,
             ],
+            false,
         );
     }
 
-    run_git(
+    run_patch(
         workspace,
         &[
             "diff",
@@ -230,6 +256,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
             "--",
             path,
         ],
+        false,
     )
 }
 
@@ -238,7 +265,7 @@ pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
         return Err("Invalid commit hash.".into());
     }
 
-    run_git(
+    run_patch(
         workspace,
         &[
             "show",
@@ -249,6 +276,7 @@ pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
             "--first-parent",
             hash,
         ],
+        false,
     )
 }
 
@@ -335,6 +363,30 @@ fn parse_log(output: &str) -> Vec<GitCommit> {
 #[cfg(test)]
 mod tests {
     use super::{parse_branches, parse_log, parse_status, valid_hash, valid_relative_path};
+
+    #[test]
+    fn patch_preview_is_bounded_and_preserves_git_errors() {
+        let root = crate::tools::test_support::temp_root("patch-limit");
+        std::fs::write(root.join("small.txt"), "hello\n").unwrap();
+        let args = ["diff", "--no-index", "--", super::NULL_DEVICE, "small.txt"];
+        let patch = super::run_patch(&root, &args, true).unwrap();
+        assert!(patch.contains("+hello"));
+        assert!(super::run_patch(&root, &args, false).is_err());
+        std::fs::write(
+            root.join("large.txt"),
+            "line\n".repeat(super::MAX_PATCH_BYTES / 5),
+        )
+        .unwrap();
+        let error = super::run_patch(
+            &root,
+            &["diff", "--no-index", "--", super::NULL_DEVICE, "large.txt"],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("preview limit"));
+        assert!(super::run_patch(&root, &["show", "invalid-ref"], false).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_commits_and_multiline_bodies() {

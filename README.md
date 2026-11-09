@@ -20,7 +20,8 @@ enough to read in one sitting.
   diffs) and **Commits** (the current branch, the last 100 commits, and the diff
   of each commit with per-file stats and line numbers). The branch pill switches
   local branches. Its sidebar badge counts files with changes not staged for
-  commit.
+  commit. Diff previews are limited to 1 MiB and display one file at a time,
+  with 200 lines per page. Larger patches can be inspected in the terminal.
 - An architecture view: discovers existing LikeC4 models in the workspace and
   renders their views. Generation and updates are ordinary, editable chat
   requests handled by the configured agent.

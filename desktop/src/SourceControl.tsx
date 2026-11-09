@@ -7,7 +7,7 @@ import {
   CheckIcon,
   GitBranchIcon,
 } from "@phosphor-icons/react";
-import { parseDiff } from "./git-diff";
+import { pageHunks, parseDiff } from "./git-diff";
 
 type CommitInfo = {
   hash: string;
@@ -83,6 +83,13 @@ function Diff({
   empty: string;
 }) {
   const files = useMemo(() => parseDiff(text), [text]);
+  const [fileIndex, setFileIndex] = useState(0);
+  const [page, setPage] = useState(0);
+  useEffect(() => { setFileIndex(0); setPage(0); }, [text]);
+  const selectedFile = files[fileIndex] ?? files[0];
+  const lineCount = selectedFile?.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0) ?? 0;
+  const pages = Math.max(1, Math.ceil(lineCount / 200));
+  const currentPage = Math.min(page, pages - 1);
   const added = files.reduce((total, file) => total + file.added, 0);
   const removed = files.reduce((total, file) => total + file.removed, 0);
 
@@ -99,7 +106,22 @@ function Diff({
           <span className="del">-{removed}</span>
         </span>
       </div>
-      {files.map((file, fileIndex) => (
+      {files.length > 1 && (
+        <label>
+          File{" "}
+          <select value={fileIndex} onChange={(event) => { setFileIndex(Number(event.target.value)); setPage(0); }}>
+            {files.map((file, index) => <option key={index} value={index}>{file.path}</option>)}
+          </select>
+        </label>
+      )}
+      {pages > 1 && (
+        <nav aria-label="Diff pages">
+          <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous</button>
+          <span> Page {currentPage + 1} of {pages} · 200 lines per page </span>
+          <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>Next</button>
+        </nav>
+      )}
+      {[selectedFile].map((file) => (
         <div className="diff-file" key={`${file.path}-${fileIndex}`}>
           <div className="diff-file-head">
             <span className="diff-path">{file.path}</span>
@@ -113,7 +135,7 @@ function Diff({
           ) : file.hunks.length === 0 ? (
             <p className="diff-binary">No line changes.</p>
           ) : (
-            file.hunks.map((hunk, hunkIndex) => (
+            pageHunks(file.hunks, currentPage * 200, 200).map((hunk, hunkIndex) => (
               <div className="diff-hunk" key={`${hunk.header}-${hunkIndex}`}>
                 <div className="diff-hunk-head">{hunk.header}</div>
                 <div className="diff-lines">

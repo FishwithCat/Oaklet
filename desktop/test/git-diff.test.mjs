@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseDiff } from "../src/git-diff.ts";
+import { pageHunks, parseDiff } from "../src/git-diff.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -48,4 +48,14 @@ test("parseDiff groups files and tracks line numbers", () => {
   assert.equal(files[1].path, "README.md");
   assert.equal(files[1].added, 2);
   assert.equal(files[1].removed, 0);
+});
+
+test("diff pages preserve line numbers across hunk boundaries without dropping lines", () => {
+  const hunks = parseDiff(PATCH).flatMap((file) => file.hunks);
+  const lines = hunks.flatMap((hunk) => hunk.lines);
+  const pages = [0, 3, 6].flatMap((offset) => pageHunks(hunks, offset, 3).flatMap((hunk) => hunk.lines));
+  assert.deepEqual(pages, lines);
+  assert.deepEqual(pageHunks(hunks, 99, 3), []);
+  assert.equal(pageHunks(hunks, 3, 3).length, 2);
+  assert.equal(pageHunks(hunks, 3, 3)[1].header, hunks[1].header);
 });

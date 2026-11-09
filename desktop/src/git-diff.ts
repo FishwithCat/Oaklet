@@ -84,3 +84,15 @@ export function parseDiff(text: string): DiffFile[] {
 
   return files;
 }
+
+export function pageHunks(hunks: DiffHunk[], offset: number, limit: number): DiffHunk[] {
+  const page: DiffHunk[] = [];
+  let start = 0;
+  for (const hunk of hunks) {
+    const lines = hunk.lines.slice(Math.max(0, offset - start), Math.max(0, offset + limit - start));
+    if (lines.length) page.push({ ...hunk, lines });
+    start += hunk.lines.length;
+    if (start >= offset + limit) break;
+  }
+  return page;
+}
