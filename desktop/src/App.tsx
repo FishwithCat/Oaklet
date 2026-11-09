@@ -12,7 +12,7 @@ import { Chat, type ChatHandle } from "./Chat";
 import { SettingsPanel, type AppConfig } from "./SettingsPanel";
 import { SessionHistory } from "./SessionHistory";
 import { SourceControl } from "./SourceControl";
-import { Terminal } from "./Terminal";
+import { Terminal, type TerminalHandle } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
 import { agentShortcut } from "./shortcuts";
 import "./App.css";
@@ -31,6 +31,7 @@ function App() {
   const [workspaceTick, setWorkspaceTick] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const chatRef = useRef<ChatHandle>(null);
+  const terminalRef = useRef<TerminalHandle>(null);
 
   const session = useAgentSession({
     enabled: config !== null,
@@ -225,9 +226,14 @@ function App() {
           activeRunId={session.activeRunId}
           onSend={session.send}
           onApproval={session.respondToApproval}
+          onSendToTerminal={(text) => {
+            setView("terminal");
+            terminalRef.current?.run(text);
+          }}
         />
 
         <Terminal
+          ref={terminalRef}
           key={config.workspace}
           active={view === "terminal"}
           onClose={() => setView("chat")}

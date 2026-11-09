@@ -15,12 +15,18 @@ import {
   XIcon,
 } from "@phosphor-icons/react";
 import "@xterm/xterm/css/xterm.css";
+import { commandForTerminal } from "./terminal-command";
 
 type TerminalOutput = { id: string; data: number[] };
 type TerminalExit = { id: string; code: number | null };
 
-type TerminalHandle = {
+type TerminalPaneHandle = {
   focus: () => void;
+  run: (command: string) => void;
+};
+
+export type TerminalHandle = {
+  run: (command: string) => void;
 };
 
 type Tab = { id: string; title: string };
@@ -65,12 +71,36 @@ function TerminalPane({
   ref,
 }: {
   active: boolean;
-  ref?: Ref<TerminalHandle>;
+  ref?: Ref<TerminalPaneHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const teardownRef = useRef<() => void>(() => {});
+  const sessionIdRef = useRef<string | null>(null);
+  const openedRef = useRef(false);
+  const readyRef = useRef(false);
+  const pendingRef = useRef<string[]>([]);
+
+  function flushPending() {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    const pending = pendingRef.current;
+    pendingRef.current = [];
+    for (const data of pending) {
+      void invoke("terminal_write", { id: sessionId, data });
+    }
+  }
+
+  function run(command: string) {
+    const data = commandForTerminal(command);
+    if (!data) return;
+    if (readyRef.current && sessionIdRef.current) {
+      void invoke("terminal_write", { id: sessionIdRef.current, data });
+    } else {
+      pendingRef.current.push(data);
+    }
+  }
 
   useEffect(() => {
     if (!active || termRef.current) return;
@@ -94,19 +124,35 @@ function TerminalPane({
     fitRef.current = fit;
 
     let disposed = false;
-    let opened = false;
     const sessionId = newSessionId();
+    sessionIdRef.current = sessionId;
+    openedRef.current = false;
+    readyRef.current = false;
     const unlisteners: UnlistenFn[] = [];
+    let flushTimer: number | undefined;
+
+    // Wait for startup output to settle so the command is not echoed before
+    // the prompt. The shell is reading input once its output goes quiet.
+    const flushWhenQuiet = () => {
+      if (readyRef.current) return;
+      window.clearTimeout(flushTimer);
+      flushTimer = window.setTimeout(() => {
+        if (disposed || readyRef.current) return;
+        readyRef.current = true;
+        flushPending();
+      }, 50);
+    };
 
     const start = async () => {
-      opened = false;
+      openedRef.current = false;
       try {
         await invoke("terminal_open", {
           id: sessionId,
           cols: term.cols,
           rows: term.rows,
         });
-        opened = !disposed;
+        if (disposed) return;
+        openedRef.current = true;
       } catch (error) {
         if (!disposed) {
           term.write(`\r\n\x1b[31m${String(error)}\x1b[0m\r\n`);
@@ -125,10 +171,14 @@ function TerminalPane({
     };
 
     const stopInput = term.onData((data) => {
-      if (opened) void invoke("terminal_write", { id: sessionId, data });
+      if (openedRef.current) {
+        void invoke("terminal_write", { id: sessionId, data });
+      }
     });
     const stopResize = term.onResize(({ cols, rows }) => {
-      if (opened) void invoke("terminal_resize", { id: sessionId, cols, rows });
+      if (openedRef.current) {
+        void invoke("terminal_resize", { id: sessionId, cols, rows });
+      }
     });
     const observer = new ResizeObserver(fitToHost);
     observer.observe(host);
@@ -139,11 +189,14 @@ function TerminalPane({
         (event) => {
           if (event.payload.id !== sessionId) return;
           term.write(new Uint8Array(event.payload.data));
+          flushWhenQuiet();
         },
       );
       const offExit = await listen<TerminalExit>("terminal://exit", (event) => {
         if (event.payload.id !== sessionId) return;
-        opened = false;
+        openedRef.current = false;
+        readyRef.current = false;
+        sessionIdRef.current = null;
         const code = event.payload.code;
         const detail = code === null ? "" : ` with code ${code}`;
         term.write(`\r\n\x1b[2m[process exited${detail}]\x1b[0m\r\n`);
@@ -161,6 +214,11 @@ function TerminalPane({
 
     teardownRef.current = () => {
       disposed = true;
+      window.clearTimeout(flushTimer);
+      openedRef.current = false;
+      readyRef.current = false;
+      sessionIdRef.current = null;
+      pendingRef.current = [];
       observer.disconnect();
       stopInput.dispose();
       stopResize.dispose();
@@ -195,6 +253,7 @@ function TerminalPane({
     ref,
     () => ({
       focus: () => termRef.current?.focus(),
+      run,
     }),
     [],
   );
@@ -210,9 +269,11 @@ function TerminalPane({
 }
 
 export function Terminal({
+  ref,
   active,
   onClose,
 }: {
+  ref?: Ref<TerminalHandle>;
   active: boolean;
   onClose: () => void;
 }) {
@@ -220,10 +281,20 @@ export function Terminal({
     { id: newSessionId(), title: "Terminal 1" },
   ]);
   const [selected, setSelected] = useState<string | null>(null);
-  const handles = useRef(new Map<string, TerminalHandle>());
+  const handles = useRef(new Map<string, TerminalPaneHandle>());
   const count = useRef(1);
 
   const activeId = selected ?? tabs[0]?.id ?? null;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      run: (command) => {
+        if (activeId) handles.current.get(activeId)?.run(command);
+      },
+    }),
+    [activeId],
+  );
 
   function addTab() {
     count.current += 1;

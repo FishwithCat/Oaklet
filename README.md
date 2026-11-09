@@ -13,7 +13,8 @@ enough to read in one sitting.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`, `likec4_mcp`.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
-  workspace.
+  workspace. Select text in chat and click **Send to Terminal** to run it in the
+  active tab.
 - A source control view split into **Changes** (uncommitted files with their
   diffs) and **Commits** (the current branch, the last 100 commits, and the diff
   of each commit with per-file stats and line numbers). The branch pill switches

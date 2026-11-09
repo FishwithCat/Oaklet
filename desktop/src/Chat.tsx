@@ -5,7 +5,11 @@ import {
   useState,
   type Ref,
 } from "react";
-import { PaperPlaneRightIcon, QuestionIcon } from "@phosphor-icons/react";
+import {
+  PaperPlaneRightIcon,
+  QuestionIcon,
+  TerminalWindowIcon,
+} from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
 import { mergeDraft } from "./architecture-prompt";
@@ -25,6 +29,7 @@ export function Chat({
   activeRunId,
   onSend,
   onApproval,
+  onSendToTerminal,
 }: {
   ref?: Ref<ChatHandle>;
   active: boolean;
@@ -33,14 +38,22 @@ export function Chat({
   activeRunId: string | null;
   onSend: (text: string) => boolean;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
+  onSendToTerminal: (text: string) => void;
 }) {
   const [input, setInput] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
+  const [selectionAction, setSelectionAction] = useState<{
+    text: string;
+    x: number;
+    y: number;
+    above: boolean;
+  } | null>(null);
   const chatRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
+  const selectionButtonRef = useRef<HTMLButtonElement>(null);
   const stickToBottomRef = useRef(true);
 
   useEffect(() => {
@@ -75,6 +88,91 @@ export function Chat({
     }
   }, [items]);
 
+  useEffect(() => {
+    if (!active) {
+      setSelectionAction(null);
+      return;
+    }
+    let frame = 0;
+
+    function showSelection() {
+      const root = chatRef.current;
+      const selection = window.getSelection();
+      if (
+        !root ||
+        !selection ||
+        selection.isCollapsed ||
+        selection.rangeCount === 0
+      ) {
+        setSelectionAction(null);
+        return;
+      }
+      const text = selection.toString().trim();
+      const range = selection.getRangeAt(0);
+      if (!text || !root.contains(range.commonAncestorContainer)) {
+        setSelectionAction(null);
+        return;
+      }
+      const rect = range.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      setSelectionAction({
+        text,
+        x: Math.min(Math.max(x, 80), window.innerWidth - 80),
+        y: rect.top > 48 ? rect.top : rect.bottom,
+        above: rect.top > 48,
+      });
+    }
+
+    function scheduleSelection() {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(showSelection);
+    }
+
+    function onRelease(event: Event) {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        selectionButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      scheduleSelection();
+    }
+
+    function hideSelection(event?: Event) {
+      const target = event?.target;
+      if (
+        target instanceof Node &&
+        selectionButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      cancelAnimationFrame(frame);
+      setSelectionAction(null);
+    }
+
+    function onSelectionChange() {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) hideSelection();
+    }
+
+    document.addEventListener("mousedown", hideSelection);
+    document.addEventListener("keydown", hideSelection);
+    document.addEventListener("selectstart", hideSelection);
+    document.addEventListener("mouseup", onRelease);
+    document.addEventListener("keyup", onRelease);
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("mousedown", hideSelection);
+      document.removeEventListener("keydown", hideSelection);
+      document.removeEventListener("selectstart", hideSelection);
+      document.removeEventListener("mouseup", onRelease);
+      document.removeEventListener("keyup", onRelease);
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
+  }, [active]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -100,6 +198,7 @@ export function Chat({
     if (!element) return;
     stickToBottomRef.current =
       element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    if (selectionAction) setSelectionAction(null);
   }
 
   function resizeComposer() {
@@ -190,6 +289,26 @@ export function Chat({
           </div>
         )}
       </main>
+
+      {active && selectionAction && (
+        <button
+          ref={selectionButtonRef}
+          type="button"
+          className={`selection-action${
+            selectionAction.above ? "" : " below"
+          }`}
+          style={{ left: selectionAction.x, top: selectionAction.y }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            onSendToTerminal(selectionAction.text);
+            setSelectionAction(null);
+          }}
+          title="Run the selected text in the terminal"
+        >
+          <TerminalWindowIcon size={13} />
+          Send to Terminal
+        </button>
+      )}
 
       {active && (
         <div className="composer-wrap">

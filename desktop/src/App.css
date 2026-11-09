@@ -232,6 +232,27 @@ button.allow-all-chip:hover:not(:disabled) {
   display: none;
 }
 
+.selection-action {
+  position: fixed;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px var(--shadow-color);
+  color: var(--text);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+
+.selection-action.below {
+  transform: translate(-50%, 8px);
+}
+
 .terminal {
   flex: 1;
   min-height: 0;
