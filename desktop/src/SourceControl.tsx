@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowClockwiseIcon,
+  CaretDownIcon,
+  CheckCircleIcon,
+  CheckIcon,
   GitBranchIcon,
 } from "@phosphor-icons/react";
 import { parseDiff } from "./git-diff";
@@ -16,7 +19,23 @@ type CommitInfo = {
   body: string;
 };
 
-type GitLog = { branch: string; commits: CommitInfo[] };
+type GitLog = { branch: string; branches: string[]; commits: CommitInfo[] };
+type ChangeInfo = { path: string; status: string };
+
+const CHANGE_STATUS: Record<string, { label: string; title: string }> = {
+  untracked: { label: "U", title: "Untracked" },
+  added: { label: "A", title: "Added" },
+  modified: { label: "M", title: "Modified" },
+  deleted: { label: "D", title: "Deleted" },
+  renamed: { label: "R", title: "Renamed" },
+  copied: { label: "C", title: "Copied" },
+  typechange: { label: "T", title: "Type changed" },
+  conflicted: { label: "!", title: "Conflicted" },
+};
+
+function statusInfo(status: string) {
+  return CHANGE_STATUS[status] ?? { label: "M", title: "Modified" };
+}
 
 function errorText(error: unknown): string {
   if (typeof error === "string") return error;
@@ -52,7 +71,84 @@ function fullDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
-/** Commit history and the diff of the selected commit. */
+function Diff({
+  text,
+  ready,
+  error,
+  empty,
+}: {
+  text: string;
+  ready: boolean;
+  error: string;
+  empty: string;
+}) {
+  const files = useMemo(() => parseDiff(text), [text]);
+  const added = files.reduce((total, file) => total + file.added, 0);
+  const removed = files.reduce((total, file) => total + file.removed, 0);
+
+  if (error) return <p className="sc-note error">{error}</p>;
+  if (!ready) return <p className="sc-note">Loading diff...</p>;
+  if (files.length === 0) return <p className="sc-note">{empty}</p>;
+
+  return (
+    <div className="diff">
+      <div className="diff-summary">
+        {files.length} file{files.length === 1 ? "" : "s"} changed
+        <span className="diff-stat">
+          <span className="add">+{added}</span>{" "}
+          <span className="del">-{removed}</span>
+        </span>
+      </div>
+      {files.map((file, fileIndex) => (
+        <div className="diff-file" key={`${file.path}-${fileIndex}`}>
+          <div className="diff-file-head">
+            <span className="diff-path">{file.path}</span>
+            <span className="diff-stat">
+              <span className="add">+{file.added}</span>{" "}
+              <span className="del">-{file.removed}</span>
+            </span>
+          </div>
+          {file.binary ? (
+            <p className="diff-binary">Binary file</p>
+          ) : file.hunks.length === 0 ? (
+            <p className="diff-binary">No line changes.</p>
+          ) : (
+            file.hunks.map((hunk, hunkIndex) => (
+              <div className="diff-hunk" key={`${hunk.header}-${hunkIndex}`}>
+                <div className="diff-hunk-head">{hunk.header}</div>
+                <div className="diff-lines">
+                  <div className="diff-lines-inner">
+                    {hunk.lines.map((line, lineIndex) => (
+                      <div
+                        className={`diff-line ${line.kind}`}
+                        key={lineIndex}
+                      >
+                        <span className="diff-num">{line.oldLine ?? ""}</span>
+                        <span className="diff-num">{line.newLine ?? ""}</span>
+                        <span className="diff-sign">
+                          {line.kind === "add"
+                            ? "+"
+                            : line.kind === "del"
+                              ? "-"
+                              : " "}
+                        </span>
+                        <span className="diff-text">
+                          {line.text === "" ? " " : line.text}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Uncommitted changes and the commit history, each with a file diff. */
 export function SourceControl({
   active,
   refreshToken = 0,
@@ -62,14 +158,22 @@ export function SourceControl({
   refreshToken?: number;
   onRefresh?: () => void;
 }) {
+  const [tab, setTab] = useState<"changes" | "commits">("changes");
   const [log, setLog] = useState<GitLog | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [changes, setChanges] = useState<ChangeInfo[] | null>(null);
+  const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
+  const [selectedChange, setSelectedChange] = useState<string | null>(null);
   const [patch, setPatch] = useState("");
   const [patchFor, setPatchFor] = useState<string | null>(null);
   const [diffError, setDiffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  const [branchOpen, setBranchOpen] = useState(false);
+  const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
+  const [branchError, setBranchError] = useState("");
+  const branchMenuRef = useRef<HTMLDivElement>(null);
+  const branchButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!active) return;
@@ -77,20 +181,31 @@ export function SourceControl({
     setLoading(true);
     setError("");
 
-    invoke<GitLog>("git_log")
-      .then((next) => {
+    Promise.all([
+      invoke<GitLog>("git_log"),
+      invoke<ChangeInfo[]>("git_changes"),
+    ])
+      .then(([nextLog, nextChanges]) => {
         if (cancelled) return;
-        setLog(next);
-        setSelected((current) =>
-          current && next.commits.some((commit) => commit.hash === current)
+        setLog(nextLog);
+        setChanges(nextChanges);
+        setSelectedCommit((current) =>
+          current && nextLog.commits.some((commit) => commit.hash === current)
             ? current
-            : (next.commits[0]?.hash ?? null),
+            : (nextLog.commits[0]?.hash ?? null),
+        );
+        setSelectedChange((current) =>
+          current && nextChanges.some((change) => change.path === current)
+            ? current
+            : (nextChanges[0]?.path ?? null),
         );
       })
       .catch((err) => {
         if (cancelled) return;
         setLog(null);
-        setSelected(null);
+        setChanges(null);
+        setSelectedCommit(null);
+        setSelectedChange(null);
         setError(errorText(err));
       })
       .finally(() => {
@@ -103,7 +218,41 @@ export function SourceControl({
   }, [active, reload, refreshToken]);
 
   useEffect(() => {
-    if (!active || !selected) {
+    if (!branchOpen) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (
+        !(event.target instanceof Node) ||
+        !branchMenuRef.current?.contains(event.target)
+      ) {
+        setBranchOpen(false);
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setBranchOpen(false);
+        branchButtonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [branchOpen]);
+
+  useEffect(() => {
+    if (!active) setBranchOpen(false);
+  }, [active]);
+
+  const target = tab === "commits" ? selectedCommit : selectedChange;
+  const targetKey = target === null ? null : `${tab}:${target}`;
+
+  useEffect(() => {
+    if (!active || !target) {
       setPatch("");
       setPatchFor(null);
       setDiffError("");
@@ -114,34 +263,60 @@ export function SourceControl({
     setPatch("");
     setPatchFor(null);
     setDiffError("");
+    const key = `${tab}:${target}`;
 
-    invoke<string>("git_show", { hash: selected })
+    const request =
+      tab === "commits"
+        ? invoke<string>("git_show", { hash: target })
+        : invoke<string>("git_diff", { path: target });
+
+    request
       .then((text) => {
         if (cancelled) return;
         setPatch(text);
-        setPatchFor(selected);
+        setPatchFor(key);
       })
       .catch((err) => {
         if (cancelled) return;
         setDiffError(errorText(err));
-        setPatchFor(selected);
+        setPatchFor(key);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [active, selected, reload]);
+  }, [active, tab, target, reload, refreshToken]);
 
   const commits = log?.commits ?? [];
-  const commit = commits.find((entry) => entry.hash === selected) ?? null;
-  const files = useMemo(() => parseDiff(patch), [patch]);
-  const added = files.reduce((total, file) => total + file.added, 0);
-  const removed = files.reduce((total, file) => total + file.removed, 0);
-  const diffReady = patchFor === selected;
+  const branches = log?.branches ?? [];
+  const commit = commits.find((entry) => entry.hash === selectedCommit) ?? null;
+  const change =
+    changes?.find((entry) => entry.path === selectedChange) ?? null;
+  const diffReady = targetKey !== null && patchFor === targetKey;
 
   function refresh() {
     setReload((value) => value + 1);
     onRefresh?.();
+  }
+
+  async function switchBranch(branch: string) {
+    if (!log || switchingBranch) return;
+    if (branch === log.branch) {
+      setBranchOpen(false);
+      return;
+    }
+
+    setSwitchingBranch(branch);
+    setBranchError("");
+    try {
+      await invoke("git_switch", { branch });
+      setBranchOpen(false);
+      refresh();
+    } catch (err) {
+      setBranchError(errorText(err));
+    } finally {
+      setSwitchingBranch(null);
+    }
   }
 
   return (
@@ -151,18 +326,99 @@ export function SourceControl({
           <GitBranchIcon size={14} />
         </span>
         <span className="sc-title">Source control</span>
-        {log?.branch && <span className="sc-branch">{log.branch}</span>}
+        {log && (
+          <div className="sc-branch-wrap" ref={branchMenuRef}>
+            <button
+              ref={branchButtonRef}
+              type="button"
+              className="sc-branch"
+              onClick={() => {
+                setBranchOpen((open) => !open);
+                setBranchError("");
+              }}
+              aria-haspopup="menu"
+              aria-expanded={branchOpen}
+              aria-controls={branchOpen ? "sc-branch-menu" : undefined}
+              aria-label={`Switch branch, current: ${log.branch || "detached"}`}
+              title="Switch branch"
+            >
+              <span className="sc-branch-name">
+                {log.branch || "detached"}
+              </span>
+              <CaretDownIcon size={10} className="sc-branch-caret" />
+            </button>
+
+            {branchOpen && (
+              <div
+                id="sc-branch-menu"
+                className="sc-branch-menu"
+                role="menu"
+                aria-label="Switch branch"
+              >
+                <div className="sc-branch-menu-title">Switch branch</div>
+                {branches.length === 0 ? (
+                  <p className="sc-branch-empty">No local branches.</p>
+                ) : (
+                  branches.map((branch) => (
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      key={branch}
+                      className="sc-branch-item"
+                      aria-checked={branch === log.branch}
+                      disabled={switchingBranch !== null}
+                      onClick={() => switchBranch(branch)}
+                      title={branch}
+                    >
+                      <span>{branch}</span>
+                      {switchingBranch === branch ? (
+                        <ArrowClockwiseIcon size={12} className="spin" />
+                      ) : branch === log.branch ? (
+                        <CheckIcon size={11} weight="bold" />
+                      ) : null}
+                    </button>
+                  ))
+                )}
+                {branchError && (
+                  <p className="sc-branch-error">{branchError}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         <button
           type="button"
           className="ghost icon-button sc-refresh"
           onClick={refresh}
           disabled={loading}
-          aria-label="Refresh commits"
-          title="Refresh commits"
+          aria-label="Refresh source control"
+          title="Refresh source control"
         >
           <ArrowClockwiseIcon size={14} className={loading ? "spin" : ""} />
         </button>
       </header>
+
+      <div className="sc-tabs">
+        <button
+          type="button"
+          className={`sc-tab${tab === "changes" ? " active" : ""}`}
+          onClick={() => setTab("changes")}
+          aria-pressed={tab === "changes"}
+        >
+          Changes
+          {changes !== null && changes.length > 0 && (
+            <span className="sc-tab-count">{changes.length}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          className={`sc-tab${tab === "commits" ? " active" : ""}`}
+          onClick={() => setTab("commits")}
+          aria-pressed={tab === "commits"}
+        >
+          Commits
+        </button>
+      </div>
 
       {error ? (
         <div className="sc-empty">
@@ -172,8 +428,61 @@ export function SourceControl({
             Try again
           </button>
         </div>
-      ) : !log ? (
-        <p className="sc-note">Loading commits...</p>
+      ) : !log || !changes ? (
+        <p className="sc-note">Loading source control...</p>
+      ) : tab === "changes" ? (
+        changes.length === 0 ? (
+          <div className="sc-empty">
+            <CheckCircleIcon size={22} />
+            <p>No uncommitted changes.</p>
+          </div>
+        ) : (
+          <div className="sc-body">
+            <div className="sc-list" aria-label="Uncommitted changes">
+              {changes.map((entry) => {
+                const info = statusInfo(entry.status);
+                return (
+                  <button
+                    type="button"
+                    key={entry.path}
+                    className={`change${entry.path === selectedChange ? " active" : ""}`}
+                    onClick={() => setSelectedChange(entry.path)}
+                    aria-current={entry.path === selectedChange}
+                    title={entry.path}
+                  >
+                    <span className="change-path">{entry.path}</span>
+                    <span
+                      className={`change-status ${entry.status}`}
+                      title={info.title}
+                    >
+                      {info.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="sc-detail">
+              {change && (
+                <div className="commit-head">
+                  <h2>{change.path}</h2>
+                  <p className="commit-meta-row">
+                    <span className={`change-status ${change.status}`}>
+                      {statusInfo(change.status).label}
+                    </span>{" "}
+                    {statusInfo(change.status).title} · uncommitted
+                  </p>
+                </div>
+              )}
+              <Diff
+                text={patch}
+                ready={diffReady}
+                error={diffError}
+                empty="No diff for this file."
+              />
+            </div>
+          </div>
+        )
       ) : commits.length === 0 ? (
         <div className="sc-empty">
           <GitBranchIcon size={22} />
@@ -186,9 +495,9 @@ export function SourceControl({
               <button
                 type="button"
                 key={entry.hash}
-                className={`commit${entry.hash === selected ? " active" : ""}`}
-                onClick={() => setSelected(entry.hash)}
-                aria-current={entry.hash === selected}
+                className={`commit${entry.hash === selectedCommit ? " active" : ""}`}
+                onClick={() => setSelectedCommit(entry.hash)}
+                aria-current={entry.hash === selectedCommit}
               >
                 <span className="commit-subject">
                   {entry.subject || "Untitled commit"}
@@ -220,72 +529,12 @@ export function SourceControl({
               </div>
             )}
 
-            {diffError ? (
-              <p className="sc-note error">{diffError}</p>
-            ) : !diffReady ? (
-              <p className="sc-note">Loading diff...</p>
-            ) : files.length === 0 ? (
-              <p className="sc-note">No changes in this commit.</p>
-            ) : (
-              <div className="diff">
-                <div className="diff-summary">
-                  {files.length} file{files.length === 1 ? "" : "s"} changed
-                  <span className="diff-stat">
-                    <span className="add">+{added}</span>{" "}
-                    <span className="del">-{removed}</span>
-                  </span>
-                </div>
-                {files.map((file, fileIndex) => (
-                  <div className="diff-file" key={`${file.path}-${fileIndex}`}>
-                    <div className="diff-file-head">
-                      <span className="diff-path">{file.path}</span>
-                      <span className="diff-stat">
-                        <span className="add">+{file.added}</span>{" "}
-                        <span className="del">-{file.removed}</span>
-                      </span>
-                    </div>
-                    {file.binary ? (
-                      <p className="diff-binary">Binary file</p>
-                    ) : file.hunks.length === 0 ? (
-                      <p className="diff-binary">No line changes.</p>
-                    ) : (
-                      file.hunks.map((hunk, hunkIndex) => (
-                        <div className="diff-hunk" key={`${hunk.header}-${hunkIndex}`}>
-                          <div className="diff-hunk-head">{hunk.header}</div>
-                          <div className="diff-lines">
-                            <div className="diff-lines-inner">
-                              {hunk.lines.map((line, lineIndex) => (
-                                <div
-                                  className={`diff-line ${line.kind}`}
-                                  key={lineIndex}
-                                >
-                                  <span className="diff-num">
-                                    {line.oldLine ?? ""}
-                                  </span>
-                                  <span className="diff-num">
-                                    {line.newLine ?? ""}
-                                  </span>
-                                  <span className="diff-sign">
-                                    {line.kind === "add"
-                                      ? "+"
-                                      : line.kind === "del"
-                                        ? "-"
-                                        : " "}
-                                  </span>
-                                  <span className="diff-text">
-                                    {line.text === "" ? " " : line.text}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <Diff
+              text={patch}
+              ready={diffReady}
+              error={diffError}
+              empty="No changes in this commit."
+            />
           </div>
         </div>
       )}

@@ -14,9 +14,11 @@ enough to read in one sitting.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace.
-- A source control view: the current branch, the last 100 commits, and the diff
-  of each commit with per-file stats and line numbers. Its sidebar badge counts
-  commits not yet pushed to the configured upstream.
+- A source control view split into **Changes** (uncommitted files with their
+  diffs) and **Commits** (the current branch, the last 100 commits, and the diff
+  of each commit with per-file stats and line numbers). The branch pill switches
+  local branches. Its sidebar badge counts commits not yet pushed to the
+  configured upstream.
 - An architecture view: discovers existing LikeC4 models in the workspace and
   renders their views. Generation and updates are ordinary, editable chat
   requests handled by the configured agent.

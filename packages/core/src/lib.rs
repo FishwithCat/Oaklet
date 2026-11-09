@@ -322,6 +322,30 @@ async fn git_show(state: State<'_, SharedState>, hash: String) -> Result<String,
 }
 
 #[tauri::command]
+async fn git_switch(state: State<'_, SharedState>, branch: String) -> Result<(), String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || git::switch(&workspace, &branch))
+        .await
+        .map_err(|error| format!("Could not switch branches: {error}"))?
+}
+
+#[tauri::command]
+async fn git_changes(state: State<'_, SharedState>) -> Result<Vec<git::GitChange>, String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || git::changes(&workspace))
+        .await
+        .map_err(|error| format!("Could not read uncommitted changes: {error}"))?
+}
+
+#[tauri::command]
+async fn git_diff(state: State<'_, SharedState>, path: String) -> Result<String, String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || git::diff(&workspace, &path))
+        .await
+        .map_err(|error| format!("Could not read the file diff: {error}"))?
+}
+
+#[tauri::command]
 async fn git_ahead(state: State<'_, SharedState>) -> Result<Option<u32>, String> {
     let Ok(workspace) = workspace_path(&state) else {
         return Ok(None);
@@ -479,6 +503,9 @@ pub fn run() {
             revoke_command_allow_all,
             git_log,
             git_show,
+            git_switch,
+            git_changes,
+            git_diff,
             git_ahead,
             architecture_discover,
             architecture_load,
