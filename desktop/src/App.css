@@ -543,9 +543,10 @@ button.allow-all-chip:hover:not(:disabled) {
 
 .commit-body {
   margin: 0 0 10px;
+  max-width: 72ch;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
