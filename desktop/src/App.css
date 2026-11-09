@@ -1901,14 +1901,11 @@ button.arch-generate {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  transition:
-    border-color 120ms ease,
-    box-shadow 120ms ease;
+  transition: border-color 120ms ease;
 }
 
 .composer:focus-within {
   border-color: var(--accent-border-strong);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--palette-primary) 10%, transparent);
 }
 
 .composer textarea {
