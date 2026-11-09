@@ -363,6 +363,7 @@ async fn git_diff(state: State<'_, SharedState>, path: String) -> Result<String,
 #[serde(rename_all = "camelCase")]
 struct TerminalOutput {
     id: String,
+    sequence: u64,
     data: Vec<u8>,
 }
 
@@ -397,6 +398,7 @@ fn terminal_open(
         .lock()
         .map_err(|_| "Terminal state is unavailable.".to_string())?;
     let (session, events) = terminal::spawn(&workspace, cols, rows)?;
+    let output_flow = session.output_flow.clone();
     sessions.insert(id.clone(), session);
     drop(sessions);
 
@@ -406,13 +408,22 @@ fn terminal_open(
         while let Ok(event) = events.recv() {
             match event {
                 terminal::Event::Output(data) => {
-                    let _ = app.emit(
-                        "terminal://output",
-                        TerminalOutput {
-                            id: session_id.clone(),
-                            data,
-                        },
-                    );
+                    let Some(sequence) = output_flow.reserve(data.len()) else {
+                        break;
+                    };
+                    if app
+                        .emit(
+                            "terminal://output",
+                            TerminalOutput {
+                                id: session_id.clone(),
+                                sequence,
+                                data,
+                            },
+                        )
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 terminal::Event::Exit { code } => {
                     let _ = app.emit(
@@ -422,17 +433,24 @@ fn terminal_open(
                             code,
                         },
                     );
-                    // Reap the dead session here; the tab keeps its scrollback
-                    // on the frontend and can spawn a fresh shell on restart.
-                    if let Ok(mut sessions) = shared.terminal.lock() {
-                        sessions.remove(&session_id);
-                    }
                     break;
                 }
             }
         }
+        if let Ok(mut sessions) = shared.terminal.lock() {
+            sessions.remove(&session_id);
+        }
     });
     Ok(())
+}
+
+#[tauri::command]
+fn terminal_ack(state: State<'_, SharedState>, id: String, sequence: u64) {
+    if let Ok(sessions) = state.terminal.lock()
+        && let Some(session) = sessions.get(&id)
+    {
+        session.output_flow.acknowledge(sequence);
+    }
 }
 
 #[tauri::command]
@@ -514,6 +532,7 @@ pub fn run() {
             architecture_load,
             terminal_open,
             terminal_write,
+            terminal_ack,
             terminal_resize,
             terminal_close
         ])

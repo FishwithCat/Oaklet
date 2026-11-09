@@ -17,7 +17,7 @@ import {
 import "@xterm/xterm/css/xterm.css";
 import { commandForTerminal } from "./terminal-command";
 
-type TerminalOutput = { id: string; data: number[] };
+type TerminalOutput = { id: string; sequence: number; data: number[] };
 type TerminalExit = { id: string; code: number | null };
 
 type TerminalPaneHandle = {
@@ -188,7 +188,18 @@ function TerminalPane({
         "terminal://output",
         (event) => {
           if (event.payload.id !== sessionId) return;
-          term.write(new Uint8Array(event.payload.data));
+          term.write(new Uint8Array(event.payload.data), () => {
+            if (!disposed) {
+              void invoke("terminal_ack", { id: sessionId, sequence: event.payload.sequence })
+                .catch((error) => {
+                  if (disposed || !openedRef.current) return;
+                  openedRef.current = false;
+                  readyRef.current = false;
+                  term.write(`\r\n[Terminal closed: output acknowledgement failed: ${String(error)}]\r\n`);
+                  void invoke("terminal_close", { id: sessionId });
+                });
+            }
+          });
           flushWhenQuiet();
         },
       );

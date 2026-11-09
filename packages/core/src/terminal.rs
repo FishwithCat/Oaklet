@@ -6,6 +6,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -17,7 +18,54 @@ pub enum Event {
     Exit { code: Option<u32> },
 }
 
+const MAX_IN_FLIGHT: u64 = 64 * 1024;
+
+#[derive(Default)]
+struct OutputState {
+    sent: u64,
+    acknowledged: u64,
+    closed: bool,
+}
+
+#[derive(Default)]
+pub struct OutputFlow {
+    state: Mutex<OutputState>,
+    ready: Condvar,
+}
+
+impl OutputFlow {
+    pub fn reserve(&self, bytes: usize) -> Option<u64> {
+        let mut state = self.state.lock().ok()?;
+        while !state.closed && state.sent - state.acknowledged + bytes as u64 > MAX_IN_FLIGHT {
+            state = self.ready.wait(state).ok()?;
+        }
+        if state.closed {
+            return None;
+        }
+        state.sent += bytes as u64;
+        Some(state.sent)
+    }
+
+    pub fn acknowledge(&self, sequence: u64) {
+        if let Ok(mut state) = self.state.lock()
+            && sequence > state.acknowledged
+            && sequence <= state.sent
+        {
+            state.acknowledged = sequence;
+            self.ready.notify_all();
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            self.ready.notify_all();
+        }
+    }
+}
+
 pub struct Session {
+    pub output_flow: Arc<OutputFlow>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -45,6 +93,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        self.output_flow.close();
         // The shell is the PTY session leader; killing it hangs up its jobs.
         let _ = self.killer.kill();
     }
@@ -94,7 +143,7 @@ fn spawn_shell(
         .take_writer()
         .map_err(|error| format!("Could not write to the terminal: {error}"))?;
 
-    let (sender, events) = mpsc::channel();
+    let (sender, events) = mpsc::sync_channel(8);
     thread::spawn(move || {
         let mut buffer = [0u8; 8192];
         loop {
@@ -114,6 +163,7 @@ fn spawn_shell(
 
     Ok((
         Session {
+            output_flow: Arc::new(OutputFlow::default()),
             master: pair.master,
             writer,
             killer,
@@ -144,6 +194,39 @@ mod tests {
             }
         }
         panic!("did not see {needle:?} in {output:?}");
+    }
+
+    #[test]
+    fn output_waits_for_consumption_and_close_wakes_waiters() {
+        use std::sync::{Arc, mpsc};
+        let flow = Arc::new(super::OutputFlow::default());
+        assert_eq!(
+            flow.reserve(super::MAX_IN_FLIGHT as usize),
+            Some(super::MAX_IN_FLIGHT)
+        );
+        let (sent, received) = mpsc::channel();
+        let worker_flow = flow.clone();
+        let worker = std::thread::spawn(move || {
+            sent.send(worker_flow.reserve(1)).unwrap();
+        });
+        flow.acknowledge(super::MAX_IN_FLIGHT + 1); // Invalid acknowledgements cannot release capacity.
+        assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+        flow.acknowledge(1);
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some(super::MAX_IN_FLIGHT + 1)
+        );
+        worker.join().unwrap();
+        let (sent, received) = mpsc::channel();
+        let worker_flow = flow.clone();
+        let worker = std::thread::spawn(move || {
+            sent.send(worker_flow.reserve(1)).unwrap();
+        });
+        flow.acknowledge(1); // Duplicate acknowledgement must not release another byte.
+        assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+        flow.close();
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), None);
+        worker.join().unwrap();
     }
 
     #[cfg(unix)]
