@@ -1,0 +1,19 @@
+{
+  "name": "oaklet-architecture-helper",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pinned, data-only LikeC4 compiler used by Oaklet's Architecture view.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@likec4/core": "1.60.0",
+    "@likec4/language-services": "1.60.0",
+    "bundle-require": "5.1.0",
+    "esbuild": "0.28.2"
+  },
+  "engines": {
+    "node": ">=22.22.3"
+  }
+}

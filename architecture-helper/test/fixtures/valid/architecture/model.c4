@@ -1,0 +1,21 @@
+specification {
+  element person
+  element system
+  element component
+  element database
+  relationship async
+}
+
+model {
+  customer = person 'Customer'
+
+  api = system 'API' {
+    web = component 'Web app'
+    worker = component 'Worker'
+    store = database 'Database'
+  }
+
+  customer -> api 'Uses'
+  api.web -[async]-> api.worker 'Queues jobs'
+  api.worker -> api.store 'Reads and writes'
+}

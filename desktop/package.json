@@ -12,6 +12,8 @@
     "tauri": "cd ../packages/core && tauri"
   },
   "dependencies": {
+    "@likec4/core": "1.60.0",
+    "@likec4/diagram": "1.60.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
@@ -30,5 +32,11 @@
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
+  },
+  "pnpm": {
+    "overrides": {
+      "react": "19.3.1",
+      "react-dom": "19.3.1"
+    }
   }
 }

@@ -1,0 +1,13 @@
+views {
+  view index {
+    title 'System context'
+    include *
+    autoLayout TopBottom
+  }
+
+  view containers {
+    title 'API containers'
+    include api.*
+    autoLayout LeftRight
+  }
+}

@@ -17,6 +17,9 @@ enough to read in one sitting.
 - A source control view: the current branch, the last 100 commits, and the diff
   of each commit with per-file stats and line numbers. Its sidebar badge counts
   commits not yet pushed to the configured upstream.
+- An architecture view: discovers existing LikeC4 models in the workspace and
+  renders their views. Generation and updates are ordinary, editable chat
+  requests handled by the configured agent.
 - Asks before every shell command; the approval card shows the exact command
   and can allow all commands in the workspace.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
@@ -27,6 +30,8 @@ enough to read in one sitting.
 
 - `desktop/` — React/TypeScript UI (Vite)
 - `packages/core/` — Rust backend (Tauri app, agent loop, tools)
+- `architecture-helper/` — pinned, data-only LikeC4 compiler used by the
+  architecture view
 
 Tools live in `packages/core/src/tools/`. Each tool owns its schema,
 system-prompt guidance, pending-call summary, approval policy, timeout, and
@@ -46,6 +51,20 @@ pnpm install
 pnpm tauri dev
 ```
 
+Install the architecture compiler once before opening the Architecture view or
+building a bundle:
+
+```sh
+cd architecture-helper
+pnpm install
+```
+
+It requires a local Node.js 22.22.3 or newer runtime. Set `OAKLET_NODE` to a
+different executable, or `OAKLET_ARCHITECTURE_HELPER` to a different helper
+directory, if the defaults do not fit. When the runtime or helper is missing,
+the Architecture view explains the problem and leaves the rest of Oaklet
+working.
+
 Frontend only: `pnpm dev`. The browser has no Tauri IPC, so this is only useful
 for styling. Build frontend: `pnpm build`. Rust checks:
 
@@ -54,6 +73,63 @@ cd packages/core
 cargo test
 cargo clippy --all-targets
 ```
+
+Helper checks:
+
+```sh
+cd architecture-helper
+pnpm test
+```
+
+Before packaging, make sure `architecture-helper/node_modules` exists; Tauri
+embeds that directory as an application resource. The packaged helper is
+resolved from the app's resource directory. Development builds fall back to the
+helper in the Oaklet checkout.
+
+## Architecture models
+
+The Architecture view scans `config.workspace` for `*.c4` and `*.likec4` files,
+honoring git and `.ignore` rules without requiring a Git repository. A JSON
+`likec4.config.json` groups a directory tree into one model root; without one,
+model files group by directory, with a root-level model treated as the model for
+the workspace. If discovery finds independent roots, the view asks which one to
+load. **Scan ignored files** is available when a model lives in an ignored
+directory.
+
+Opening the view only reads models. If no model exists, **Generate architecture**
+offers the default location `architecture/model.c4`; otherwise **Update with
+agent** targets the selected model files. Both actions put an editable prompt in
+the existing chat composer without discarding its draft. The user still sends,
+approves commands, and can cancel through the normal chat flow.
+
+Viewing an existing model never calls the model provider, so it works without an
+API key. Generation and updates use the configured provider and existing
+approval flow like any other coding request.
+
+The view re-reads on activation, on **Refresh**, and after an agent run finishes
+or fails. It does not watch the filesystem, so external edits appear on the next
+activation or refresh. Compilation is skipped when the source contents have not
+changed. If new sources are invalid, the last valid diagram for the same
+workspace and model stays visible, marked as stale, with file and line
+diagnostics.
+
+Preview compilation is data-only: Oaklet sends the selected source text to the
+pinned helper, which parses it in a virtual workspace and runs Graphviz as
+WebAssembly. It does not execute `likec4.config.js`/`.ts`, Vite plugins,
+workspace package scripts, or a workspace-supplied executable. JSON configuration
+is read as data. Models that need executable configuration are reported but may
+need adaptation for this preview.
+
+Oaklet always validates the selected sources again in the pinned loader before
+showing a new result. If a workspace already has the LikeC4 CLI installed, an
+agent can also validate with `pnpm exec likec4 validate` through the normal
+command-approval flow; Oaklet does not install it or run a workspace-provided
+compiler automatically.
+
+Limits are deliberate: 500 model files during discovery, 200 source files and
+4 MB of source per model load, 1 MB per source file, 60 seconds of compiler time,
+and 16 MB of layout output. A load that hits a limit fails with an explanation
+instead of showing a partial diagram.
 
 ## Configuration
 
@@ -87,6 +163,9 @@ as `qwen2.5-coder`.
   for approval: the shell runs immediately in the workspace, with no timeout.
 - The agent can still run any command the user approves, including commands that
   touch files outside the workspace. Read the approval card before allowing it.
+- Architecture preview sends only discovered model source text to the local,
+  pinned helper. It never executes workspace configuration or JavaScript, and
+  the compiler output is capped before it reaches the renderer.
 
 ## Status
 

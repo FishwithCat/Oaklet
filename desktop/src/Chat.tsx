@@ -11,11 +11,13 @@ import {
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
+import { mergeDraft } from "./architecture-prompt";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 
 export type ChatHandle = {
   reset: () => void;
+  prefill: (prompt: string) => void;
 };
 
 const SUGGESTIONS = [
@@ -78,6 +80,13 @@ export function Chat({
         setInput("");
         if (textareaRef.current) textareaRef.current.style.height = "auto";
         textareaRef.current?.focus();
+      },
+      prefill: (prompt: string) => {
+        setInput((current) => mergeDraft(current, prompt));
+        requestAnimationFrame(() => {
+          resizeComposer();
+          textareaRef.current?.focus();
+        });
       },
     }),
     [],

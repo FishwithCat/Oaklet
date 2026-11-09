@@ -1,4 +1,5 @@
 mod agent;
+mod architecture;
 mod git;
 mod terminal;
 mod tools;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub command_allow_all: Mutex<Option<PathBuf>>,
     /// Shells behind the terminal view, keyed by the frontend's session id.
     pub terminal: Mutex<HashMap<String, terminal::Session>>,
+    /// Last valid architecture model and the in-flight compiler generation.
+    pub architecture: Mutex<architecture::ArchitectureCache>,
     ids: AtomicU64,
 }
 
@@ -145,13 +148,42 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
 
     let previous_workspace = state.config.lock().unwrap().workspace.clone();
     write_config(&state.config_path, &config)?;
+    *state.config.lock().unwrap() = config.clone();
     if previous_workspace != config.workspace
         && let Ok(mut granted) = state.command_allow_all.lock()
     {
         *granted = None;
     }
-    *state.config.lock().unwrap() = config.clone();
+    if previous_workspace != config.workspace {
+        architecture::cancel_for_workspace_change(state.inner());
+    }
     Ok(config)
+}
+
+#[tauri::command]
+async fn architecture_discover(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    include_ignored: bool,
+) -> Result<architecture::Discovery, String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        architecture::discover(&app, &workspace, include_ignored)
+    })
+    .await
+    .map_err(|error| format!("Could not scan the workspace: {error}"))?
+}
+
+#[tauri::command]
+async fn architecture_load(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    root: String,
+    include_ignored: bool,
+) -> Result<architecture::LoadResult, String> {
+    let workspace = workspace_path(&state)?;
+    let shared = state.inner().clone();
+    architecture::load(app, shared, workspace, root, include_ignored).await
 }
 
 #[tauri::command]
@@ -422,6 +454,9 @@ pub fn run() {
             if config.workspace.trim().is_empty() || !Path::new(&config.workspace).is_dir() {
                 config.workspace = default_workspace();
             }
+            if let Ok(canonical) = Path::new(&config.workspace).canonicalize() {
+                config.workspace = canonical.to_string_lossy().into_owned();
+            }
             app.manage(Arc::new(AppState {
                 config: Mutex::new(config),
                 config_path,
@@ -429,6 +464,7 @@ pub fn run() {
                 runs: Mutex::new(HashMap::new()),
                 command_allow_all: Mutex::new(None),
                 terminal: Mutex::new(HashMap::new()),
+                architecture: Mutex::new(architecture::ArchitectureCache::default()),
                 ids: AtomicU64::new(0),
             }));
             Ok(())
@@ -444,13 +480,23 @@ pub fn run() {
             git_log,
             git_show,
             git_ahead,
+            architecture_discover,
+            architecture_load,
             terminal_open,
             terminal_write,
             terminal_resize,
             terminal_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+            ) {
+                architecture::cancel_all(app.state::<SharedState>().inner());
+            }
+        });
 }
 
 #[cfg(test)]

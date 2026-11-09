@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ChatDotsIcon,
@@ -6,6 +6,7 @@ import {
   GitBranchIcon,
   ShieldCheckIcon,
   TerminalWindowIcon,
+  TreeStructureIcon,
 } from "@phosphor-icons/react";
 import { Chat, type ChatHandle } from "./Chat";
 import { SettingsPanel, type AppConfig } from "./SettingsPanel";
@@ -14,18 +15,23 @@ import { Terminal } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
 import "./App.css";
 
+const Architecture = lazy(() => import("./Architecture"));
+
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [view, setView] = useState<"chat" | "terminal" | "git">("chat");
+  const [view, setView] = useState<
+    "chat" | "terminal" | "git" | "architecture"
+  >("chat");
+  const [architectureOpened, setArchitectureOpened] = useState(false);
   const [ahead, setAhead] = useState<number | null>(null);
-  const [gitTick, setGitTick] = useState(0);
+  const [workspaceTick, setWorkspaceTick] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const chatRef = useRef<ChatHandle>(null);
 
   const session = useAgentSession({
     enabled: config !== null,
-    onGitRefresh: () => setGitTick((value) => value + 1),
+    onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });
 
   useEffect(() => {
@@ -50,7 +56,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [config?.workspace, gitTick, view]);
+  }, [config?.workspace, workspaceTick, view]);
 
   function newChat() {
     if (session.running) return;
@@ -130,6 +136,23 @@ function App() {
             </span>
           )}
         </button>
+        <button
+          type="button"
+          className={`ghost icon-button arch-toggle${
+            view === "architecture" ? " active" : ""
+          }`}
+          onClick={() => {
+            setArchitectureOpened(true);
+            setView((current) =>
+              current === "architecture" ? "chat" : "architecture",
+            );
+          }}
+          aria-label="Architecture"
+          aria-pressed={view === "architecture"}
+          title="Architecture"
+        >
+          <TreeStructureIcon size={18} />
+        </button>
         <div className="sidebar-foot">
           {session.allowAll && (
             <button
@@ -177,9 +200,30 @@ function App() {
         <SourceControl
           key={config.workspace}
           active={view === "git"}
-          refreshToken={gitTick}
-          onRefresh={() => setGitTick((value) => value + 1)}
+          refreshToken={workspaceTick}
+          onRefresh={() => setWorkspaceTick((value) => value + 1)}
         />
+
+        {architectureOpened && (
+          <Suspense
+            fallback={
+              <div className="arch-loading">Loading architecture...</div>
+            }
+          >
+            <Architecture
+              key={config.workspace}
+              active={view === "architecture"}
+              workspace={config.workspace}
+              refreshToken={workspaceTick}
+              running={session.running}
+              onPrompt={(prompt) => {
+                setView("chat");
+                chatRef.current?.prefill(prompt);
+              }}
+              onRefresh={() => setWorkspaceTick((value) => value + 1)}
+            />
+          </Suspense>
+        )}
       </div>
 
       {settingsOpen && (

@@ -1,0 +1,8 @@
+specification {
+  element system
+}
+
+model {
+  api = system 'API'
+  api -> 
+}

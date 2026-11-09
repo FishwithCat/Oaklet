@@ -473,6 +473,283 @@ button.allow-all-chip:hover:not(:disabled) {
   text-align: left;
 }
 
+.arch {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.arch[hidden] {
+  display: none;
+}
+
+.arch-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.arch-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.arch-icon {
+  flex: none;
+  display: flex;
+  color: var(--muted);
+}
+
+.arch-title {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.arch-root {
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  padding: 1px 8px;
+  border: 1px solid rgba(154, 98, 41, 0.25);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.arch-select {
+  min-width: 0;
+  max-width: 230px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.arch-select:focus-visible {
+  outline: 2px solid rgba(154, 98, 41, 0.55);
+  outline-offset: 1px;
+}
+
+.arch-head .icon-button.arch-refresh {
+  width: 26px;
+  height: 26px;
+}
+
+.arch-head .icon-button.arch-ignored {
+  width: 26px;
+  height: 26px;
+}
+
+.arch-head .arch-ignored.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.arch-head .arch-refresh:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+button.arch-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-color: rgba(154, 98, 41, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+button.arch-agent:hover:not(:disabled) {
+  border-color: rgba(154, 98, 41, 0.5);
+  background: rgba(154, 98, 41, 0.15);
+}
+
+.arch-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.arch-diagram {
+  width: 100%;
+  height: 100%;
+}
+
+.arch-empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 auto;
+  padding: 32px 22px;
+  max-width: 580px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.arch-empty h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.arch-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.arch-empty code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.arch-empty .arch-small {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.arch-empty .spin {
+  color: var(--accent);
+}
+
+.arch-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+button.arch-generate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arch-banner {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.arch-banner > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.arch-banner > div {
+  min-width: 0;
+}
+
+.arch-banner strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.arch-banner p {
+  margin: 2px 0 0;
+}
+
+.arch-banner button {
+  margin-top: 6px;
+  padding: 3px 8px;
+}
+
+.arch-banner.warning {
+  border-color: rgba(138, 106, 31, 0.3);
+  background: rgba(138, 106, 31, 0.06);
+  color: var(--yellow);
+}
+
+.arch-banner.error {
+  border-color: rgba(178, 58, 72, 0.3);
+  background: rgba(178, 58, 72, 0.06);
+  color: var(--red);
+}
+
+.arch-banner.muted {
+  display: block;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.arch-banner summary {
+  cursor: pointer;
+}
+
+.arch-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.arch-diagnostics {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  max-height: 170px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: left;
+  color: var(--muted);
+}
+
+.arch-diagnostics li {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
+.arch-diagnostic-loc {
+  margin-right: 6px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .commit:hover:not(:disabled) {
   border-color: transparent;
   background: var(--panel-2);
@@ -1501,6 +1778,19 @@ button.allow-all-chip:hover:not(:disabled) {
 @media (max-width: 760px) {
   .suggestions {
     grid-template-columns: 1fr;
+  }
+
+  .arch-head {
+    flex-wrap: wrap;
+  }
+
+  .arch-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .arch-select {
+    max-width: 180px;
   }
 
   .sc-body {

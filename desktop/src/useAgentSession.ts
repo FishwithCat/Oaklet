@@ -33,10 +33,10 @@ function errorText(error: unknown): string {
 
 export function useAgentSession({
   enabled,
-  onGitRefresh,
+  onWorkspaceRefresh,
 }: {
   enabled: boolean;
-  onGitRefresh: () => void;
+  onWorkspaceRefresh: () => void;
 }) {
   const [items, setItems] = useState<Item[]>([]);
   const [running, setRunning] = useState(false);
@@ -45,11 +45,11 @@ export function useAgentSession({
 
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
-  const onGitRefreshRef = useRef(onGitRefresh);
+  const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
 
   useEffect(() => {
-    onGitRefreshRef.current = onGitRefresh;
-  }, [onGitRefresh]);
+    onWorkspaceRefreshRef.current = onWorkspaceRefresh;
+  }, [onWorkspaceRefresh]);
 
   function addNotice(tone: "error" | "muted", text: string) {
     setItems((previous) => [...previous, { kind: "notice", tone, text }]);
@@ -156,13 +156,13 @@ export function useAgentSession({
           setActiveRunId(null);
           setRunning(false);
           setItems(settleStreaming);
-          onGitRefreshRef.current();
+          onWorkspaceRefreshRef.current();
         }),
         listen<ErrorEvent>("agent:error", (event) => {
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
-          onGitRefreshRef.current();
+          onWorkspaceRefreshRef.current();
           setItems((previous) => [
             ...settleStreaming(previous),
             { kind: "notice", tone: "error", text: event.payload.message },
@@ -172,7 +172,7 @@ export function useAgentSession({
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
-          onGitRefreshRef.current();
+          onWorkspaceRefreshRef.current();
           setItems((previous) => [
             ...settleStreaming(previous),
             { kind: "notice", tone: "muted", text: "Stopped." },
