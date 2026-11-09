@@ -701,7 +701,14 @@ export default function Architecture({
               enableRelationshipDetails
               enableNotes
               className="arch-diagram"
-            />
+            >
+              {/* shortcut: LikeC4 1.60 needs styles inside its shadow root; recheck logo/breadcrumb slots on upgrade. */}
+              <style>{`
+                [data-panel="navigation"] > div:nth-child(-n + 2) {
+                  display: none;
+                }
+              `}</style>
+            </LikeC4View>
           </LikeC4ModelProvider>
         </div>
       )}
