@@ -1,0 +1,4 @@
+model {
+  web = system 'Web'
+  web -> api 'Calls'
+}

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { relative } from "node:path";
 import test from "node:test";
 
 const helper = fileURLToPath(new URL("../src/mcp.mjs", import.meta.url));
@@ -47,4 +48,17 @@ test("an empty workspace remains queryable", async () => {
   const workspace = fileURLToPath(new URL("fixtures/no-model", import.meta.url));
   const result = await query({ tool: "list-projects" }, workspace);
   assert.notEqual(result.isError, true);
+});
+
+test("scattered files share the default project and resolve cross-directory references", async () => {
+  const workspace = fileURLToPath(new URL("fixtures/scattered", import.meta.url));
+  const result = await query({ tool: "list-projects" }, workspace);
+  const projects = result.structuredContent.projects;
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].id, "default");
+  assert.deepEqual(projects[0].sources.map((path) => relative(workspace, path).replaceAll("\\", "/")).sort(),
+    ["docs/views.likec4", "services/api/model.c4", "web/model.c4"]);
+  const element = await query({ tool: "read-element", arguments: { id: "web", project: "default" } }, workspace);
+  assert.notEqual(element.isError, true);
+  assert.equal(element.structuredContent.relationships.outgoing[0].target.id, "api");
 });

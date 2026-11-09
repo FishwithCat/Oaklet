@@ -89,9 +89,10 @@ helper in the Oaklet checkout.
 
 The Architecture view scans `config.workspace` for `*.c4` and `*.likec4` files,
 honoring git and `.ignore` rules without requiring a Git repository. A JSON
-`likec4.config.json` groups a directory tree into one model root; without one,
-model files group by directory, with a root-level model treated as the model for
-the workspace. If discovery finds independent roots, the view asks which one to
+`likec4.config.json` groups its directory tree into one model root, with nested
+configurations defining separate projects. Files without an ancestor configuration
+share the workspace default model, even when spread across directories, matching
+MCP project grouping. If discovery finds independent roots, the view asks which one to
 load. **Scan ignored files** is available when a model lives in an ignored
 directory.
 

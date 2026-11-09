@@ -509,25 +509,13 @@ fn discover_models(
         }
     }
 
-    let root_has_model = model_files.iter().any(|path| {
-        let relative = path.strip_prefix(workspace.root()).unwrap_or(path);
-        relative
-            .parent()
-            .is_none_or(|parent| parent.as_os_str().is_empty())
-    });
     let config_roots: BTreeSet<String> = configs.keys().cloned().collect();
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for path in &model_files {
         let relative = path.strip_prefix(workspace.root()).unwrap_or(path);
         let relative_text = path_string(relative);
-        let root = deepest_config_root(relative, &config_roots).unwrap_or_else(|| {
-            if root_has_model {
-                ".".into()
-            } else {
-                top_level(&relative_text)
-            }
-        });
+        let root = deepest_config_root(relative, &config_roots).unwrap_or_else(|| ".".into());
         grouped.entry(root).or_default().push(relative_text);
     }
 
@@ -644,13 +632,6 @@ fn path_string(path: &Path) -> String {
         ".".into()
     } else {
         path.to_string_lossy().replace('\\', "/")
-    }
-}
-
-fn top_level(relative: &str) -> String {
-    match relative.split_once('/') {
-        Some((first, _)) => first.to_string(),
-        None => ".".into(),
     }
 }
 
@@ -1167,11 +1148,15 @@ mod tests {
                 .iter()
                 .map(|model| model.root.as_str())
                 .collect::<Vec<_>>(),
-            vec!["architecture", "docs"]
+            vec!["."]
         );
         assert_eq!(
             models[0].sources,
-            vec!["architecture/model.c4", "architecture/views.c4"]
+            vec![
+                "architecture/model.c4",
+                "architecture/views.c4",
+                "docs/model.c4"
+            ]
         );
 
         fs::remove_dir_all(&root).ok();
@@ -1185,7 +1170,7 @@ mod tests {
 
         let (models, warnings) = discover_models(&workspace, true).unwrap();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].root, "ignored");
+        assert_eq!(models[0].root, ".");
         assert!(warnings.iter().any(|warning| warning.contains("ignored")));
 
         fs::remove_dir_all(&root).ok();
@@ -1205,6 +1190,8 @@ mod tests {
 
         let (models, warnings) = discover_models(&workspace, false).unwrap();
         assert_eq!(models.len(), 2);
+        assert_eq!(models[0].root, ".");
+        assert_eq!(models[0].sources, vec!["docs/model.c4"]);
         let architecture = models
             .iter()
             .find(|model| model.root == "architecture")
@@ -1220,6 +1207,44 @@ mod tests {
         assert!(warnings.is_empty());
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn nested_configs_separate_projects_from_the_default_model() {
+        let (workspace, root) = workspace("arch-nested-configs");
+        write(&root, "loose/model.c4", "model { }");
+        write(&root, "docs/views.likec4", "views { }");
+        write(&root, "parent/likec4.config.json", r#"{"name":"parent"}"#);
+        write(&root, "parent/model.c4", "model { }");
+        write(
+            &root,
+            "parent/child/likec4.config.json",
+            r#"{"name":"child"}"#,
+        );
+        write(&root, "parent/child/model.c4", "model { }");
+
+        for root_config in [false, true] {
+            if root_config {
+                write(&root, "likec4.config.json", r#"{"name":"root"}"#);
+            }
+            let (models, warnings) = discover_models(&workspace, false).unwrap();
+            assert!(warnings.is_empty());
+            assert_eq!(models.len(), 3);
+            assert_eq!(models[0].root, ".");
+            assert_eq!(
+                models[0].sources,
+                vec!["docs/views.likec4", "loose/model.c4"]
+            );
+            assert_eq!(
+                models[0].config.as_deref(),
+                root_config.then_some("likec4.config.json")
+            );
+            assert_eq!(models[1].root, "parent");
+            assert_eq!(models[1].sources, vec!["parent/model.c4"]);
+            assert_eq!(models[2].root, "parent/child");
+            assert_eq!(models[2].sources, vec!["parent/child/model.c4"]);
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1548,6 +1573,36 @@ mod tests {
         let output = vec![b'x'; 32];
         let error = read_capped(output.as_slice(), 16).await.unwrap_err();
         assert!(error.contains("exceeded"));
+    }
+
+    #[tokio::test]
+    async fn compiles_cross_directory_references_without_a_root_file_or_config() {
+        let node = node_binary().expect("Node is required for the compiler integration test");
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../architecture-helper");
+        let fixture = helper.join("test/fixtures/scattered");
+        let workspace = Workspace::new(fixture.to_str().unwrap()).unwrap();
+        let (models, _) = discover_models(&workspace, false).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].root, ".");
+        assert_eq!(
+            models[0].sources,
+            vec!["docs/views.likec4", "services/api/model.c4", "web/model.c4"]
+        );
+        let (sources, _) = read_sources(&workspace, &models[0]).unwrap();
+        let response = run_helper(
+            &node,
+            &helper,
+            &serde_json::json!({ "version": 1, "sources": sources }),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(response.views[0].id, "index");
+        let model = response.model.unwrap();
+        assert!(model["elements"].get("api").is_some());
+        assert!(model["elements"].get("web").is_some());
+        assert_eq!(model["relations"].as_object().unwrap().len(), 1);
     }
 
     #[tokio::test]
