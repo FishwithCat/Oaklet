@@ -1,10 +1,10 @@
 /* Light theme: palette, semantic colors, and terminal ANSI colors. */
 :root {
   color-scheme: light;
-  --palette-primary: #328e6e;
-  --palette-secondary: #67ae6e;
-  --palette-tertiary: #90c67c;
-  --palette-soft: #e1eebc;
+  --palette-primary: #1a5319;
+  --palette-secondary: #508d4e;
+  --palette-tertiary: #80af81;
+  --palette-soft: #d6efd8;
 
   --bg: #ffffff;
   --panel: #ffffff;
@@ -13,9 +13,9 @@
   --border-strong: #a8bfa4;
   --text: #1d3027;
   --muted: #52665a;
-  /* Darken the primary for readable small text and white button labels. */
-  --accent: #287658;
-  --accent-hover: #205f47;
+  /* The palette primary is already dark enough for text and button labels. */
+  --accent: var(--palette-primary);
+  --accent-hover: color-mix(in srgb, var(--palette-primary) 82%, #000);
   --on-accent: #ffffff;
   --accent-soft: color-mix(in srgb, var(--palette-primary) 9%, transparent);
   --accent-border: color-mix(in srgb, var(--palette-primary) 30%, transparent);
