@@ -5,7 +5,7 @@ import {
   useState,
   type Ref,
 } from "react";
-import { PaperPlaneRightIcon } from "@phosphor-icons/react";
+import { PaperPlaneRightIcon, QuestionIcon } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
 import { mergeDraft } from "./architecture-prompt";
@@ -35,10 +35,39 @@ export function Chat({
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
 }) {
   const [input, setInput] = useState("");
+  const [helpOpen, setHelpOpen] = useState(false);
   const chatRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
+  const helpPopoverRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    if (!active) setHelpOpen(false);
+  }, [active]);
+
+  useEffect(() => {
+    if (!helpOpen) return;
+    function onMouseDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        !helpButtonRef.current?.contains(target) &&
+        !helpPopoverRef.current?.contains(target)
+      ) {
+        setHelpOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setHelpOpen(false);
+    }
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [helpOpen]);
 
   useEffect(() => {
     if (stickToBottomRef.current) {
@@ -51,6 +80,7 @@ export function Chat({
     () => ({
       reset: () => {
         setInput("");
+        setHelpOpen(false);
         if (textareaRef.current) textareaRef.current.style.height = "auto";
         textareaRef.current?.focus();
       },
@@ -191,8 +221,66 @@ export function Chat({
               }}
             />
             <div className="composer-footer">
-              <span className="hint">
-                Enter to send · Shift+Enter for a new line
+              <span className="shortcut-trigger-wrap">
+                <button
+                  ref={helpButtonRef}
+                  type="button"
+                  className="shortcut-trigger"
+                  onMouseEnter={() => setHelpOpen(true)}
+                  onMouseLeave={() => setHelpOpen(false)}
+                  onFocus={() => setHelpOpen(true)}
+                  onBlur={() => setHelpOpen(false)}
+                  onClick={() => setHelpOpen(true)}
+                  aria-label="Keyboard shortcuts"
+                  aria-expanded={helpOpen}
+                  aria-controls="shortcuts-help"
+                >
+                  <QuestionIcon size={11} />
+                  Shortcuts
+                </button>
+                {helpOpen && (
+                  <div
+                    className="shortcuts-popover"
+                    id="shortcuts-help"
+                    ref={helpPopoverRef}
+                    role="dialog"
+                    aria-label="Keyboard shortcuts"
+                  >
+                    <h3>Shortcuts</h3>
+                    <dl>
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌘ N</kbd>
+                        </dt>
+                        <dd>New session</dd>
+                      </div>
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌘ R</kbd>
+                        </dt>
+                        <dd>Search history</dd>
+                      </div>
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌃ C</kbd>
+                        </dt>
+                        <dd>Stop run</dd>
+                      </div>
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>↵</kbd>
+                        </dt>
+                        <dd>Send</dd>
+                      </div>
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⇧ ↵</kbd>
+                        </dt>
+                        <dd>New line</dd>
+                      </div>
+                    </dl>
+                  </div>
+                )}
               </span>
               <button
                 type="submit"
