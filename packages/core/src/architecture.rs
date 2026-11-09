@@ -21,7 +21,7 @@ mod runtime;
 
 use compiler::run_helper;
 use discovery::{digest_sources, discover_models, normalize_root, read_sources};
-use runtime::runtime_status;
+use runtime::{runtime_status, runtime_status_for};
 
 pub(crate) use compiler::read_capped;
 pub use discovery::prompt_model_sources;
@@ -290,7 +290,9 @@ pub async fn load(
         warnings,
     };
 
-    let runtime = runtime_status(&app);
+    let node = find_node();
+    let helper = find_helper(&app);
+    let runtime = runtime_status_for(node.as_deref(), helper.as_deref());
     if !runtime.ready {
         return Ok(fallback_result(
             base,
@@ -303,7 +305,7 @@ pub async fn load(
         ));
     }
 
-    let Some(node) = find_node() else {
+    let Some(node) = node else {
         return Ok(fallback_result(
             base,
             cached_match,
@@ -311,7 +313,7 @@ pub async fn load(
             Some("Node.js was not found. Install Node.js 22.22.3 or newer.".into()),
         ));
     };
-    let Some(helper) = find_helper(&app) else {
+    let Some(helper) = helper else {
         return Ok(fallback_result(
             base,
             cached_match,
@@ -440,8 +442,9 @@ fn fallback_result(
 fn cached_for(cache: &ArchitectureCache, workspace: &str, root: &str) -> Option<CachedModel> {
     cache
         .cached
-        .clone()
+        .as_ref()
         .filter(|cached| cached.workspace == workspace && cached.root == root)
+        .cloned()
 }
 
 fn cap_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
