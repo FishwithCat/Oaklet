@@ -5,36 +5,32 @@
 //! helper over stdin, and returns the layouted JSON the React renderer needs.
 //! The helper never reads the workspace or executes workspace configuration.
 
-use std::collections::BTreeSet;
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tauri::AppHandle;
 
 use crate::tools::Workspace;
 
+mod compiler;
 mod discovery;
+mod runtime;
 
+use compiler::run_helper;
 use discovery::{digest_sources, discover_models, normalize_root, read_sources};
+use runtime::runtime_status;
 
+pub(crate) use compiler::read_capped;
 pub use discovery::prompt_model_sources;
+pub(crate) use runtime::{find_helper, find_node};
 
 pub const DEFAULT_MODEL_PATH: &str = "architecture/model.c4";
 
 const MAX_DIAGNOSTICS: usize = 50;
 const MAX_DIAGNOSTIC_CHARS: usize = 2_000;
-const MAX_HELPER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_HELPER_STDERR_BYTES: usize = 64 * 1024;
-const COMPILER_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -459,363 +455,10 @@ fn cap_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
         .collect()
 }
 
-pub(crate) fn find_node() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("OAKLET_NODE") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    let mut candidates = BTreeSet::new();
-
-    if let Some(path) = env::var_os("PATH") {
-        for directory in env::split_paths(&path) {
-            candidates.insert(directory.join(node_name()));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        if let Some(program_files) = env::var_os("ProgramFiles") {
-            candidates.insert(PathBuf::from(program_files).join("nodejs").join("node.exe"));
-        }
-        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
-            candidates.insert(
-                PathBuf::from(local_app_data)
-                    .join("Programs")
-                    .join("nodejs")
-                    .join("node.exe"),
-            );
-        }
-        if let Some(nvm_symlink) = env::var_os("NVM_SYMLINK") {
-            candidates.insert(PathBuf::from(nvm_symlink).join("node.exe"));
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        for path in [
-            "/usr/local/bin/node",
-            "/opt/homebrew/bin/node",
-            "/opt/local/bin/node",
-            "/usr/bin/node",
-        ] {
-            candidates.insert(PathBuf::from(path));
-        }
-    }
-
-    if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
-        let home = PathBuf::from(home);
-        if cfg!(windows) {
-            candidates.insert(home.join("AppData/Roaming/npm/node.exe"));
-        } else {
-            candidates.insert(home.join(".volta/bin/node"));
-            candidates.insert(home.join(".local/bin/node"));
-            add_versioned_nodes(
-                &mut candidates,
-                &home.join(".nvm/versions/node"),
-                "bin/node",
-            );
-            add_versioned_nodes(
-                &mut candidates,
-                &home.join(".local/share/fnm/node-versions"),
-                "installation/bin/node",
-            );
-        }
-    }
-
-    let mut fallback = None;
-    for candidate in candidates {
-        if !candidate.is_file() {
-            continue;
-        }
-        if let Some(version) = node_version(&candidate)
-            && node_supported(&version)
-        {
-            return Some(candidate);
-        }
-        fallback.get_or_insert(candidate);
-    }
-    fallback
-}
-
-fn node_name() -> &'static str {
-    if cfg!(windows) { "node.exe" } else { "node" }
-}
-
-fn add_versioned_nodes(candidates: &mut BTreeSet<PathBuf>, root: &Path, suffix: &str) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        candidates.insert(entry.path().join(suffix));
-    }
-}
-
-fn node_version(node: &Path) -> Option<String> {
-    let output = std::process::Command::new(node)
-        .arg("--version")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn node_supported(version: &str) -> bool {
-    let version = version.trim_start_matches('v');
-    let mut parts = version.split('.');
-    let major: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
-    let minor: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
-    let patch: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
-    (major, minor, patch) >= (22, 22, 3)
-}
-
-fn helper_ready(helper: &Path) -> bool {
-    helper.join("src").join("compile.mjs").is_file()
-        && helper
-            .join("node_modules")
-            .join("@likec4")
-            .join("language-services")
-            .join("package.json")
-            .is_file()
-}
-
-pub(crate) fn find_helper(app: &AppHandle) -> Option<PathBuf> {
-    if let Some(path) = env::var_os("OAKLET_ARCHITECTURE_HELPER") {
-        let path = PathBuf::from(path);
-        if helper_ready(&path) {
-            return Some(path);
-        }
-    }
-
-    let mut candidates = Vec::new();
-    if let Ok(resource_directory) = app.path().resource_dir() {
-        candidates.push(resource_directory.join("architecture-helper"));
-    }
-    #[cfg(debug_assertions)]
-    candidates.push(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("architecture-helper"),
-    );
-    if let Ok(executable) = env::current_exe() {
-        for ancestor in executable.ancestors().skip(1).take(5) {
-            candidates.push(ancestor.join("architecture-helper"));
-            candidates.push(ancestor.join("Resources").join("architecture-helper"));
-        }
-    }
-
-    candidates
-        .into_iter()
-        .find(|candidate| helper_ready(candidate))
-        .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
-}
-
-fn runtime_status(app: &AppHandle) -> RuntimeStatus {
-    runtime_status_for(find_node(), find_helper(app))
-}
-
-fn runtime_status_for(node: Option<PathBuf>, helper: Option<PathBuf>) -> RuntimeStatus {
-    let helper = helper.map(|path| path.to_string_lossy().into_owned());
-    let Some(node) = node else {
-        return RuntimeStatus {
-            ready: false,
-            node: None,
-            node_version: None,
-            helper,
-            message:
-                "Node.js was not found. Install Node.js 22.22.3 or newer, or set OAKLET_NODE to the executable."
-                    .into(),
-        };
-    };
-    let Some(version) = node_version(&node) else {
-        return RuntimeStatus {
-            ready: false,
-            node: Some(node.to_string_lossy().into_owned()),
-            node_version: None,
-            helper,
-            message: "Node.js was found but did not run. Check the Node.js installation.".into(),
-        };
-    };
-    if !node_supported(&version) {
-        return RuntimeStatus {
-            ready: false,
-            node: Some(node.to_string_lossy().into_owned()),
-            node_version: Some(version.clone()),
-            helper,
-            message: format!("Node.js {version} is too old. Install Node.js 22.22.3 or newer."),
-        };
-    }
-    let Some(helper) = helper else {
-        return RuntimeStatus {
-            ready: false,
-            node: Some(node.to_string_lossy().into_owned()),
-            node_version: Some(version),
-            helper: None,
-            message:
-                "The LikeC4 compiler helper is missing. Reinstall Oaklet or set OAKLET_ARCHITECTURE_HELPER."
-                    .into(),
-        };
-    };
-    RuntimeStatus {
-        ready: true,
-        node: Some(node.to_string_lossy().into_owned()),
-        node_version: Some(version.clone()),
-        helper: Some(helper),
-        message: format!("Node.js {version} and the pinned LikeC4 compiler are ready."),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HelperResponse {
-    ok: bool,
-    #[serde(default)]
-    model: Option<Value>,
-    #[serde(default)]
-    views: Vec<ViewInfo>,
-    #[serde(default)]
-    diagnostics: Vec<Diagnostic>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-async fn run_helper(
-    node: &Path,
-    helper: &Path,
-    request: &Value,
-    cancel: Arc<AtomicBool>,
-) -> Result<HelperResponse, String> {
-    run_helper_with_timeout(node, helper, request, cancel, COMPILER_TIMEOUT).await
-}
-
-async fn run_helper_with_timeout(
-    node: &Path,
-    helper: &Path,
-    request: &Value,
-    cancel: Arc<AtomicBool>,
-    timeout: Duration,
-) -> Result<HelperResponse, String> {
-    let script = helper.join("src").join("compile.mjs");
-    let mut child = Command::new(node)
-        .arg(&script)
-        .current_dir(helper)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("Could not start the LikeC4 compiler: {error}"))?;
-
-    let request = serde_json::to_vec(request)
-        .map_err(|error| format!("Could not encode the architecture request: {error}"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Could not open the LikeC4 compiler input.".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Could not read the LikeC4 compiler output.".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Could not read the LikeC4 compiler error output.".to_string())?;
-
-    let work = async move {
-        stdin
-            .write_all(&request)
-            .await
-            .map_err(|error| format!("Could not send the model to the LikeC4 compiler: {error}"))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|error| format!("Could not finish the LikeC4 compiler input: {error}"))?;
-        drop(stdin);
-
-        let read_stdout = read_capped(stdout, MAX_HELPER_OUTPUT_BYTES);
-        let read_stderr = read_capped(stderr, MAX_HELPER_STDERR_BYTES);
-        let wait = async {
-            child
-                .wait()
-                .await
-                .map_err(|error| format!("Could not wait for the LikeC4 compiler: {error}"))
-        };
-        let (out, err, status) = tokio::try_join!(read_stdout, read_stderr, wait)?;
-        Ok::<_, String>((out, err, status))
-    };
-
-    let outcome = tokio::select! {
-        _ = wait_cancelled(cancel) => {
-            return Err("Architecture loading was cancelled.".into());
-        }
-        result = tokio::time::timeout(timeout, work) => {
-            match result {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(format!(
-                        "The LikeC4 compiler did not finish within {} seconds.",
-                        timeout.as_secs()
-                    ));
-                }
-            }
-        }
-    };
-    let (stdout, stderr, status) = outcome;
-
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr);
-        let stderr = stderr.trim();
-        let detail = if stderr.is_empty() {
-            format!("exit status {status}")
-        } else {
-            stderr.to_string()
-        };
-        return Err(format!("The LikeC4 compiler failed: {detail}"));
-    }
-
-    let stdout = String::from_utf8(stdout)
-        .map_err(|_| "The LikeC4 compiler returned non-UTF-8 output.".to_string())?;
-    let response: HelperResponse = serde_json::from_str(&stdout)
-        .map_err(|error| format!("Could not read the LikeC4 compiler result: {error}"))?;
-    Ok(response)
-}
-
-pub(crate) async fn read_capped<R>(reader: R, limit: usize) -> Result<Vec<u8>, String>
-where
-    R: AsyncReadExt + Unpin,
-{
-    let mut output = Vec::new();
-    reader
-        .take(limit as u64 + 1)
-        .read_to_end(&mut output)
-        .await
-        .map_err(|error| format!("Could not read the LikeC4 helper output: {error}"))?;
-    if output.len() > limit {
-        return Err(format!(
-            "The LikeC4 helper output exceeded the {limit}-byte limit."
-        ));
-    }
-    Ok(output)
-}
-
-async fn wait_cancelled(cancel: Arc<AtomicBool>) {
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::runtime::helper_ready;
     use super::*;
-    use crate::tools::test_support::temp_root;
 
     fn cached_model(workspace: &str, root: &str) -> CachedModel {
         CachedModel {
@@ -1094,26 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_status_explains_missing_runtime() {
-        let status = runtime_status_for(None, None);
-        assert!(!status.ready);
-        assert!(status.message.contains("Node.js"));
-
-        let status = runtime_status_for(Some(PathBuf::from("/missing/node")), None);
-        assert!(!status.ready);
-        assert!(status.node_version.is_none());
-    }
-
-    #[test]
-    fn node_version_gate_matches_the_helper_requirement() {
-        assert!(node_supported("v22.22.3"));
-        assert!(node_supported("v22.23.0"));
-        assert!(node_supported("v26.13.0"));
-        assert!(!node_supported("v22.22.2"));
-        assert!(!node_supported("v22.12.0"));
-    }
-
-    #[test]
     fn caps_diagnostics() {
         let diagnostics = (0..MAX_DIAGNOSTICS + 10)
             .map(|index| Diagnostic {
@@ -1128,109 +751,9 @@ mod tests {
         assert!(diagnostics[0].message.contains("[truncated]"));
     }
 
-    fn node_binary() -> Option<PathBuf> {
-        find_node()
-    }
-
-    fn fake_helper(tag: &str, script: &str) -> PathBuf {
-        let root = temp_root(tag);
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(root.join("src/compile.mjs"), script).unwrap();
-        root
-    }
-
-    #[tokio::test]
-    async fn helper_success_is_parsed() {
-        let Some(node) = node_binary() else {
-            return;
-        };
-        let helper = fake_helper(
-            "arch-helper-ok",
-            r#"process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ok:true,model:{_stage:"layouted"},views:[{id:"index",title:"Index",kind:"element"}],diagnostics:[]})));"#,
-        );
-        let response = run_helper(
-            &node,
-            &helper,
-            &serde_json::json!({ "version": 1, "sources": { "model.c4": "model { }" } }),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .await
-        .unwrap();
-        assert!(response.ok);
-        assert_eq!(response.model.unwrap()["_stage"], "layouted");
-        assert_eq!(response.views[0].id, "index");
-        fs::remove_dir_all(&helper).ok();
-    }
-
-    #[tokio::test]
-    async fn helper_failure_reports_stderr() {
-        let Some(node) = node_binary() else {
-            return;
-        };
-        let helper = fake_helper(
-            "arch-helper-fail",
-            r#"process.stderr.write("compiler exploded"); process.exit(2);"#,
-        );
-        let error = run_helper(
-            &node,
-            &helper,
-            &serde_json::json!({ "version": 1, "sources": { "model.c4": "model { }" } }),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("compiler exploded"));
-        fs::remove_dir_all(&helper).ok();
-    }
-
-    #[tokio::test]
-    async fn helper_times_out_and_is_killed() {
-        let Some(node) = node_binary() else {
-            return;
-        };
-        let helper = fake_helper("arch-helper-timeout", r#"setInterval(() => {}, 1000);"#);
-        let error = run_helper_with_timeout(
-            &node,
-            &helper,
-            &serde_json::json!({ "version": 1, "sources": { "model.c4": "model { }" } }),
-            Arc::new(AtomicBool::new(false)),
-            Duration::from_millis(150),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("did not finish"));
-        fs::remove_dir_all(&helper).ok();
-    }
-
-    #[tokio::test]
-    async fn helper_cancellation_stops_the_process() {
-        let Some(node) = node_binary() else {
-            return;
-        };
-        let helper = fake_helper("arch-helper-cancel", r#"setInterval(() => {}, 1000);"#);
-        let cancel = Arc::new(AtomicBool::new(true));
-        let error = run_helper(
-            &node,
-            &helper,
-            &serde_json::json!({ "version": 1, "sources": { "model.c4": "model { }" } }),
-            cancel,
-        )
-        .await
-        .unwrap_err();
-        assert!(error.contains("cancelled"));
-        fs::remove_dir_all(&helper).ok();
-    }
-
-    #[tokio::test]
-    async fn compiler_output_is_bounded() {
-        let output = vec![b'x'; 32];
-        let error = read_capped(output.as_slice(), 16).await.unwrap_err();
-        assert!(error.contains("exceeded"));
-    }
-
     #[tokio::test]
     async fn compiles_cross_directory_references_without_a_root_file_or_config() {
-        let node = node_binary().expect("Node is required for the compiler integration test");
+        let node = find_node().expect("Node is required for the compiler integration test");
         let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../architecture-helper");
         let fixture = helper.join("test/fixtures/scattered");
         let workspace = Workspace::new(fixture.to_str().unwrap()).unwrap();
@@ -1260,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_pinned_helper_compiles_the_multi_file_fixture() {
-        let Some(node) = node_binary() else {
+        let Some(node) = find_node() else {
             return;
         };
         let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
