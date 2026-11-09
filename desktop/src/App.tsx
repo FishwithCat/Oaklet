@@ -582,7 +582,9 @@ function App() {
       <aside className="sidebar">
         <button
           type="button"
-          className="ghost icon-button new-chat"
+          className={`ghost icon-button new-chat${
+            view === "chat" ? " active" : ""
+          }`}
           onClick={newChat}
           disabled={running}
           aria-label="New chat"

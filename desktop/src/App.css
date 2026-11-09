@@ -159,9 +159,19 @@ textarea:focus-visible {
   height: 36px;
 }
 
+.sidebar .icon-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
 .sidebar button.icon-button.active {
-  color: var(--text);
-  border-color: rgba(154, 98, 41, 0.28);
+  color: var(--accent);
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+
+.sidebar button.icon-button.active:hover:not(:disabled) {
+  border-color: transparent;
   background: var(--accent-soft);
 }
 
