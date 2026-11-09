@@ -523,6 +523,14 @@ function App() {
     textareaRef.current?.focus();
   }
 
+  function showChat() {
+    if (view === "terminal") {
+      setView("chat");
+      return;
+    }
+    newChat();
+  }
+
   function respondToApproval(item: ToolItem, choice: ApprovalChoice) {
     if (!item.requestId) return;
     const requestId = item.requestId;
@@ -585,10 +593,9 @@ function App() {
           className={`ghost icon-button new-chat${
             view === "chat" ? " active" : ""
           }`}
-          onClick={newChat}
-          disabled={running}
-          aria-label="New chat"
-          title="New chat"
+          onClick={showChat}
+          aria-label={view === "terminal" ? "Chat" : "New chat"}
+          title={view === "terminal" ? "Chat" : "New chat"}
         >
           <ChatDotsIcon size={18} />
         </button>
@@ -600,7 +607,6 @@ function App() {
           onClick={() =>
             setView((current) => (current === "terminal" ? "chat" : "terminal"))
           }
-          disabled={running}
           aria-label="Terminal"
           aria-pressed={view === "terminal"}
           title="Terminal"
