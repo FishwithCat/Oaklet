@@ -495,6 +495,8 @@ button.allow-all-chip:hover:not(:disabled) {
 
 .arch-head {
   flex: none;
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -515,19 +517,9 @@ button.allow-all-chip:hover:not(:disabled) {
   font-weight: 600;
 }
 
-.arch-root {
+.arch-dropdown {
+  position: relative;
   min-width: 0;
-  max-width: 200px;
-  overflow: hidden;
-  padding: 1px 8px;
-  border: 1px solid rgba(154, 98, 41, 0.25);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .arch-actions {
@@ -538,20 +530,102 @@ button.allow-all-chip:hover:not(:disabled) {
   min-width: 0;
 }
 
-.arch-select {
+button.arch-select {
   min-width: 0;
   max-width: 230px;
-  padding: 4px 7px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--panel);
   font-size: 11.5px;
   color: var(--text);
 }
 
-.arch-select:focus-visible {
-  outline: 2px solid rgba(154, 98, 41, 0.55);
-  outline-offset: 1px;
+button.arch-select:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--border-strong);
+}
+
+button.arch-select[aria-expanded="true"] {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+}
+
+.arch-select-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-select-caret {
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+button.arch-select[aria-expanded="true"] .arch-select-caret {
+  transform: rotate(180deg);
+}
+
+.arch-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 40;
+  width: max-content;
+  max-width: 340px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgba(30, 25, 18, 0.14);
+}
+
+.arch-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.arch-menu-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-menu-item > svg {
+  flex: none;
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.arch-menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+.arch-menu-item:focus-visible {
+  outline: none;
+  background: var(--panel-2);
+}
+
+.arch-menu-item[aria-checked="true"] {
+  color: var(--accent);
 }
 
 .arch-head .icon-button.arch-refresh {
@@ -595,6 +669,7 @@ button.arch-agent:hover:not(:disabled) {
   flex: 1;
   min-height: 0;
   position: relative;
+  z-index: 0;
   overflow: hidden;
 }
 
