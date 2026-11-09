@@ -1503,6 +1503,213 @@ mod tests {
         assert!(empty.model.is_none());
     }
 
+    fn test_state() -> Arc<crate::AppState> {
+        Arc::new(crate::AppState {
+            config: std::sync::Mutex::new(crate::AppConfig::default()),
+            config_path: PathBuf::new(),
+            approvals: std::sync::Mutex::new(std::collections::HashMap::new()),
+            runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            command_allow_all: std::sync::Mutex::new(None),
+            terminal: std::sync::Mutex::new(std::collections::HashMap::new()),
+            architecture: std::sync::Mutex::new(ArchitectureCache::default()),
+            ids: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    #[test]
+    fn a_newer_ticket_supersedes_and_cancels_the_previous_one() {
+        let shared = test_state();
+        let first = LoadTicket::new(shared.clone()).unwrap();
+        let first_cancel = first.cancel.clone();
+
+        let second = LoadTicket::new(shared.clone()).unwrap();
+
+        assert!(first_cancel.load(Ordering::SeqCst));
+        assert!(first.require_current().unwrap_err().contains("superseded"));
+        second.require_current().unwrap();
+        assert_eq!(second.generation, first.generation + 1);
+    }
+
+    #[test]
+    fn dropping_an_old_ticket_keeps_the_newer_cancellation_slot() {
+        let shared = test_state();
+        let first = LoadTicket::new(shared.clone()).unwrap();
+        let second = LoadTicket::new(shared.clone()).unwrap();
+        let second_cancel = second.cancel.clone();
+
+        drop(first);
+        assert!(!second_cancel.load(Ordering::SeqCst));
+        {
+            let cache = shared.architecture.lock().unwrap();
+            assert_eq!(cache.generation, second.generation);
+            assert!(
+                cache
+                    .cancel
+                    .as_ref()
+                    .is_some_and(|cancel| Arc::ptr_eq(cancel, &second_cancel))
+            );
+        }
+
+        drop(second);
+        assert!(shared.architecture.lock().unwrap().cancel.is_none());
+    }
+
+    #[test]
+    fn workspace_changes_invalidate_the_ticket_and_drop_the_cached_model() {
+        let shared = test_state();
+        shared.architecture.lock().unwrap().cached =
+            Some(cached_model("/workspace", "architecture"));
+        let ticket = LoadTicket::new(shared.clone()).unwrap();
+        let cancel = ticket.cancel.clone();
+
+        cancel_for_workspace_change(&shared);
+
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(ticket.require_current().unwrap_err().contains("superseded"));
+        {
+            let cache = shared.architecture.lock().unwrap();
+            assert!(cache.cached.is_none());
+            assert!(cache.cancel.is_none());
+        }
+
+        let newer = LoadTicket::new(shared.clone()).unwrap();
+        drop(ticket);
+        let cache = shared.architecture.lock().unwrap();
+        assert!(
+            cache
+                .cancel
+                .as_ref()
+                .is_some_and(|slot| Arc::ptr_eq(slot, &newer.cancel))
+        );
+    }
+
+    #[test]
+    fn shutdown_cancels_in_flight_work_but_keeps_the_cached_model() {
+        let shared = test_state();
+        shared.architecture.lock().unwrap().cached =
+            Some(cached_model("/workspace", "architecture"));
+        let ticket = LoadTicket::new(shared.clone()).unwrap();
+        let cancel = ticket.cancel.clone();
+
+        cancel_all(&shared);
+
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(ticket.require_current().is_err());
+        let cache = shared.architecture.lock().unwrap();
+        assert!(cache.cached.is_some());
+        assert!(cache.cancel.is_none());
+    }
+
+    #[test]
+    fn discovery_serializes_camel_case_and_null_fields() {
+        let discovery = Discovery {
+            workspace: "/workspace".into(),
+            models: vec![ModelRoot {
+                root: ".".into(),
+                sources: vec!["model.c4".into()],
+                config: None,
+                unsupported_config: Some("likec4.config.ts".into()),
+            }],
+            default_path: DEFAULT_MODEL_PATH.into(),
+            runtime: RuntimeStatus {
+                ready: false,
+                node: None,
+                node_version: None,
+                helper: None,
+                message: "Node.js was not found.".into(),
+            },
+            warnings: vec!["warning".into()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(discovery).unwrap(),
+            serde_json::json!({
+                "workspace": "/workspace",
+                "models": [{
+                    "root": ".",
+                    "sources": ["model.c4"],
+                    "config": null,
+                    "unsupportedConfig": "likec4.config.ts",
+                }],
+                "defaultPath": "architecture/model.c4",
+                "runtime": {
+                    "ready": false,
+                    "node": null,
+                    "nodeVersion": null,
+                    "helper": null,
+                    "message": "Node.js was not found.",
+                },
+                "warnings": ["warning"],
+            })
+        );
+    }
+
+    #[test]
+    fn load_results_serialize_null_fields_and_cache_flags() {
+        let empty = LoadResult {
+            workspace: "/workspace".into(),
+            root: ".".into(),
+            sources: Vec::new(),
+            views: Vec::new(),
+            model: None,
+            diagnostics: Vec::new(),
+            stale: false,
+            cached: false,
+            source_digest: "digest".into(),
+            error: Some("failed".into()),
+            warnings: Vec::new(),
+        };
+        let value = serde_json::to_value(&empty).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 11);
+        assert!(value["model"].is_null());
+        assert_eq!(value["sourceDigest"], "digest");
+        assert_eq!(value["stale"], false);
+        assert_eq!(value["cached"], false);
+
+        let cached = LoadResult {
+            views: vec![ViewInfo {
+                id: "index".into(),
+                title: "Index".into(),
+                kind: "element".into(),
+            }],
+            model: Some(serde_json::json!({ "_stage": "layouted" })),
+            cached: true,
+            error: None,
+            ..empty
+        };
+        let value = serde_json::to_value(cached).unwrap();
+        assert_eq!(value["cached"], true);
+        assert_eq!(value["stale"], false);
+        assert!(value["error"].is_null());
+        assert_eq!(value["views"][0]["id"], "index");
+        assert_eq!(value["model"]["_stage"], "layouted");
+
+        let stale = fallback_result(
+            LoadBase {
+                workspace: "/workspace".into(),
+                root: "architecture".into(),
+                sources: Vec::new(),
+                digest: "digest".into(),
+                warnings: Vec::new(),
+            },
+            Some(cached_model("/workspace", "architecture")),
+            vec![Diagnostic {
+                message: "Target not resolved".into(),
+                file: Some("architecture/model.c4".into()),
+                line: Some(7),
+                column: None,
+            }],
+            Some("The LikeC4 model has errors.".into()),
+        );
+        let value = serde_json::to_value(stale).unwrap();
+        assert_eq!(value["cached"], false);
+        assert_eq!(value["stale"], true);
+        assert!(value["model"].is_object());
+        assert_eq!(value["views"][0]["id"], "index");
+        assert_eq!(value["diagnostics"][0]["file"], "architecture/model.c4");
+        assert_eq!(value["diagnostics"][0]["column"], serde_json::Value::Null);
+    }
+
     #[test]
     fn normalizes_model_roots() {
         assert_eq!(normalize_root("./architecture/"), "architecture");
