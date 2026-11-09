@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { settleStreaming, toBlocks } from "../src/chat-model.ts";
+import { isBlankTab, settleStreaming, toBlocks } from "../src/chat-model.ts";
 
 const reasoning = (text = "thinking") => ({
   kind: "reasoning",
@@ -73,4 +73,16 @@ test("settleStreaming clears only streaming assistant and reasoning items", () =
   assert.equal(next[2], settledReasoning);
   assert.equal(next[4], user);
   assert.equal(next[5], pendingTool);
+});
+
+test("isBlankTab only accepts an idle, unused tab", () => {
+  const blank = { running: false, items: [], savedSessionId: null };
+
+  assert.equal(isBlankTab(blank), true);
+  assert.equal(isBlankTab({ ...blank, running: true }), false);
+  assert.equal(
+    isBlankTab({ ...blank, items: [{ kind: "notice", tone: "muted", text: "Stopped." }] }),
+    false,
+  );
+  assert.equal(isBlankTab({ ...blank, savedSessionId: "saved" }), false);
 });

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
-import { settleStreaming, type Item } from "./chat-model";
+import { isBlankTab, settleStreaming, type Item } from "./chat-model";
 import {
   loadSessions,
   saveSession,
@@ -532,7 +532,15 @@ export function useAgentSession({
       items: snapshot.items,
       savedSessionId: snapshot.id,
     };
-    commitTabs((current) => [...current, tab]);
+    // Replacing the welcome tab keeps Cmd+R from leaving an empty chat beside
+    // the restored session.
+    commitTabs((current) => [
+      ...current.filter(
+        (candidate) =>
+          candidate.id !== activeTabId || !isBlankTab(candidate),
+      ),
+      tab,
+    ]);
     setActiveTabId(tab.id);
   }
 

@@ -14,6 +14,15 @@ export function settleStreaming(items: Item[]): Item[] {
   );
 }
 
+/** A tab the user has not used yet; restoring a session can replace it. */
+export function isBlankTab(tab: {
+  running: boolean;
+  items: Item[];
+  savedSessionId: string | null;
+}): boolean {
+  return !tab.running && tab.items.length === 0 && !tab.savedSessionId;
+}
+
 export type Block =
   | { kind: "process"; start: number; items: ProcessItem[] }
   | { kind: "single"; index: number; item: Item };
