@@ -1289,7 +1289,7 @@ button.arch-generate {
 }
 
 .diff-line.add {
-  background: var(--success-bg);
+  background: var(--palette-soft);
 }
 
 .diff-line.del {
