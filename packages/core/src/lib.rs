@@ -1,4 +1,5 @@
 mod agent;
+mod git;
 mod terminal;
 mod tools;
 
@@ -260,6 +261,44 @@ fn revoke_command_allow_all(state: State<'_, SharedState>) {
     }
 }
 
+fn workspace_path(state: &AppState) -> Result<PathBuf, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?;
+    let workspace = PathBuf::from(&config.workspace);
+    if !workspace.is_dir() {
+        return Err("Choose an existing workspace folder first.".into());
+    }
+    Ok(workspace)
+}
+
+#[tauri::command]
+async fn git_log(state: State<'_, SharedState>) -> Result<git::GitLog, String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || git::log(&workspace))
+        .await
+        .map_err(|error| format!("Could not read git history: {error}"))?
+}
+
+#[tauri::command]
+async fn git_show(state: State<'_, SharedState>, hash: String) -> Result<String, String> {
+    let workspace = workspace_path(&state)?;
+    tauri::async_runtime::spawn_blocking(move || git::show(&workspace, &hash))
+        .await
+        .map_err(|error| format!("Could not read the commit: {error}"))?
+}
+
+#[tauri::command]
+async fn git_ahead(state: State<'_, SharedState>) -> Result<Option<u32>, String> {
+    let Ok(workspace) = workspace_path(&state) else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || git::ahead(&workspace))
+        .await
+        .map_err(|error| format!("Could not read git status: {error}"))
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalOutput {
@@ -402,6 +441,9 @@ pub fn run() {
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,
+            git_log,
+            git_show,
+            git_ahead,
             terminal_open,
             terminal_write,
             terminal_resize,

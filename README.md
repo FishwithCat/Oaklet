@@ -14,6 +14,9 @@ enough to read in one sitting.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace.
+- A source control view: the current branch, the last 100 commits, and the diff
+  of each commit with per-file stats and line numbers. Its sidebar badge counts
+  commits not yet pushed to the configured upstream.
 - Asks before every shell command; the approval card shows the exact command
   and can allow all commands in the workspace.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
@@ -88,4 +91,4 @@ as `qwen2.5-coder`.
 ## Status
 
 Initial MVP. The conversation is in memory (restarting the app clears it), and
-there is no diff view, syntax highlighting, or context compaction yet.
+there is no syntax highlighting or context compaction yet.

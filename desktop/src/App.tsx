@@ -11,6 +11,7 @@ import {
   ChatDotsIcon,
   FolderOpenIcon,
   GearIcon,
+  GitBranchIcon,
   PaperPlaneRightIcon,
   ShieldCheckIcon,
   StopIcon,
@@ -19,6 +20,7 @@ import {
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
+import { SourceControl } from "./SourceControl";
 import { Terminal } from "./Terminal";
 import type {
   ApprovalChoice,
@@ -295,9 +297,11 @@ function App() {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [view, setView] = useState<"chat" | "terminal">("chat");
+  const [view, setView] = useState<"chat" | "terminal" | "git">("chat");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [allowAll, setAllowAll] = useState(false);
+  const [ahead, setAhead] = useState<number | null>(null);
+  const [gitTick, setGitTick] = useState(0);
 
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
@@ -322,6 +326,21 @@ function App() {
       .then(setAllowAll)
       .catch(() => setAllowAll(false));
   }, []);
+
+  useEffect(() => {
+    if (!config) return;
+    let cancelled = false;
+    invoke<number | null>("git_ahead")
+      .then((count) => {
+        if (!cancelled) setAhead(count);
+      })
+      .catch(() => {
+        if (!cancelled) setAhead(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [config?.workspace, gitTick, view]);
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
@@ -414,11 +433,13 @@ function App() {
           setActiveRunId(null);
           setRunning(false);
           setItems(settleStreaming);
+          setGitTick((value) => value + 1);
         }),
         listen<ErrorEvent>("agent:error", (event) => {
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
+          setGitTick((value) => value + 1);
           setItems((previous) => [
             ...settleStreaming(previous),
             { kind: "notice", tone: "error", text: event.payload.message },
@@ -428,6 +449,7 @@ function App() {
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
+          setGitTick((value) => value + 1);
           setItems((previous) => [
             ...settleStreaming(previous),
             { kind: "notice", tone: "muted", text: "Stopped." },
@@ -524,7 +546,7 @@ function App() {
   }
 
   function showChat() {
-    if (view === "terminal") {
+    if (view !== "chat") {
       setView("chat");
       return;
     }
@@ -594,8 +616,8 @@ function App() {
             view === "chat" ? " active" : ""
           }`}
           onClick={showChat}
-          aria-label={view === "terminal" ? "Chat" : "New chat"}
-          title={view === "terminal" ? "Chat" : "New chat"}
+          aria-label={view !== "chat" ? "Chat" : "New chat"}
+          title={view !== "chat" ? "Chat" : "New chat"}
         >
           <ChatDotsIcon size={18} />
         </button>
@@ -612,6 +634,33 @@ function App() {
           title="Terminal"
         >
           <TerminalWindowIcon size={18} />
+        </button>
+        <button
+          type="button"
+          className={`ghost icon-button sc-toggle${
+            view === "git" ? " active" : ""
+          }`}
+          onClick={() =>
+            setView((current) => (current === "git" ? "chat" : "git"))
+          }
+          aria-label={
+            ahead
+              ? `Source control (${ahead} unpushed)`
+              : "Source control"
+          }
+          aria-pressed={view === "git"}
+          title={
+            ahead
+              ? `${ahead} commit${ahead === 1 ? "" : "s"} not pushed`
+              : "Source control"
+          }
+        >
+          <GitBranchIcon size={18} />
+          {ahead !== null && ahead > 0 && (
+            <span className="sc-badge" aria-hidden="true">
+              {ahead > 99 ? "99+" : ahead}
+            </span>
+          )}
         </button>
         <div className="sidebar-foot">
           {allowAll && (
@@ -733,6 +782,13 @@ function App() {
           key={config.workspace}
           active={view === "terminal"}
           onClose={() => setView("chat")}
+        />
+
+        <SourceControl
+          key={config.workspace}
+          active={view === "git"}
+          refreshToken={gitTick}
+          onRefresh={() => setGitTick((value) => value + 1)}
         />
 
         {view === "chat" && (
