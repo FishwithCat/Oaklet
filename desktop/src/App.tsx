@@ -13,6 +13,7 @@ import { SettingsPanel, type AppConfig } from "./SettingsPanel";
 import { SourceControl } from "./SourceControl";
 import { Terminal } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
+import { agentShortcut } from "./shortcuts";
 import "./App.css";
 
 const Architecture = lazy(() => import("./Architecture"));
@@ -76,6 +77,19 @@ function App() {
     }
     newChat();
   }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (settingsOpen) return;
+      const action = agentShortcut(event, view, session.running);
+      if (!action) return;
+      event.preventDefault();
+      if (action === "new-session") newChat();
+      else session.stop();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   if (!config) {
     return (
@@ -193,7 +207,6 @@ function App() {
           running={session.running}
           activeRunId={session.activeRunId}
           onSend={session.send}
-          onStop={session.stop}
           onApproval={session.respondToApproval}
         />
 

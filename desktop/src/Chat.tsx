@@ -5,10 +5,7 @@ import {
   useState,
   type Ref,
 } from "react";
-import {
-  PaperPlaneRightIcon,
-  PauseIcon,
-} from "@phosphor-icons/react";
+import { PaperPlaneRightIcon } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
 import { mergeDraft } from "./architecture-prompt";
@@ -27,7 +24,6 @@ export function Chat({
   running,
   activeRunId,
   onSend,
-  onStop,
   onApproval,
 }: {
   ref?: Ref<ChatHandle>;
@@ -36,7 +32,6 @@ export function Chat({
   running: boolean;
   activeRunId: string | null;
   onSend: (text: string) => boolean;
-  onStop: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
 }) {
   const [input, setInput] = useState("");
@@ -199,27 +194,15 @@ export function Chat({
               <span className="hint">
                 Enter to send · Shift+Enter for a new line
               </span>
-              {running ? (
-                <button
-                  type="button"
-                  className="stop icon-button"
-                  onClick={onStop}
-                  aria-label="Stop"
-                  title="Stop"
-                >
-                  <PauseIcon size={14} weight="fill" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  className="primary icon-button"
-                  disabled={!input.trim()}
-                  aria-label="Send"
-                  title="Send"
-                >
-                  <PaperPlaneRightIcon size={16} weight="fill" />
-                </button>
-              )}
+              <button
+                type="submit"
+                className="primary icon-button"
+                disabled={running || !input.trim()}
+                aria-label="Send"
+                title="Send"
+              >
+                <PaperPlaneRightIcon size={16} weight="fill" />
+              </button>
             </div>
           </form>
         </div>
