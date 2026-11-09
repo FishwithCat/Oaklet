@@ -10,7 +10,8 @@ enough to read in one sitting.
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
-- Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`, `likec4_mcp`.
+- Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
+  `likec4_mcp`, and `web_search` when an API key is set.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace. Select text in chat and click **Send to Terminal** to run it in the
@@ -156,16 +157,33 @@ workspace** for shell commands. Use it with trusted projects. Results are return
 MCP Apps interactive widgets are not rendered in chat. Continue to use file tools
 for model edits and the Architecture view for diagrams.
 
+## Web search
+
+With an API key in **Settings**, the agent also gets `web_search`. It sends one
+query to the DeepSeek Search API (`https://api.deepseek.com/v1/tools/search`)
+with that key and asks for 10 results, then returns each source's title, URL,
+and summary (or snippet) with its date. The tool has a 20-second deadline and
+asks for no approval: it sends only the query, and to the provider the
+conversation already uses.
+
+**Search URL** sets the endpoint. It defaults to the DeepSeek Search API and
+ignores the configured Base URL and Model, so search works with any model
+provider as long as the key is a DeepSeek key. The result count stays fixed at
+10, and an empty Search URL falls back to the default. Without a key the tool is
+not registered and the model never sees it, so clearing the key also disables
+web search.
+
 ## Configuration
 
 Open **Settings** in the app:
 
-| Setting   | Default                     |
-| --------- | --------------------------- |
-| API key   | none                        |
-| Base URL  | `https://api.deepseek.com`  |
-| Model     | `deepseek-flash`            |
-| Workspace | your home directory         |
+| Setting    | Default                                    |
+| ---------- | ------------------------------------------ |
+| API key    | none                                       |
+| Base URL   | `https://api.deepseek.com`                 |
+| Model      | `deepseek-flash`                           |
+| Search URL | `https://api.deepseek.com/v1/tools/search` |
+| Workspace  | your home directory                        |
 
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a fully local setup with
@@ -179,6 +197,9 @@ as `qwen2.5-coder`.
 - `run_command` runs through the user's shell in the workspace and blocks on an
   in-app approval before starting. It times out after 120 seconds and caps
   captured output.
+- `web_search` sends the model's query text to the DeepSeek Search API. It runs
+  without an approval prompt, reads no workspace files, and is registered only
+  while an API key is configured.
 - **Allow all in workspace** stops prompting for `run_command` in that workspace
   for the rest of the app session. The sidebar shows an active indicator you can
   click to revoke; the grant is in memory only and never applies to file tools

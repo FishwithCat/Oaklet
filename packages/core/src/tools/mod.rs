@@ -15,6 +15,7 @@ use tokio::sync::watch;
 mod fs;
 mod likec4;
 mod shell;
+pub(crate) mod web;
 mod workspace;
 
 pub use workspace::Workspace;
@@ -184,12 +185,20 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn with_likec4(app: &tauri::AppHandle) -> Self {
+    /// Tools that need host state beyond the workspace: LikeC4 and, when an API
+    /// key is configured, DeepSeek web search.
+    pub fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
         let mut registry = Self::new();
         registry.tools.push(Box::new(likec4::LikeC4 {
             node: crate::architecture::find_node(),
             helper: crate::architecture::find_helper(app),
         }));
+        if !config.api_key.trim().is_empty() {
+            registry.tools.push(Box::new(web::WebSearch::new(
+                &config.api_key,
+                &config.search_url,
+            )));
+        }
         registry
     }
 

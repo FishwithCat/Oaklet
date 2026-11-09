@@ -2051,6 +2051,8 @@ button.arch-generate {
 .modal {
   position: relative;
   width: min(560px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -2106,6 +2108,13 @@ button.arch-generate {
 
 .field input:focus {
   border-color: color-mix(in srgb, var(--palette-primary) 55%, transparent);
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .field-row {

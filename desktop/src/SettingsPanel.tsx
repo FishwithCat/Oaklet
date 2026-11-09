@@ -7,6 +7,7 @@ export type AppConfig = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  searchUrl: string;
   workspace: string;
 };
 
@@ -136,6 +137,24 @@ export function SettingsPanel({
               setDraft((current) => ({ ...current, model: event.target.value }))
             }
           />
+        </div>
+
+        <div className="field">
+          <label htmlFor="search-url">Search URL</label>
+          <input
+            id="search-url"
+            placeholder="https://api.deepseek.com/v1/tools/search"
+            value={draft.searchUrl}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                searchUrl: event.target.value,
+              }))
+            }
+          />
+          <p className="field-hint">
+            Used by web_search. Defaults to the DeepSeek Search API.
+          </p>
         </div>
 
         <div className="field">

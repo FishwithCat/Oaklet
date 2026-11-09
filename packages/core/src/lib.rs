@@ -66,6 +66,8 @@ pub struct AppConfig {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default = "default_search_url")]
+    pub search_url: String,
     #[serde(default = "default_workspace")]
     pub workspace: String,
 }
@@ -76,6 +78,10 @@ fn default_base_url() -> String {
 
 fn default_model() -> String {
     "deepseek-flash".into()
+}
+
+fn default_search_url() -> String {
+    tools::web::DEFAULT_ENDPOINT.into()
 }
 
 fn default_workspace() -> String {
@@ -93,6 +99,7 @@ impl Default for AppConfig {
             base_url: default_base_url(),
             api_key: String::new(),
             model: default_model(),
+            search_url: default_search_url(),
             workspace: default_workspace(),
         }
     }
@@ -128,10 +135,17 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     config.base_url = config.base_url.trim().trim_end_matches('/').to_string();
     config.api_key = config.api_key.trim().to_string();
     config.model = config.model.trim().to_string();
+    config.search_url = config.search_url.trim().trim_end_matches('/').to_string();
     config.workspace = config.workspace.trim().to_string();
 
+    if config.search_url.is_empty() {
+        config.search_url = default_search_url();
+    }
     if !(config.base_url.starts_with("http://") || config.base_url.starts_with("https://")) {
         return Err("Base URL must start with http:// or https://.".into());
+    }
+    if !(config.search_url.starts_with("http://") || config.search_url.starts_with("https://")) {
+        return Err("Search URL must start with http:// or https://.".into());
     }
     if config.model.is_empty() {
         return Err("Model is required.".into());
@@ -519,7 +533,19 @@ pub fn run() {
 mod tests {
     use std::path::Path;
 
-    use super::auto_approves_command;
+    use super::{AppConfig, auto_approves_command};
+
+    #[test]
+    fn configs_saved_before_search_gets_the_deepseek_endpoint() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{"baseUrl":"https://api.deepseek.com","apiKey":"k","model":"m","workspace":"/tmp"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.search_url,
+            "https://api.deepseek.com/v1/tools/search"
+        );
+    }
 
     #[test]
     fn auto_approves_only_commands_in_the_granted_workspace() {
