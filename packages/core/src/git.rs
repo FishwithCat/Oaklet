@@ -110,7 +110,7 @@ fn is_repository(workspace: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn log(workspace: &Path) -> Result<GitLog, String> {
+pub fn log(workspace: &Path, include_commits: bool) -> Result<GitLog, String> {
     if !is_repository(workspace) {
         return Err("This workspace is not a git repository.".into());
     }
@@ -120,21 +120,27 @@ pub fn log(workspace: &Path) -> Result<GitLog, String> {
         .unwrap_or_default();
     let branches = local_branches(workspace).unwrap_or_default();
 
-    let format = format!("--format={LOG_FORMAT}");
-    let output = match run_git(
-        workspace,
-        &["log", "--max-count=100", "--no-color", format.as_str()],
-    ) {
-        Ok(output) => output,
-        // A freshly initialized repository has no HEAD to walk yet.
-        Err(error) if error.contains("does not have any commits") => String::new(),
-        Err(error) => return Err(error),
+    let commits = if include_commits {
+        let format = format!("--format={LOG_FORMAT}");
+        let output = match run_git(
+            workspace,
+            &["log", "--max-count=100", "--no-color", format.as_str()],
+        ) {
+            Ok(output) => output,
+            // A freshly initialized repository has no HEAD to walk yet.
+            Err(error) if error.contains("does not have any commits") => String::new(),
+            Err(error) => return Err(error),
+        };
+
+        parse_log(&output)
+    } else {
+        Vec::new()
     };
 
     Ok(GitLog {
         branch,
         branches,
-        commits: parse_log(&output),
+        commits,
     })
 }
 
@@ -363,6 +369,36 @@ fn parse_log(output: &str) -> Vec<GitCommit> {
 #[cfg(test)]
 mod tests {
     use super::{parse_branches, parse_log, parse_status, valid_hash, valid_relative_path};
+
+    #[test]
+    fn branch_metadata_can_be_loaded_without_commit_history() {
+        let root = crate::tools::test_support::temp_root("git-history");
+        super::run_git(&root, &["init", "-b", "main"]).unwrap();
+        super::run_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        )
+        .unwrap();
+        let metadata = super::log(&root, false).unwrap();
+        assert_eq!(metadata.branch, "main");
+        assert_eq!(metadata.branches, ["main"]);
+        assert!(metadata.commits.is_empty());
+        let history = super::log(&root, true).unwrap();
+        assert_eq!(history.commits.len(), 1);
+        assert_eq!(history.commits[0].subject, "Initial");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn patch_preview_is_bounded_and_preserves_git_errors() {

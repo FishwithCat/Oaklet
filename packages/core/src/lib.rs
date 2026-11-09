@@ -320,9 +320,12 @@ fn workspace_path(state: &AppState) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn git_log(state: State<'_, SharedState>) -> Result<git::GitLog, String> {
+async fn git_log(
+    state: State<'_, SharedState>,
+    include_commits: bool,
+) -> Result<git::GitLog, String> {
     let workspace = workspace_path(&state)?;
-    tauri::async_runtime::spawn_blocking(move || git::log(&workspace))
+    tauri::async_runtime::spawn_blocking(move || git::log(&workspace, include_commits))
         .await
         .map_err(|error| format!("Could not read git history: {error}"))?
 }

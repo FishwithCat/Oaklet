@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message, open } from "@tauri-apps/plugin-dialog";
 import {
@@ -13,7 +13,7 @@ import {
 import { Chat, type ChatHandle } from "./Chat";
 import { errorText, SettingsPanel, type AppConfig } from "./SettingsPanel";
 import { SessionHistory } from "./SessionHistory";
-import { SourceControl } from "./SourceControl";
+import { SourceControl, type ChangeInfo } from "./SourceControl";
 import { Terminal, type TerminalHandle } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
 import { agentShortcut } from "./shortcuts";
@@ -30,7 +30,12 @@ function App() {
     "chat" | "terminal" | "git" | "architecture"
   >("chat");
   const [architectureOpened, setArchitectureOpened] = useState(false);
-  const [unstaged, setUnstaged] = useState<number | null>(null);
+  const [changes, setChanges] = useState<ChangeInfo[] | null>(null);
+  const [changesError, setChangesError] = useState("");
+  const unstaged = useMemo(
+    () => changes?.filter((change) => change.unstaged).length ?? null,
+    [changes],
+  );
   const [workspaceTick, setWorkspaceTick] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const chatRef = useRef<ChatHandle>(null);
@@ -54,21 +59,21 @@ function App() {
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
-    invoke<{ unstaged: boolean }[]>("git_changes")
+    setChanges(null);
+    setChangesError("");
+    invoke<ChangeInfo[]>("git_changes")
       .then((changes) => {
         if (!cancelled) {
-          setUnstaged(
-            changes.filter((change) => change.unstaged).length,
-          );
+          setChanges(changes);
         }
       })
-      .catch(() => {
-        if (!cancelled) setUnstaged(null);
+      .catch((error) => {
+        if (!cancelled) setChangesError(errorText(error));
       });
     return () => {
       cancelled = true;
     };
-  }, [config?.workspace, workspaceTick, view]);
+  }, [config?.workspace, workspaceTick]);
 
   function newChat() {
     if (session.running) return;
@@ -180,9 +185,10 @@ function App() {
           className={`ghost icon-button sc-toggle${
             view === "git" ? " active" : ""
           }`}
-          onClick={() =>
-            setView((current) => (current === "git" ? "chat" : "git"))
-          }
+          onClick={() => {
+            if (view !== "git") setWorkspaceTick((value) => value + 1);
+            setView((current) => (current === "git" ? "chat" : "git"));
+          }}
           aria-label={
             unstaged
               ? `Source control (${unstaged} unstaged)`
@@ -282,6 +288,8 @@ function App() {
         <SourceControl
           key={config.workspace}
           active={view === "git"}
+          changes={changes}
+          changesError={changesError}
           refreshToken={workspaceTick}
           onRefresh={() => setWorkspaceTick((value) => value + 1)}
         />

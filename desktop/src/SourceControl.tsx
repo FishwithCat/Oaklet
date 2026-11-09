@@ -20,7 +20,7 @@ type CommitInfo = {
 };
 
 type GitLog = { branch: string; branches: string[]; commits: CommitInfo[] };
-type ChangeInfo = { path: string; status: string };
+export type ChangeInfo = { path: string; status: string; unstaged: boolean };
 
 const CHANGE_STATUS: Record<string, { label: string; title: string }> = {
   untracked: { label: "U", title: "Untracked" },
@@ -173,16 +173,19 @@ function Diff({
 /** Uncommitted changes and the commit history, each with a file diff. */
 export function SourceControl({
   active,
-  refreshToken = 0,
+  refreshToken,
   onRefresh,
+  changes,
+  changesError,
 }: {
   active: boolean;
-  refreshToken?: number;
-  onRefresh?: () => void;
+  refreshToken: number;
+  onRefresh: () => void;
+  changes: ChangeInfo[] | null;
+  changesError: string;
 }) {
   const [tab, setTab] = useState<"changes" | "commits">("changes");
   const [log, setLog] = useState<GitLog | null>(null);
-  const [changes, setChanges] = useState<ChangeInfo[] | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [selectedChange, setSelectedChange] = useState<string | null>(null);
   const [patch, setPatch] = useState("");
@@ -190,7 +193,6 @@ export function SourceControl({
   const [diffError, setDiffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [reload, setReload] = useState(0);
   const [branchOpen, setBranchOpen] = useState(false);
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
   const [branchError, setBranchError] = useState("");
@@ -203,31 +205,22 @@ export function SourceControl({
     setLoading(true);
     setError("");
 
-    Promise.all([
-      invoke<GitLog>("git_log"),
-      invoke<ChangeInfo[]>("git_changes"),
-    ])
-      .then(([nextLog, nextChanges]) => {
+    invoke<GitLog>("git_log", { includeCommits: tab === "commits" })
+      .then((nextLog) => {
         if (cancelled) return;
         setLog(nextLog);
-        setChanges(nextChanges);
-        setSelectedCommit((current) =>
-          current && nextLog.commits.some((commit) => commit.hash === current)
-            ? current
-            : (nextLog.commits[0]?.hash ?? null),
-        );
-        setSelectedChange((current) =>
-          current && nextChanges.some((change) => change.path === current)
-            ? current
-            : (nextChanges[0]?.path ?? null),
-        );
+        if (tab === "commits") {
+          setSelectedCommit((current) =>
+            current && nextLog.commits.some((commit) => commit.hash === current)
+              ? current
+              : (nextLog.commits[0]?.hash ?? null),
+          );
+        }
       })
       .catch((err) => {
         if (cancelled) return;
         setLog(null);
-        setChanges(null);
         setSelectedCommit(null);
-        setSelectedChange(null);
         setError(errorText(err));
       })
       .finally(() => {
@@ -237,7 +230,16 @@ export function SourceControl({
     return () => {
       cancelled = true;
     };
-  }, [active, reload, refreshToken]);
+  }, [active, tab, refreshToken]);
+
+  useEffect(() => {
+    if (!changes) return;
+    setSelectedChange((current) =>
+      current && changes.some((change) => change.path === current)
+        ? current
+        : (changes[0]?.path ?? null),
+    );
+  }, [changes]);
 
   useEffect(() => {
     if (!branchOpen) return;
@@ -307,7 +309,7 @@ export function SourceControl({
     return () => {
       cancelled = true;
     };
-  }, [active, tab, target, reload, refreshToken]);
+  }, [active, tab, target, refreshToken]);
 
   const commits = log?.commits ?? [];
   const branches = log?.branches ?? [];
@@ -317,8 +319,7 @@ export function SourceControl({
   const diffReady = targetKey !== null && patchFor === targetKey;
 
   function refresh() {
-    setReload((value) => value + 1);
-    onRefresh?.();
+    onRefresh();
   }
 
   async function switchBranch(branch: string) {
@@ -442,15 +443,15 @@ export function SourceControl({
         </button>
       </div>
 
-      {error ? (
+      {error || changesError ? (
         <div className="sc-empty">
           <GitBranchIcon size={22} />
-          <p>{error}</p>
+          <p>{error || changesError}</p>
           <button type="button" onClick={refresh}>
             Try again
           </button>
         </div>
-      ) : !log || !changes ? (
+      ) : loading || !log || !changes ? (
         <p className="sc-note">Loading source control...</p>
       ) : tab === "changes" ? (
         changes.length === 0 ? (
