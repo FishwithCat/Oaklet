@@ -14,7 +14,7 @@ use crate::tools::{
 };
 use crate::{AppConfig, PendingApproval, SharedState, auto_approves_command};
 
-const MAX_STEPS: usize = 32;
+const MAX_STEPS: usize = 200;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Serialize)]
