@@ -1,0 +1,55 @@
+/* Light theme: palette, semantic colors, and terminal ANSI colors. */
+:root {
+  color-scheme: light;
+  --palette-primary: #328e6e;
+  --palette-secondary: #67ae6e;
+  --palette-tertiary: #90c67c;
+  --palette-soft: #e1eebc;
+
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #edf4e7;
+  --border: #d6e2cf;
+  --border-strong: #a8bfa4;
+  --text: #1d3027;
+  --muted: #52665a;
+  /* Darken the primary for readable small text and white button labels. */
+  --accent: #287658;
+  --accent-hover: #205f47;
+  --on-accent: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--palette-primary) 9%, transparent);
+  --accent-border: color-mix(in srgb, var(--palette-primary) 30%, transparent);
+  --accent-border-strong: color-mix(in srgb, var(--palette-primary) 50%, transparent);
+  --accent-surface-hover: color-mix(in srgb, var(--palette-primary) 15%, transparent);
+  --focus-ring: var(--accent);
+  --green: var(--accent);
+  --red: #b23a48;
+  --yellow: #856315;
+  --warning-bg: color-mix(in srgb, var(--yellow) 8%, var(--panel));
+  --warning-border: color-mix(in srgb, var(--yellow) 30%, transparent);
+  --success-bg: color-mix(in srgb, var(--green) 9%, var(--panel));
+  --danger-bg: color-mix(in srgb, var(--red) 8%, var(--panel));
+  --hover-overlay: color-mix(in srgb, var(--text) 8%, transparent);
+  --subtle-overlay: color-mix(in srgb, var(--text) 4%, transparent);
+  --shadow-color: color-mix(in srgb, var(--text) 14%, transparent);
+  --backdrop: color-mix(in srgb, var(--text) 28%, transparent);
+  --brand-gradient: linear-gradient(135deg, var(--palette-soft), var(--palette-tertiary), var(--palette-secondary));
+
+  --terminal-selection: #d6e8ca;
+  --terminal-black: var(--text);
+  --terminal-red: var(--red);
+  --terminal-green: var(--green);
+  --terminal-yellow: var(--yellow);
+  --terminal-blue: #365f89;
+  --terminal-magenta: #80517b;
+  --terminal-cyan: #276f70;
+  --terminal-white: #dce6d5;
+  --terminal-bright-black: #62776b;
+  --terminal-bright-red: #ba4250;
+  --terminal-bright-green: #317d50;
+  --terminal-bright-yellow: #896719;
+  --terminal-bright-blue: #416f9b;
+  --terminal-bright-magenta: #92608b;
+  --terminal-bright-cyan: #307b7b;
+  --terminal-bright-white: var(--bg);
+}

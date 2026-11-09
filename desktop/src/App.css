@@ -1,17 +1,6 @@
+@import "./theme.css";
+
 :root {
-  color-scheme: light;
-  --bg: #faf9f7;
-  --panel: #ffffff;
-  --panel-2: #f3f1ec;
-  --border: #e4e0d9;
-  --border-strong: #c9c3b8;
-  --text: #1e1b16;
-  --muted: #6b655c;
-  --accent: #9a6229;
-  --accent-soft: rgba(154, 98, 41, 0.09);
-  --green: #2f7d55;
-  --red: #b23a48;
-  --yellow: #8a6a1f;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -38,9 +27,7 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 50% -20%, rgba(154, 98, 41, 0.07), transparent 45%),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
@@ -76,17 +63,17 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
 button.primary:hover:not(:disabled) {
-  background: #855322;
-  border-color: #855322;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button.stop {
-  border-color: rgba(178, 58, 72, 0.45);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
   color: var(--red);
 }
 
@@ -111,7 +98,7 @@ button.icon-button {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid rgba(154, 98, 41, 0.55);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -137,15 +124,15 @@ textarea:focus-visible {
   gap: 10px;
   padding: 14px 0;
   border-right: 1px solid var(--border);
-  background: rgba(250, 249, 247, 0.86);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: blur(10px);
 }
 
 .empty-mark {
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #f2ce97, #c68a45);
-  color: #2a1a06;
+  background: var(--brand-gradient);
+  color: var(--text);
   font-weight: 800;
 }
 
@@ -177,7 +164,7 @@ textarea:focus-visible {
   border: 2px solid var(--bg);
   border-radius: 999px;
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-accent);
   font-family: var(--sans);
   font-size: 9px;
   font-weight: 700;
@@ -220,14 +207,14 @@ button.allow-all-chip {
   width: 32px;
   height: 32px;
   color: var(--green);
-  border-color: rgba(47, 125, 85, 0.3);
-  background: rgba(47, 125, 85, 0.08);
+  border-color: color-mix(in srgb, var(--green) 30%, transparent);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
 }
 
 button.allow-all-chip:hover:not(:disabled) {
   color: var(--green);
-  border-color: rgba(47, 125, 85, 0.5);
-  background: rgba(47, 125, 85, 0.14);
+  border-color: color-mix(in srgb, var(--green) 50%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
 }
 
 .chat {
@@ -337,7 +324,7 @@ button.allow-all-chip:hover:not(:disabled) {
 }
 
 .terminal-tab-close:hover:not(:disabled) {
-  background: rgba(30, 27, 22, 0.08);
+  background: var(--hover-overlay);
   border-color: transparent;
   color: var(--text);
 }
@@ -421,7 +408,7 @@ button.allow-all-chip:hover:not(:disabled) {
   max-width: 220px;
   overflow: hidden;
   padding: 1px 8px;
-  border: 1px solid rgba(154, 98, 41, 0.25);
+  border: 1px solid color-mix(in srgb, var(--palette-primary) 25%, transparent);
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
@@ -585,7 +572,7 @@ button.arch-select[aria-expanded="true"] .arch-select-caret {
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--panel);
-  box-shadow: 0 12px 30px rgba(30, 25, 18, 0.14);
+  box-shadow: 0 12px 30px var(--shadow-color);
 }
 
 .arch-menu-item {
@@ -653,7 +640,7 @@ button.arch-agent {
   align-items: center;
   gap: 5px;
   padding: 5px 9px;
-  border-color: rgba(154, 98, 41, 0.3);
+  border-color: var(--accent-border);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 12px;
@@ -661,8 +648,8 @@ button.arch-agent {
 }
 
 button.arch-agent:hover:not(:disabled) {
-  border-color: rgba(154, 98, 41, 0.5);
-  background: rgba(154, 98, 41, 0.15);
+  border-color: var(--accent-border-strong);
+  background: var(--accent-surface-hover);
 }
 
 .arch-canvas {
@@ -777,14 +764,14 @@ button.arch-generate {
 }
 
 .arch-banner.warning {
-  border-color: rgba(138, 106, 31, 0.3);
-  background: rgba(138, 106, 31, 0.06);
+  border-color: color-mix(in srgb, var(--yellow) 30%, transparent);
+  background: color-mix(in srgb, var(--yellow) 6%, transparent);
   color: var(--yellow);
 }
 
 .arch-banner.error {
-  border-color: rgba(178, 58, 72, 0.3);
-  background: rgba(178, 58, 72, 0.06);
+  border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
   color: var(--red);
 }
 
@@ -863,7 +850,7 @@ button.arch-generate {
 .commit-meta code {
   padding: 0 3px;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.045);
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
@@ -1040,13 +1027,11 @@ button.arch-generate {
 }
 
 .diff-line.add {
-  background: #eef5f1;
-  background: color-mix(in srgb, var(--green) 9%, var(--panel));
+  background: var(--success-bg);
 }
 
 .diff-line.del {
-  background: #f9eff0;
-  background: color-mix(in srgb, var(--red) 8%, var(--panel));
+  background: var(--danger-bg);
 }
 
 .diff-line.meta {
@@ -1062,7 +1047,7 @@ button.arch-generate {
   width: 40px;
   padding: 0 7px;
   border-right: 1px solid var(--border);
-  color: rgba(107, 101, 92, 0.72);
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
   background: inherit;
   text-align: right;
   user-select: none;
@@ -1126,7 +1111,7 @@ button.arch-generate {
   border-radius: 14px;
   font-size: 22px;
   margin: 0 auto 22px;
-  box-shadow: 0 10px 40px rgba(154, 98, 41, 0.18);
+  box-shadow: 0 10px 40px color-mix(in srgb, var(--palette-primary) 18%, transparent);
 }
 
 .empty h1 {
@@ -1178,8 +1163,8 @@ button.arch-generate {
 }
 
 .suggestion:hover:not(:disabled) {
-  border-color: rgba(154, 98, 41, 0.38);
-  background: linear-gradient(180deg, #f8f4ed, var(--panel));
+  border-color: color-mix(in srgb, var(--palette-primary) 38%, transparent);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
 }
 
 .msg {
@@ -1195,7 +1180,7 @@ button.arch-generate {
 
 .msg.user .bubble {
   background: var(--accent-soft);
-  border: 1px solid rgba(154, 98, 41, 0.28);
+  border: 1px solid color-mix(in srgb, var(--palette-primary) 28%, transparent);
   border-radius: 14px 14px 4px 14px;
   padding: 10px 14px;
   max-width: 78%;
@@ -1275,14 +1260,14 @@ button.arch-generate {
 .markdown code {
   font-family: var(--mono);
   font-size: 12.5px;
-  background: rgba(0, 0, 0, 0.045);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 6%, transparent);
   border-radius: 4px;
   padding: 1px 5px;
 }
 
 .markdown pre {
-  background: #f4f1ea;
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
@@ -1426,7 +1411,7 @@ button.arch-generate {
 
 .process-head:hover:not(:disabled) {
   border-color: transparent;
-  background: rgba(30, 27, 22, 0.04);
+  background: var(--subtle-overlay);
   color: var(--text);
 }
 
@@ -1511,7 +1496,7 @@ button.arch-generate {
 
 .row-head:hover:not(:disabled) {
   border-color: transparent;
-  background: rgba(30, 27, 22, 0.04);
+  background: var(--subtle-overlay);
   color: var(--text);
 }
 
@@ -1631,9 +1616,9 @@ button.arch-generate {
 .approval {
   margin: 3px 0 5px 23px;
   padding: 10px 12px;
-  border: 1px solid rgba(154, 98, 41, 0.35);
+  border: 1px solid var(--warning-border);
   border-radius: 8px;
-  background: rgba(229, 192, 123, 0.12);
+  background: var(--warning-bg);
 }
 
 .approval p {
@@ -1649,7 +1634,7 @@ button.arch-generate {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: #f4f1ea;
+  background: var(--panel-2);
   color: var(--text);
   font-size: 11.5px;
   white-space: pre-wrap;
@@ -1672,8 +1657,8 @@ button.arch-generate {
 
 .notice.error {
   color: var(--red);
-  background: rgba(178, 58, 72, 0.07);
-  border: 1px solid rgba(178, 58, 72, 0.2);
+  background: color-mix(in srgb, var(--red) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 20%, transparent);
   border-radius: 9px;
   padding: 10px 14px;
   text-align: left;
@@ -1682,7 +1667,7 @@ button.arch-generate {
 .composer-wrap {
   flex: none;
   padding: 10px 18px 16px;
-  background: linear-gradient(180deg, transparent, rgba(250, 249, 247, 0.95) 40%);
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg) 95%, transparent) 40%);
 }
 
 .composer {
@@ -1701,8 +1686,8 @@ button.arch-generate {
 }
 
 .composer:focus-within {
-  border-color: rgba(154, 98, 41, 0.5);
-  box-shadow: 0 0 0 3px rgba(154, 98, 41, 0.1);
+  border-color: var(--accent-border-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--palette-primary) 10%, transparent);
 }
 
 .composer textarea {
@@ -1740,7 +1725,7 @@ button.arch-generate {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(30, 25, 18, 0.28);
+  background: var(--backdrop);
 }
 
 .modal {
@@ -1750,7 +1735,7 @@ button.arch-generate {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 22px;
-  box-shadow: 0 24px 70px rgba(30, 25, 18, 0.16);
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--text) 16%, transparent);
 }
 
 .modal h2 {
@@ -1800,7 +1785,7 @@ button.arch-generate {
 }
 
 .field input:focus {
-  border-color: rgba(154, 98, 41, 0.55);
+  border-color: color-mix(in srgb, var(--palette-primary) 55%, transparent);
 }
 
 .field-row {
@@ -1841,7 +1826,7 @@ button.arch-generate {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c9c3b8;
+  background: var(--border-strong);
   border: 3px solid var(--bg);
   border-radius: 999px;
 }

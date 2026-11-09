@@ -25,29 +25,32 @@ type TerminalHandle = {
 
 type Tab = { id: string; title: string };
 
-const THEME = {
-  background: "rgba(0, 0, 0, 0)",
-  foreground: "#3a342c",
-  cursor: "#b4653a",
-  cursorAccent: "#faf9f7",
-  selectionBackground: "#e3d7c3",
-  black: "#3a342c",
-  red: "#b4453a",
-  green: "#5c7a45",
-  yellow: "#a8781f",
-  blue: "#4a6d8c",
-  magenta: "#8a5a7a",
-  cyan: "#3f7a74",
-  white: "#e8e0d2",
-  brightBlack: "#8a8070",
-  brightRed: "#c25b4e",
-  brightGreen: "#729158",
-  brightYellow: "#bd8d33",
-  brightBlue: "#5f86a5",
-  brightMagenta: "#a17393",
-  brightCyan: "#559b94",
-  brightWhite: "#faf9f7",
-};
+function getTerminalTheme() {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    background: "rgba(0, 0, 0, 0)",
+    foreground: style.getPropertyValue("--text").trim(),
+    cursor: style.getPropertyValue("--accent").trim(),
+    cursorAccent: style.getPropertyValue("--bg").trim(),
+    selectionBackground: style.getPropertyValue("--terminal-selection").trim(),
+    black: style.getPropertyValue("--terminal-black").trim(),
+    red: style.getPropertyValue("--terminal-red").trim(),
+    green: style.getPropertyValue("--terminal-green").trim(),
+    yellow: style.getPropertyValue("--terminal-yellow").trim(),
+    blue: style.getPropertyValue("--terminal-blue").trim(),
+    magenta: style.getPropertyValue("--terminal-magenta").trim(),
+    cyan: style.getPropertyValue("--terminal-cyan").trim(),
+    white: style.getPropertyValue("--terminal-white").trim(),
+    brightBlack: style.getPropertyValue("--terminal-bright-black").trim(),
+    brightRed: style.getPropertyValue("--terminal-bright-red").trim(),
+    brightGreen: style.getPropertyValue("--terminal-bright-green").trim(),
+    brightYellow: style.getPropertyValue("--terminal-bright-yellow").trim(),
+    brightBlue: style.getPropertyValue("--terminal-bright-blue").trim(),
+    brightMagenta: style.getPropertyValue("--terminal-bright-magenta").trim(),
+    brightCyan: style.getPropertyValue("--terminal-bright-cyan").trim(),
+    brightWhite: style.getPropertyValue("--terminal-bright-white").trim(),
+  };
+}
 
 function newSessionId(): string {
   return (
@@ -82,7 +85,7 @@ function TerminalPane({
       fontSize: 12,
       lineHeight: 1.45,
       scrollback: 5000,
-      theme: THEME,
+      theme: getTerminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -180,7 +183,7 @@ function TerminalPane({
       const host = hostRef.current;
       const term = termRef.current;
       if (host && term && host.clientWidth > 0 && host.clientHeight > 0) {
-        term.options.theme = THEME;
+        term.options.theme = getTerminalTheme();
         fitRef.current?.fit();
       }
       term?.focus();
