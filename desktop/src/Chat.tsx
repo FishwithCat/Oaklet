@@ -21,6 +21,13 @@ import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo } from "./useAgentSession";
 
+const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
+  working: "Working",
+  idle: "Idle",
+  done: "Done",
+  block: "Blocked",
+};
+
 export type ChatHandle = {
   prefill: (prompt: string) => void;
 };
@@ -270,6 +277,12 @@ export function Chat({
                 tab.id === activeTabId ? " active" : ""
               }`}
             >
+              <span
+                className={`tab-status ${tab.status}`}
+                role="img"
+                aria-label={`Status: ${STATUS_LABEL[tab.status]}`}
+                title={STATUS_LABEL[tab.status]}
+              />
               <button
                 type="button"
                 role="tab"

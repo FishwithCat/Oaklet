@@ -36,12 +36,14 @@ export type ChatTabInfo = {
   id: string;
   title: string;
   running: boolean;
+  status: "working" | "idle" | "done" | "block";
 };
 
 type ChatTabState = {
   id: string;
   title: string;
   running: boolean;
+  completed: boolean;
   items: Item[];
   messages: unknown[];
   activeRunId: string | null;
@@ -67,12 +69,23 @@ function blankTab(number: number): ChatTabState {
     id: newId(),
     title: `Chat ${number}`,
     running: false,
+    completed: false,
     items: [],
     messages: [],
     activeRunId: null,
     runId: null,
     savedSessionId: null,
   };
+}
+
+function tabStatus(tab: ChatTabState): ChatTabInfo["status"] {
+  const blocked = tab.items.some(
+    (item) => item.kind === "tool" && item.status === "awaiting",
+  );
+  if (blocked) return "block";
+  if (tab.running) return "working";
+  if (tab.completed) return "done";
+  return "idle";
 }
 
 export function useAgentSession({
@@ -335,6 +348,7 @@ export function useAgentSession({
             patchTab(tabId, {
               messages,
               running: false,
+              completed: true,
               activeRunId: null,
               runId: null,
               items: nextItems,
@@ -354,6 +368,7 @@ export function useAgentSession({
             const notice: Item = { kind: "notice", tone: "error", text: message };
             patchTab(tabId, {
               running: false,
+              completed: false,
               activeRunId: null,
               runId: null,
               items: [...settleStreaming(tab.items), notice],
@@ -372,6 +387,7 @@ export function useAgentSession({
             const notice: Item = { kind: "notice", tone: "muted", text: "Stopped." };
             patchTab(tabId, {
               running: false,
+              completed: false,
               activeRunId: null,
               runId: null,
               items: [...settleStreaming(tab.items), notice],
@@ -455,6 +471,7 @@ export function useAgentSession({
               messages: nextMessages,
               items: [...candidate.items, userItem],
               running: true,
+              completed: false,
               activeRunId: null,
               runId: null,
             }
@@ -559,10 +576,11 @@ export function useAgentSession({
     items: activeTab?.items ?? [],
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
-    tabs: tabs.map(({ id, title, running }): ChatTabInfo => ({
-      id,
-      title,
-      running,
+    tabs: tabs.map((tab): ChatTabInfo => ({
+      id: tab.id,
+      title: tab.title,
+      running: tab.running,
+      status: tabStatus(tab),
     })),
     activeTabId: activeTab?.id ?? "",
     allowAll,

@@ -315,6 +315,27 @@ button.allow-all-chip:hover:not(:disabled) {
   color: var(--text);
 }
 
+.tab-status {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.tab-status.working {
+  background: var(--green);
+}
+
+.tab-status.block {
+  background: var(--yellow);
+}
+
+.tab-status.done {
+  background: var(--palette-secondary);
+}
+
 .view-tab-label {
   max-width: 180px;
   overflow: hidden;
