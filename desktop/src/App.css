@@ -128,14 +128,6 @@ textarea:focus-visible {
   backdrop-filter: blur(10px);
 }
 
-.empty-mark {
-  display: grid;
-  place-items: center;
-  background: var(--brand-gradient);
-  color: var(--text);
-  font-weight: 800;
-}
-
 .sidebar .new-chat {
   width: 36px;
   height: 36px;
@@ -201,6 +193,16 @@ textarea:focus-visible {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* Empty chat: center the headline and composer together. */
+.main.empty-state .chat {
+  flex: none;
+  margin-top: auto;
+}
+
+.main.empty-state .composer-wrap {
+  margin-bottom: auto;
 }
 
 button.allow-all-chip {
@@ -1339,71 +1341,16 @@ button.arch-generate {
 
 .empty {
   max-width: 680px;
-  margin: 11vh auto 0;
+  margin: auto;
   padding: 0 8px;
   text-align: center;
-}
-
-.empty-mark {
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
-  font-size: 22px;
-  margin: 0 auto 22px;
-  box-shadow: 0 10px 40px color-mix(in srgb, var(--palette-primary) 18%, transparent);
 }
 
 .empty h1 {
   font-size: 29px;
   font-weight: 620;
   letter-spacing: -0.5px;
-  margin: 0 0 10px;
-}
-
-.empty p {
-  color: var(--muted);
-  font-size: 13.5px;
-  line-height: 1.6;
-  margin: 0 auto 30px;
-  max-width: 470px;
-}
-
-.empty code {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--accent);
-  overflow-wrap: anywhere;
-}
-
-.suggestions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  text-align: left;
-}
-
-.suggestion {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, var(--panel-2), var(--panel));
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--muted);
-  height: 100%;
-}
-
-.suggestion strong {
-  color: var(--text);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.suggestion:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--palette-primary) 38%, transparent);
-  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  margin: 0;
 }
 
 .msg {
@@ -2075,10 +2022,6 @@ button.arch-generate {
 }
 
 @media (max-width: 760px) {
-  .suggestions {
-    grid-template-columns: 1fr;
-  }
-
   .arch-head {
     flex-wrap: wrap;
   }
@@ -2101,10 +2044,6 @@ button.arch-generate {
     max-height: 38%;
     border-right: 0;
     border-bottom: 1px solid var(--border);
-  }
-
-  .empty {
-    margin-top: 7vh;
   }
 
   .empty h1 {

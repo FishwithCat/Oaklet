@@ -20,32 +20,12 @@ export type ChatHandle = {
   prefill: (prompt: string) => void;
 };
 
-const SUGGESTIONS = [
-  {
-    title: "Map this codebase",
-    prompt:
-      "Give me a tour of this project: what it does, how it is structured, and where I should start.",
-  },
-  {
-    title: "Fix a bug",
-    prompt:
-      "Find the most likely bug in this project and fix it. Explain the root cause and how to verify the fix.",
-  },
-  {
-    title: "Add a feature",
-    prompt:
-      "Add a small, useful feature to this project. Keep the diff minimal and verify it.",
-  },
-];
-
 export function Chat({
   ref,
   active,
   items,
   running,
   activeRunId,
-  workspace,
-  allowAll,
   onSend,
   onStop,
   onApproval,
@@ -55,8 +35,6 @@ export function Chat({
   items: Item[];
   running: boolean;
   activeRunId: string | null;
-  workspace: string;
-  allowAll: boolean;
   onSend: (text: string) => boolean;
   onStop: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
@@ -132,33 +110,7 @@ export function Chat({
       >
         {items.length === 0 ? (
           <div className="empty">
-            <div className="empty-mark">O</div>
             <h1>What should we build?</h1>
-            <p>
-              Oaklet reads and edits files in <code>{workspace}</code> and{" "}
-              {allowAll
-                ? "runs commands without asking until you revoke it."
-                : "asks before running any command."}
-            </p>
-            <div className="suggestions">
-              {SUGGESTIONS.map((suggestion) => (
-                <button
-                  type="button"
-                  key={suggestion.title}
-                  className="suggestion"
-                  onClick={() => {
-                    setInput(suggestion.prompt);
-                    requestAnimationFrame(() => {
-                      resizeComposer();
-                      textareaRef.current?.focus();
-                    });
-                  }}
-                >
-                  <strong>{suggestion.title}</strong>
-                  <span>{suggestion.prompt}</span>
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
           <div className="thread" aria-live="polite">

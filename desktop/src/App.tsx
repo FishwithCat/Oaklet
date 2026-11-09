@@ -181,15 +181,17 @@ function App() {
         </div>
       </aside>
 
-      <div className="main">
+      <div
+        className={`main${
+          view === "chat" && session.items.length === 0 ? " empty-state" : ""
+        }`}
+      >
         <Chat
           ref={chatRef}
           active={view === "chat"}
           items={session.items}
           running={session.running}
           activeRunId={session.activeRunId}
-          workspace={config.workspace}
-          allowAll={session.allowAll}
           onSend={session.send}
           onStop={session.stop}
           onApproval={session.respondToApproval}
