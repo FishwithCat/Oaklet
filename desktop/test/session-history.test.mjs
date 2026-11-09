@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeSessions, saveSession, sessionTitle } from "../src/session-history.ts";
+import {
+  loadSessions,
+  mergeSessions,
+  saveSession,
+  sessionTitle,
+} from "../src/session-history.ts";
 
 const snapshot = (id, updatedAt) => ({
   id,
@@ -39,7 +44,8 @@ test("mergeSessions dedupes by id, sorts newest first, and caps the list", () =>
 
 test("saveSession drops the oldest sessions when storage is full", () => {
   const store = new Map();
-  const key = "oaklet.history.v1";
+  const workspace = "/workspace";
+  const key = `oaklet.history.v1:${workspace}`;
   store.set(key, JSON.stringify([snapshot("a", 1), snapshot("b", 2)]));
 
   const newest = {
@@ -54,15 +60,60 @@ test("saveSession drops the oldest sessions when storage is full", () => {
       if (value.length > limit) throw new Error("quota");
       store.set(name, value);
     },
+    removeItem: (name) => store.delete(name),
   };
 
   try {
-    const next = saveSession(newest);
+    const next = saveSession(workspace, newest);
     assert.deepEqual(next.map((session) => session.id), ["c"]);
     assert.deepEqual(
       JSON.parse(store.get(key)).map((session) => session.id),
       ["c"],
     );
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test("sessions are scoped to their workspace", () => {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (name) => store.get(name) ?? null,
+    setItem: (name, value) => store.set(name, value),
+    removeItem: (name) => store.delete(name),
+  };
+
+  try {
+    saveSession("/one", snapshot("one", 1));
+    saveSession("/two", snapshot("two", 2));
+
+    assert.deepEqual(
+      loadSessions("/one").map((session) => session.id),
+      ["one"],
+    );
+    assert.deepEqual(
+      loadSessions("/two").map((session) => session.id),
+      ["two"],
+    );
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test("unscoped history moves to the first workspace that loads it", () => {
+  const store = new Map([["oaklet.history.v1", JSON.stringify([snapshot("old", 1)])]]);
+  globalThis.localStorage = {
+    getItem: (name) => store.get(name) ?? null,
+    setItem: (name, value) => store.set(name, value),
+    removeItem: (name) => store.delete(name),
+  };
+
+  try {
+    assert.deepEqual(
+      loadSessions("/workspace").map((session) => session.id),
+      ["old"],
+    );
+    assert.equal(store.has("oaklet.history.v1"), false);
   } finally {
     delete globalThis.localStorage;
   }

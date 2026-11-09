@@ -38,9 +38,11 @@ function errorText(error: unknown): string {
 }
 
 export function useAgentSession({
+  workspace,
   enabled,
   onWorkspaceRefresh,
 }: {
+  workspace: string;
   enabled: boolean;
   onWorkspaceRefresh: () => void;
 }) {
@@ -48,13 +50,33 @@ export function useAgentSession({
   const [running, setRunning] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [allowAll, setAllowAll] = useState(false);
-  const [history, setHistory] = useState<SessionSnapshot[]>(loadSessions);
+  const [history, setHistory] = useState<SessionSnapshot[]>([]);
 
+  const workspaceRef = useRef(workspace);
+  const runWorkspaceRef = useRef(workspace);
   const messagesRef = useRef<unknown[]>([]);
   const runIdRef = useRef<string | null>(null);
   const currentIdRef = useRef<string | null>(null);
   const pendingSaveRef = useRef<unknown[] | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
+
+  useEffect(() => {
+    const switched = workspaceRef.current !== workspace;
+    workspaceRef.current = workspace;
+    if (switched) {
+      if (runIdRef.current) {
+        void invoke("agent_stop", { runId: runIdRef.current });
+      }
+      runIdRef.current = null;
+      messagesRef.current = [];
+      currentIdRef.current = null;
+      pendingSaveRef.current = null;
+      setRunning(false);
+      setActiveRunId(null);
+      setItems([]);
+    }
+    setHistory(workspace ? loadSessions(workspace) : []);
+  }, [workspace]);
 
   useEffect(() => {
     const messages = pendingSaveRef.current;
@@ -81,7 +103,7 @@ export function useAgentSession({
       `session-${Date.now()}`;
     currentIdRef.current = id;
     setHistory(
-      saveSession({
+      saveSession(workspace, {
         id,
         title,
         updatedAt: Date.now(),
@@ -109,6 +131,7 @@ export function useAgentSession({
       const subscriptions = await Promise.all([
         listen<DeltaEvent>("agent:delta", (event) => {
           const { runId, text } = event.payload;
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           setActiveRunId(runId);
           setItems((previous) => {
             const last = previous[previous.length - 1];
@@ -126,6 +149,7 @@ export function useAgentSession({
         }),
         listen<ReasoningEvent>("agent:reasoning", (event) => {
           const { runId, text } = event.payload;
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           setActiveRunId(runId);
           setItems((previous) => {
             const last = previous[previous.length - 1];
@@ -147,6 +171,7 @@ export function useAgentSession({
         }),
         listen<ToolStartEvent>("agent:tool_start", (event) => {
           const { runId, id, name, summary } = event.payload;
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           setActiveRunId(runId);
           setItems((previous) => [
             ...settleStreaming(previous),
@@ -161,6 +186,7 @@ export function useAgentSession({
           ]);
         }),
         listen<ToolResultEvent>("agent:tool_result", (event) => {
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           const { id, ok, output } = event.payload;
           setItems((previous) =>
             previous.map((item) =>
@@ -171,6 +197,7 @@ export function useAgentSession({
           );
         }),
         listen<ApprovalEvent>("agent:approval", (event) => {
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           const { id, requestId, prompt, detail } = event.payload;
           setItems((previous) =>
             previous.map((item) =>
@@ -187,6 +214,7 @@ export function useAgentSession({
           );
         }),
         listen<DoneEvent>("agent:done", (event) => {
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           messagesRef.current = event.payload.messages;
           pendingSaveRef.current = event.payload.messages;
           runIdRef.current = null;
@@ -196,6 +224,7 @@ export function useAgentSession({
           onWorkspaceRefreshRef.current();
         }),
         listen<ErrorEvent>("agent:error", (event) => {
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
@@ -206,6 +235,7 @@ export function useAgentSession({
           ]);
         }),
         listen<RunIdEvent>("agent:stopped", () => {
+          if (runWorkspaceRef.current !== workspaceRef.current) return;
           runIdRef.current = null;
           setActiveRunId(null);
           setRunning(false);
@@ -246,15 +276,21 @@ export function useAgentSession({
       { role: "user", content: trimmed },
     ];
     messagesRef.current = nextMessages;
+    runWorkspaceRef.current = workspaceRef.current;
     setItems((previous) => [...previous, { kind: "user", text: trimmed }]);
     setRunning(true);
     setActiveRunId(null);
 
     invoke<string>("agent_send", { messages: nextMessages })
       .then((runId) => {
+        if (runWorkspaceRef.current !== workspaceRef.current) {
+          void invoke("agent_stop", { runId });
+          return;
+        }
         runIdRef.current = runId;
       })
       .catch((error) => {
+        if (runWorkspaceRef.current !== workspaceRef.current) return;
         runIdRef.current = null;
         setRunning(false);
         addNotice("error", errorText(error));

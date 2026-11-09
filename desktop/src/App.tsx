@@ -34,6 +34,7 @@ function App() {
   const terminalRef = useRef<TerminalHandle>(null);
 
   const session = useAgentSession({
+    workspace: config?.workspace ?? "",
     enabled: config !== null,
     onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });

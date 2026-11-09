@@ -11,6 +11,10 @@ export type SessionSnapshot = {
 const STORAGE_KEY = "oaklet.history.v1";
 const MAX_SESSIONS = 20;
 
+function storageKey(workspace: string): string {
+  return `${STORAGE_KEY}:${workspace}`;
+}
+
 export function sessionTitle(items: Item[]): string {
   const first = items.find((item) => item.kind === "user");
   if (!first || first.kind !== "user") return "";
@@ -40,9 +44,9 @@ function isSnapshot(value: unknown): value is SessionSnapshot {
   );
 }
 
-export function loadSessions(): SessionSnapshot[] {
+function parseSessions(raw: string | null): SessionSnapshot[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    const parsed: unknown = JSON.parse(raw ?? "[]");
     if (!Array.isArray(parsed)) return [];
     return parsed
       .filter(isSnapshot)
@@ -52,16 +56,41 @@ export function loadSessions(): SessionSnapshot[] {
   }
 }
 
+export function loadSessions(workspace: string): SessionSnapshot[] {
+  if (!workspace) return [];
+  const key = storageKey(workspace);
+  let raw = localStorage.getItem(key);
+  if (raw === null) {
+    // History saved before it was workspace-scoped belongs to the workspace
+    // in use when the app upgrades.
+    const legacy = localStorage.getItem(STORAGE_KEY);
+    if (legacy !== null) {
+      raw = legacy;
+      try {
+        localStorage.setItem(key, legacy);
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // Still show the legacy sessions if the scoped copy cannot be written.
+      }
+    }
+  }
+  return parseSessions(raw);
+}
+
 /** ponytail: localStorage holds the last 20 sessions; drop the oldest if outputs outgrow the quota. */
-export function saveSession(snapshot: SessionSnapshot): SessionSnapshot[] {
-  let sessions = mergeSessions(snapshot, loadSessions());
+export function saveSession(
+  workspace: string,
+  snapshot: SessionSnapshot,
+): SessionSnapshot[] {
+  if (!workspace) return [];
+  let sessions = mergeSessions(snapshot, loadSessions(workspace));
   while (sessions.length > 0) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+      localStorage.setItem(storageKey(workspace), JSON.stringify(sessions));
       return sessions;
     } catch {
       sessions = sessions.slice(0, -1);
     }
   }
-  return loadSessions();
+  return loadSessions(workspace);
 }
