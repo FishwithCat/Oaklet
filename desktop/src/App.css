@@ -209,7 +209,8 @@ button.allow-all-chip:hover:not(:disabled) {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 30px 18px 10px;
-  scrollbar-gutter: stable;
+  /* both-edges keeps the centered thread aligned with the composer */
+  scrollbar-gutter: stable both-edges;
 }
 
 .chat[hidden] {
