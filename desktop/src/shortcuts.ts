@@ -9,6 +9,22 @@ export type AgentShortcut =
   | "history"
   | "stop";
 
+type EnterEvent = Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing">;
+
+/**
+ * Safari fires compositionend before the Enter that confirms an IME candidate,
+ * so that keydown reports isComposing=false; `composing` keeps the guard alive
+ * until the confirming keydown has been dispatched.
+ */
+export function isSendEnter(event: EnterEvent, composing: boolean): boolean {
+  return (
+    event.key === "Enter" &&
+    !event.shiftKey &&
+    !event.isComposing &&
+    !composing
+  );
+}
+
 /** Chat and terminal shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
 export function agentShortcut(
   event: KeyEvent,

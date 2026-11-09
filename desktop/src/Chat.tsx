@@ -19,6 +19,7 @@ import { ProcessGroup } from "./Process";
 import { mergeDraft } from "./architecture-prompt";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
+import { isSendEnter } from "./shortcuts";
 import type { ChatTabInfo } from "./useAgentSession";
 
 const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
@@ -78,6 +79,7 @@ export function Chat({
   const stickToBottomRef = useRef(true);
   const draftsRef = useRef(new Map<string, string>());
   const lastTabIdRef = useRef(activeTabId);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     if (!active) setHelpOpen(false);
@@ -426,15 +428,23 @@ export function Chat({
                 updateDraft(event.target.value);
                 resizeComposer();
               }}
+              onCompositionStart={() => {
+                composingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                // Safari fires compositionend before the Enter keydown that
+                // confirms the candidate, so keep the flag through that keydown.
+                setTimeout(() => {
+                  composingRef.current = false;
+                }, 0);
+              }}
+              onBlur={() => {
+                composingRef.current = false;
+              }}
               onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  submit();
-                }
+                if (!isSendEnter(event.nativeEvent, composingRef.current)) return;
+                event.preventDefault();
+                submit();
               }}
             />
             <div className="composer-footer">

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentShortcut } from "../src/shortcuts.ts";
+import { agentShortcut, isSendEnter } from "../src/shortcuts.ts";
 
 const press = (overrides) => ({
   key: "",
@@ -68,4 +68,16 @@ test("Control+C stops a running session without hijacking the terminal or copy",
     agentShortcut(press({ key: "c", metaKey: true }), "chat", true),
     null,
   );
+});
+
+test("Enter sends only when no IME composition is active", () => {
+  const enter = press({ key: "Enter" });
+
+  assert.equal(isSendEnter(enter, false), true);
+  assert.equal(isSendEnter({ ...enter, shiftKey: true }, false), false);
+  // Chrome and Firefox report isComposing while the candidate window is open.
+  assert.equal(isSendEnter({ ...enter, isComposing: true }, false), false);
+  // Safari clears isComposing before the confirming keydown, so the tracked
+  // composition flag must still block it.
+  assert.equal(isSendEnter(enter, true), false);
 });
