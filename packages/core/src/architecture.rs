@@ -27,6 +27,7 @@ pub const DEFAULT_MODEL_PATH: &str = "architecture/model.c4";
 
 const MAX_WALK_ENTRIES: usize = 50_000;
 const MAX_MODEL_FILES: usize = 500;
+const MAX_PROMPT_MODEL_SOURCES: usize = 5;
 const MAX_SOURCE_FILES: usize = 200;
 const MAX_SOURCE_FILE_BYTES: u64 = 1_000_000;
 const MAX_SOURCE_BYTES: u64 = 4_000_000;
@@ -560,21 +561,9 @@ enum ConfigKind {
 }
 
 fn walk_files(root: &Path, include_ignored: bool) -> Result<Vec<PathBuf>, String> {
-    let mut builder = WalkBuilder::new(root);
-    builder
-        .hidden(false)
-        .follow_links(false)
-        .require_git(false)
-        .parents(!include_ignored)
-        .ignore(!include_ignored)
-        .git_ignore(!include_ignored)
-        .git_global(!include_ignored)
-        .git_exclude(!include_ignored)
-        .filter_entry(keep_entry);
-
     let mut files = Vec::new();
     let mut entries = 0usize;
-    for result in builder.build() {
+    for result in model_walker(root, include_ignored).build() {
         entries += 1;
         if entries > MAX_WALK_ENTRIES {
             return Err(format!(
@@ -592,6 +581,55 @@ fn walk_files(root: &Path, include_ignored: bool) -> Result<Vec<PathBuf>, String
         }
     }
     Ok(files)
+}
+
+fn model_walker(root: &Path, include_ignored: bool) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .require_git(false)
+        .parents(!include_ignored)
+        .ignore(!include_ignored)
+        .git_ignore(!include_ignored)
+        .git_global(!include_ignored)
+        .git_exclude(!include_ignored)
+        .filter_entry(keep_entry);
+    builder
+}
+
+/// A short list of LikeC4 sources used to tell the agent that this workspace
+/// has an architecture model to keep in sync after code edits.
+///
+/// The walk uses the same ignore rules and directory exclusions as the
+/// Architecture view, stops at the first few sources, and returns nothing when
+/// the workspace cannot be opened.
+pub fn prompt_model_sources(workspace_path: &Path) -> Vec<String> {
+    let Ok(workspace) = Workspace::new(&workspace_path.to_string_lossy()) else {
+        return Vec::new();
+    };
+    let mut sources = Vec::new();
+    let mut entries = 0usize;
+    for result in model_walker(workspace.root(), false).build() {
+        entries += 1;
+        if entries > MAX_WALK_ENTRIES {
+            break;
+        }
+        let Ok(entry) = result else {
+            continue;
+        };
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if is_model_file(entry.path()) {
+            sources.push(relative_string(entry.path(), workspace.root()));
+            if sources.len() == MAX_PROMPT_MODEL_SOURCES {
+                break;
+            }
+        }
+    }
+    sources.sort();
+    sources
 }
 
 fn keep_entry(entry: &ignore::DirEntry) -> bool {
@@ -1157,6 +1195,39 @@ mod tests {
                 "architecture/views.c4",
                 "docs/model.c4"
             ]
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prompt_model_sources_honor_ignore_rules() {
+        let (workspace, root) = workspace("arch-prompt-sources");
+        write(&root, ".gitignore", "ignored/\n");
+        write(&root, "architecture/model.c4", "model { }");
+        write(&root, "docs/views.likec4", "views { }");
+        write(&root, "ignored/model.c4", "model { }");
+        write(&root, "node_modules/pkg/model.c4", "model { }");
+        write(&root, "README.md", "not a model");
+
+        assert_eq!(
+            prompt_model_sources(workspace.root()),
+            vec!["architecture/model.c4", "docs/views.likec4"]
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prompt_model_sources_stop_at_the_prompt_limit() {
+        let (workspace, root) = workspace("arch-prompt-limit");
+        for index in 0..MAX_PROMPT_MODEL_SOURCES + 2 {
+            write(&root, &format!("models/{index}.c4"), "model { }");
+        }
+
+        assert_eq!(
+            prompt_model_sources(workspace.root()).len(),
+            MAX_PROMPT_MODEL_SOURCES
         );
 
         fs::remove_dir_all(&root).ok();

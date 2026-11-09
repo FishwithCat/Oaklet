@@ -157,7 +157,16 @@ pub async fn run(
         cancel: cancel.clone(),
     };
 
-    let mut messages = initial_messages(&config, &tools, input);
+    let model_sources = {
+        let workspace = config.workspace.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::architecture::prompt_model_sources(Path::new(&workspace))
+        })
+        .await
+        .unwrap_or_default()
+    };
+
+    let mut messages = initial_messages(&config, &tools, &model_sources, input);
 
     for _ in 0..MAX_STEPS {
         if cancel.is_cancelled() {
@@ -548,9 +557,17 @@ fn apply_sse_line(
     Ok(emitted)
 }
 
-fn initial_messages(config: &AppConfig, tools: &ToolRegistry, input: Vec<Value>) -> Vec<Value> {
+fn initial_messages(
+    config: &AppConfig,
+    tools: &ToolRegistry,
+    model_sources: &[String],
+    input: Vec<Value>,
+) -> Vec<Value> {
     let mut messages = Vec::with_capacity(input.len() + 1);
-    messages.push(json!({ "role": "system", "content": system_prompt(config, tools) }));
+    messages.push(json!({
+        "role": "system",
+        "content": system_prompt(config, tools, model_sources)
+    }));
     messages.extend(
         input
             .into_iter()
@@ -608,13 +625,24 @@ fn tool_message(id: &str, content: String) -> Value {
     })
 }
 
-fn system_prompt(config: &AppConfig, tools: &ToolRegistry) -> String {
-    let mut rules: Vec<&str> = vec![
-        "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.",
-        "Paths are relative to the workspace; absolute paths inside it also work.",
+fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[String]) -> String {
+    let mut rules: Vec<String> = vec![
+        "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
+        "Paths are relative to the workspace; absolute paths inside it also work.".into(),
     ];
-    rules.extend(tools.guidance());
-    rules.push("Keep the final answer short: what changed and how to verify it.");
+    rules.extend(tools.guidance().map(str::to_string));
+    if !model_sources.is_empty() {
+        rules.push(format!(
+            "This workspace has LikeC4 architecture sources ({}). After you finish code changes, \
+update the affected model before your final answer so it matches the code. Read the current model \
+first and preserve its element and view IDs, style, and manual descriptions; keep the edit minimal \
+and grounded in the code you changed. Use likec4_mcp to understand existing elements and \
+relationships, and file tools to edit. If the code change has no architectural effect, leave the \
+model unchanged and say so; do not create a model when none exists.",
+            model_sources.join(", ")
+        ));
+    }
+    rules.push("Keep the final answer short: what changed and how to verify it.".into());
 
     format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
@@ -717,6 +745,7 @@ mod tests {
         let messages = initial_messages(
             &config,
             &tools,
+            &[],
             vec![
                 json!({ "role": "system", "content": "stale prompt" }),
                 json!({ "role": "user", "content": "hi" }),
@@ -730,10 +759,22 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new());
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
         assert!(prompt.contains("The user must approve every command"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
+    }
+
+    #[test]
+    fn system_prompt_requests_architecture_updates_when_models_exist() {
+        let sources = vec!["architecture/model.c4".to_string()];
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources);
+        assert!(prompt.contains("architecture/model.c4"));
+        assert!(prompt.contains("After you finish code changes"));
+        assert!(prompt.contains("update the affected model"));
+
+        let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
+        assert!(!without_sources.contains("LikeC4 architecture sources"));
     }
 
     #[test]

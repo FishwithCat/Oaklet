@@ -28,7 +28,9 @@ enough to read in one sitting.
   with 200 lines per page. Larger patches can be inspected in the terminal.
 - An architecture view: discovers existing LikeC4 models in the workspace and
   renders their views. Generation and updates are ordinary, editable chat
-  requests handled by the configured agent.
+  requests handled by the configured agent. When a workspace already contains
+  LikeC4 sources, the agent is also asked to keep the affected model in sync
+  after code changes.
 - Asks before every shell command; the approval card shows the exact command
   and can allow all commands in the workspace.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
@@ -110,6 +112,11 @@ offers the default location `architecture/model.c4`; otherwise **Update with
 agent** targets the selected model files. Both actions put an editable prompt in
 the existing chat composer without discarding its draft. The user still sends,
 approves commands, and can cancel through the normal chat flow.
+
+When the workspace contains `*.c4` or `*.likec4` sources, the agent's system
+prompt names a few of them and asks the agent to update the affected model after
+finishing code changes, preserving existing IDs, views, and manual descriptions.
+This applies to ordinary chat requests too, not only to **Update with agent**.
 
 Viewing an existing model never calls the model provider, so it works without an
 API key. Generation and updates use the configured provider and existing
