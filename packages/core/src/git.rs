@@ -28,6 +28,7 @@ pub struct GitLog {
 pub struct GitChange {
     path: String,
     status: String,
+    unstaged: bool,
 }
 
 /// Field/record separators keep subjects and multi-line bodies unambiguous.
@@ -251,14 +252,6 @@ pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
     )
 }
 
-pub fn ahead(workspace: &Path) -> Option<u32> {
-    run_git(workspace, &["rev-list", "--count", "@{upstream}..HEAD"])
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
-}
-
 fn valid_hash(hash: &str) -> bool {
     (4..=64).contains(&hash.len()) && hash.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -304,6 +297,7 @@ fn parse_status(output: &str) -> Vec<GitChange> {
         changes.push(GitChange {
             path: record[3..].to_string(),
             status: status_name(code).to_string(),
+            unstaged: code != "??" && record.as_bytes().get(1) != Some(&b' '),
         });
 
         // Rename/copy records include the original path as a second NUL field.
@@ -377,11 +371,15 @@ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1
         assert_eq!(changes.len(), 4);
         assert_eq!(changes[0].path, "src/a.ts");
         assert_eq!(changes[0].status, "modified");
+        assert!(changes[0].unstaged);
         assert_eq!(changes[1].path, "notes.md");
         assert_eq!(changes[1].status, "untracked");
+        assert!(!changes[1].unstaged);
         assert_eq!(changes[2].status, "added");
+        assert!(!changes[2].unstaged);
         assert_eq!(changes[3].path, "src/new-name.ts");
         assert_eq!(changes[3].status, "renamed");
+        assert!(!changes[3].unstaged);
     }
 
     #[test]

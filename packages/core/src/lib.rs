@@ -345,16 +345,6 @@ async fn git_diff(state: State<'_, SharedState>, path: String) -> Result<String,
         .map_err(|error| format!("Could not read the file diff: {error}"))?
 }
 
-#[tauri::command]
-async fn git_ahead(state: State<'_, SharedState>) -> Result<Option<u32>, String> {
-    let Ok(workspace) = workspace_path(&state) else {
-        return Ok(None);
-    };
-    tauri::async_runtime::spawn_blocking(move || git::ahead(&workspace))
-        .await
-        .map_err(|error| format!("Could not read git status: {error}"))
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalOutput {
@@ -506,7 +496,6 @@ pub fn run() {
             git_switch,
             git_changes,
             git_diff,
-            git_ahead,
             architecture_discover,
             architecture_load,
             terminal_open,

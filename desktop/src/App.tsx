@@ -24,7 +24,7 @@ function App() {
     "chat" | "terminal" | "git" | "architecture"
   >("chat");
   const [architectureOpened, setArchitectureOpened] = useState(false);
-  const [ahead, setAhead] = useState<number | null>(null);
+  const [unstaged, setUnstaged] = useState<number | null>(null);
   const [workspaceTick, setWorkspaceTick] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const chatRef = useRef<ChatHandle>(null);
@@ -46,12 +46,16 @@ function App() {
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
-    invoke<number | null>("git_ahead")
-      .then((count) => {
-        if (!cancelled) setAhead(count);
+    invoke<{ unstaged: boolean }[]>("git_changes")
+      .then((changes) => {
+        if (!cancelled) {
+          setUnstaged(
+            changes.filter((change) => change.unstaged).length,
+          );
+        }
       })
       .catch(() => {
-        if (!cancelled) setAhead(null);
+        if (!cancelled) setUnstaged(null);
       });
     return () => {
       cancelled = true;
@@ -118,21 +122,21 @@ function App() {
             setView((current) => (current === "git" ? "chat" : "git"))
           }
           aria-label={
-            ahead
-              ? `Source control (${ahead} unpushed)`
+            unstaged
+              ? `Source control (${unstaged} unstaged)`
               : "Source control"
           }
           aria-pressed={view === "git"}
           title={
-            ahead
-              ? `${ahead} commit${ahead === 1 ? "" : "s"} not pushed`
+            unstaged
+              ? `${unstaged} file${unstaged === 1 ? "" : "s"} with changes not staged for commit`
               : "Source control"
           }
         >
           <GitBranchIcon size={18} />
-          {ahead !== null && ahead > 0 && (
+          {unstaged !== null && unstaged > 0 && (
             <span className="sc-badge" aria-hidden="true">
-              {ahead > 99 ? "99+" : ahead}
+              {unstaged > 99 ? "99+" : unstaged}
             </span>
           )}
         </button>
