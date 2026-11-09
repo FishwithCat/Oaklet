@@ -1,4 +1,5 @@
 mod agent;
+mod terminal;
 mod tools;
 
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
 use tools::CancelHandle;
@@ -23,6 +24,8 @@ pub struct AppState {
     /// Canonical workspace where `run_command` approvals were waived for this
     /// session. `None` means every command is confirmed.
     pub command_allow_all: Mutex<Option<PathBuf>>,
+    /// Shells behind the terminal view, keyed by the frontend's session id.
+    pub terminal: Mutex<HashMap<String, terminal::Session>>,
     ids: AtomicU64,
 }
 
@@ -257,6 +260,118 @@ fn revoke_command_allow_all(state: State<'_, SharedState>) {
     }
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOutput {
+    id: String,
+    data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalExit {
+    id: String,
+    code: Option<u32>,
+}
+
+#[tauri::command]
+fn terminal_open(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let workspace = {
+        let config = state
+            .config
+            .lock()
+            .map_err(|_| "Agent state is unavailable.".to_string())?;
+        PathBuf::from(&config.workspace)
+    };
+    if !workspace.is_dir() {
+        return Err("Choose an existing workspace folder first.".into());
+    }
+
+    let mut sessions = state
+        .terminal
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let (session, events) = terminal::spawn(&workspace, cols, rows)?;
+    sessions.insert(id.clone(), session);
+    drop(sessions);
+
+    let shared = state.inner().clone();
+    let session_id = id;
+    tauri::async_runtime::spawn_blocking(move || {
+        while let Ok(event) = events.recv() {
+            match event {
+                terminal::Event::Output(data) => {
+                    let _ = app.emit(
+                        "terminal://output",
+                        TerminalOutput {
+                            id: session_id.clone(),
+                            data,
+                        },
+                    );
+                }
+                terminal::Event::Exit { code } => {
+                    let _ = app.emit(
+                        "terminal://exit",
+                        TerminalExit {
+                            id: session_id.clone(),
+                            code,
+                        },
+                    );
+                    // Reap the dead session here; the tab keeps its scrollback
+                    // on the frontend and can spawn a fresh shell on restart.
+                    if let Ok(mut sessions) = shared.terminal.lock() {
+                        sessions.remove(&session_id);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_write(state: State<'_, SharedState>, id: String, data: String) -> Result<(), String> {
+    let mut sessions = state
+        .terminal
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let Some(session) = sessions.get_mut(&id) else {
+        return Ok(());
+    };
+    session.write(data.as_bytes())
+}
+
+#[tauri::command]
+fn terminal_resize(
+    state: State<'_, SharedState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let sessions = state
+        .terminal
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    if let Some(session) = sessions.get(&id) {
+        session.resize(cols, rows)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_close(state: State<'_, SharedState>, id: String) {
+    if let Ok(mut sessions) = state.terminal.lock() {
+        sessions.remove(&id);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -274,6 +389,7 @@ pub fn run() {
                 approvals: Mutex::new(HashMap::new()),
                 runs: Mutex::new(HashMap::new()),
                 command_allow_all: Mutex::new(None),
+                terminal: Mutex::new(HashMap::new()),
                 ids: AtomicU64::new(0),
             }));
             Ok(())
@@ -285,7 +401,11 @@ pub fn run() {
             agent_stop,
             approve_tool,
             command_allow_all_active,
-            revoke_command_allow_all
+            revoke_command_allow_all,
+            terminal_open,
+            terminal_write,
+            terminal_resize,
+            terminal_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

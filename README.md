@@ -11,6 +11,9 @@ enough to read in one sitting.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`.
+- A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
+  shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
+  workspace.
 - Asks before every shell command; the approval card shows the exact command
   and can allow all commands in the workspace.
 - Confines file tools to the chosen workspace and refuses writes inside `.git`.
@@ -77,6 +80,8 @@ as `qwen2.5-coder`.
   click to revoke; the grant is in memory only and never applies to file tools
   or another workspace. Commands can still touch files outside the workspace,
   so only grant this in a project you trust.
+- Commands typed in the terminal view are not sent to the model and do not ask
+  for approval: the shell runs immediately in the workspace, with no timeout.
 - The agent can still run any command the user approves, including commands that
   touch files outside the workspace. Read the approval card before allowing it.
 

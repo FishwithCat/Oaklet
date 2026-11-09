@@ -14,10 +14,12 @@ import {
   PaperPlaneRightIcon,
   ShieldCheckIcon,
   StopIcon,
+  TerminalWindowIcon,
   XIcon,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
+import { Terminal } from "./Terminal";
 import type {
   ApprovalChoice,
   ProcessItem,
@@ -293,6 +295,7 @@ function App() {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [view, setView] = useState<"chat" | "terminal">("chat");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [allowAll, setAllowAll] = useState(false);
 
@@ -511,6 +514,7 @@ function App() {
 
   function newChat() {
     if (running) return;
+    setView("chat");
     messagesRef.current = [];
     runIdRef.current = null;
     setActiveRunId(null);
@@ -586,6 +590,21 @@ function App() {
         >
           <ChatDotsIcon size={18} />
         </button>
+        <button
+          type="button"
+          className={`ghost icon-button terminal-toggle${
+            view === "terminal" ? " active" : ""
+          }`}
+          onClick={() =>
+            setView((current) => (current === "terminal" ? "chat" : "terminal"))
+          }
+          disabled={running}
+          aria-label="Terminal"
+          aria-pressed={view === "terminal"}
+          title="Terminal"
+        >
+          <TerminalWindowIcon size={18} />
+        </button>
         <div className="sidebar-foot">
           {allowAll && (
             <button
@@ -611,7 +630,12 @@ function App() {
       </aside>
 
       <div className="main">
-        <main className="chat" ref={chatRef} onScroll={onScroll}>
+        <main
+          className="chat"
+          hidden={view !== "chat"}
+          ref={chatRef}
+          onScroll={onScroll}
+        >
           {items.length === 0 ? (
             <div className="empty">
               <div className="empty-mark">O</div>
@@ -697,62 +721,70 @@ function App() {
           )}
         </main>
 
-        <div className="composer-wrap">
-          <form
-            className="composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              send();
-            }}
-          >
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              placeholder="Ask Oaklet to build, fix, or explain something..."
-              onChange={(event) => {
-                setInput(event.target.value);
-                resizeComposer();
+        <Terminal
+          key={config.workspace}
+          active={view === "terminal"}
+          onClose={() => setView("chat")}
+        />
+
+        {view === "chat" && (
+          <div className="composer-wrap">
+            <form
+              className="composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                send();
               }}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <div className="composer-footer">
-              <span className="hint">
-                Enter to send · Shift+Enter for a new line
-              </span>
-              {running ? (
-                <button
-                  type="button"
-                  className="stop icon-button"
-                  onClick={stop}
-                  aria-label="Stop"
-                  title="Stop"
-                >
-                  <StopIcon size={14} weight="fill" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  className="primary icon-button"
-                  disabled={!input.trim()}
-                  aria-label="Send"
-                  title="Send"
-                >
-                  <PaperPlaneRightIcon size={16} weight="fill" />
-                </button>
-              )}
-            </div>
-          </form>
-        </div>
+            >
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                placeholder="Ask Oaklet to build, fix, or explain something..."
+                onChange={(event) => {
+                  setInput(event.target.value);
+                  resizeComposer();
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    send();
+                  }
+                }}
+              />
+              <div className="composer-footer">
+                <span className="hint">
+                  Enter to send · Shift+Enter for a new line
+                </span>
+                {running ? (
+                  <button
+                    type="button"
+                    className="stop icon-button"
+                    onClick={stop}
+                    aria-label="Stop"
+                    title="Stop"
+                  >
+                    <StopIcon size={14} weight="fill" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="primary icon-button"
+                    disabled={!input.trim()}
+                    aria-label="Send"
+                    title="Send"
+                  >
+                    <PaperPlaneRightIcon size={16} weight="fill" />
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+        )}
       </div>
 
       {settingsOpen && (

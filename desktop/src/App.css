@@ -154,6 +154,17 @@ textarea:focus-visible {
   height: 36px;
 }
 
+.sidebar .terminal-toggle {
+  width: 36px;
+  height: 36px;
+}
+
+.sidebar button.icon-button.active {
+  color: var(--text);
+  border-color: rgba(154, 98, 41, 0.28);
+  background: var(--accent-soft);
+}
+
 .sidebar-foot {
   margin-top: auto;
   display: flex;
@@ -189,6 +200,150 @@ button.allow-all-chip:hover:not(:disabled) {
   overflow-x: hidden;
   padding: 30px 18px 10px;
   scrollbar-gutter: stable;
+}
+
+.chat[hidden] {
+  display: none;
+}
+
+.terminal {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.terminal[hidden] {
+  display: none;
+}
+
+.terminal-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-icon {
+  flex: none;
+  display: flex;
+  color: var(--muted);
+}
+
+.terminal-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.terminal-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.terminal-tab:hover {
+  background: var(--panel-2);
+}
+
+.terminal-tab.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.terminal-tab-label {
+  border: 0;
+  background: transparent;
+  border-radius: 6px 0 0 6px;
+  padding: 4px 2px 4px 8px;
+  font-size: 11.5px;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.terminal-tab-label:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+}
+
+.terminal-tab-close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.terminal-tab:hover .terminal-tab-close,
+.terminal-tab.active .terminal-tab-close,
+.terminal-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.terminal-tab-close:hover:not(:disabled) {
+  background: rgba(30, 27, 22, 0.08);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.terminal-head .icon-button.terminal-add {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.terminal-head .terminal-add:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+.terminal-head .terminal-add:focus,
+.terminal-head .terminal-add:focus-visible {
+  outline: none;
+}
+
+.terminal-head .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.terminal-screen {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+.terminal-screen[hidden] {
+  display: none;
+}
+
+.terminal-screen .xterm {
+  height: 100%;
+}
+
+.terminal-screen .xterm-viewport {
+  background-color: transparent;
+  scrollbar-width: thin;
 }
 
 .thread {
