@@ -495,18 +495,24 @@ export function useAgentSession({
   }
 
   function restore(id: string) {
-    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
-    if (!tab || tab.running) return;
     const snapshot = history.find((session) => session.id === id);
     if (!snapshot) return;
 
-    patchTab(tab.id, {
+    const open = tabsRef.current.find((tab) => tab.savedSessionId === id);
+    if (open) {
+      setActiveTabId(open.id);
+      return;
+    }
+
+    tabCountRef.current += 1;
+    const tab: ChatTabState = {
+      ...blankTab(tabCountRef.current),
       messages: snapshot.messages,
       items: snapshot.items,
-      activeRunId: null,
-      runId: null,
       savedSessionId: snapshot.id,
-    });
+    };
+    commitTabs((current) => [...current, tab]);
+    setActiveTabId(tab.id);
   }
 
   function respondToApproval(item: ToolItem, choice: ApprovalChoice) {

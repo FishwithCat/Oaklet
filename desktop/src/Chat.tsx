@@ -22,7 +22,6 @@ import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo } from "./useAgentSession";
 
 export type ChatHandle = {
-  reset: () => void;
   prefill: (prompt: string) => void;
 };
 
@@ -207,13 +206,6 @@ export function Chat({
   useImperativeHandle(
     ref,
     () => ({
-      reset: () => {
-        draftsRef.current.delete(activeTabId);
-        setInput("");
-        setHelpOpen(false);
-        if (textareaRef.current) textareaRef.current.style.height = "auto";
-        textareaRef.current?.focus();
-      },
       prefill: (prompt: string) => {
         const next = mergeDraft(input, prompt);
         draftsRef.current.set(activeTabId, next);

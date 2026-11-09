@@ -340,7 +340,6 @@ function App() {
           onClose={() => setHistoryOpen(false)}
           onPick={(id) => {
             session.restore(id);
-            chatRef.current?.reset();
             setView("chat");
             setHistoryOpen(false);
           }}
