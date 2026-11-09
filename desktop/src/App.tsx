@@ -1,7 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import {
   ChatDotsIcon,
+  FolderOpenIcon,
   GearIcon,
   GitBranchIcon,
   ShieldCheckIcon,
@@ -9,7 +11,7 @@ import {
   TreeStructureIcon,
 } from "@phosphor-icons/react";
 import { Chat, type ChatHandle } from "./Chat";
-import { SettingsPanel, type AppConfig } from "./SettingsPanel";
+import { errorText, SettingsPanel, type AppConfig } from "./SettingsPanel";
 import { SessionHistory } from "./SessionHistory";
 import { SourceControl } from "./SourceControl";
 import { Terminal, type TerminalHandle } from "./Terminal";
@@ -22,6 +24,7 @@ const Architecture = lazy(() => import("./Architecture"));
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [browsingWorkspace, setBrowsingWorkspace] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [view, setView] = useState<
     "chat" | "terminal" | "git" | "architecture"
@@ -80,6 +83,32 @@ function App() {
       return;
     }
     newChat();
+  }
+
+  async function chooseWorkspace() {
+    if (!config || browsingWorkspace) return;
+    setBrowsingWorkspace(true);
+    try {
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: config.workspace || undefined,
+      });
+      if (typeof picked !== "string") return;
+      const saved = await invoke<AppConfig>("save_config", {
+        config: { ...config, workspace: picked },
+      });
+      setConfig(saved);
+      setWorkspaceTick((value) => value + 1);
+      session.reloadAllowance();
+    } catch (err) {
+      await message(`Could not switch workspace: ${errorText(err)}`, {
+        title: "Oaklet",
+        kind: "error",
+      });
+    } finally {
+      setBrowsingWorkspace(false);
+    }
   }
 
   useEffect(() => {
@@ -202,6 +231,16 @@ function App() {
               <ShieldCheckIcon size={16} />
             </button>
           )}
+          <button
+            type="button"
+            className="ghost icon-button"
+            onClick={chooseWorkspace}
+            disabled={browsingWorkspace}
+            aria-label="Open workspace folder"
+            title={`Workspace folder: ${config.workspace}`}
+          >
+            <FolderOpenIcon size={16} />
+          </button>
           <button
             type="button"
             className="ghost icon-button"
