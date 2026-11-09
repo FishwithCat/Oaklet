@@ -1352,8 +1352,7 @@ button.arch-generate {
 }
 
 .thread {
-  max-width: 820px;
-  margin: 0 auto;
+  margin: 0 30px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1907,8 +1906,7 @@ button.arch-generate {
 
 .composer {
   position: relative;
-  max-width: 820px;
-  margin: 0 auto;
+  margin: 0 30px;
   display: flex;
   flex-direction: column;
   gap: 6px;
