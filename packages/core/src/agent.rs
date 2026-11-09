@@ -144,7 +144,7 @@ pub async fn run(
         }
     };
 
-    let tools = ToolRegistry::new();
+    let tools = ToolRegistry::with_likec4(&app);
     let workspace = match Workspace::new(&config.workspace) {
         Ok(workspace) => workspace,
         Err(message) => {

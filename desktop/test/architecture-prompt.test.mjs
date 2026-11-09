@@ -48,6 +48,8 @@ test("an update prompt targets the selected files and includes diagnostics", () 
   assert.match(prompt, /architecture\/deployment\.c4/);
   assert.match(prompt, /architecture\/model\.c4:7:3: Target not resolved at relation/);
   assert.match(prompt, /Preserve stable element IDs/);
+  assert.match(prompt, /Use likec4_mcp/);
+  assert.match(prompt, /if unavailable, inspect the files directly/);
 });
 
 test("the prompt lists only a bounded set of model paths", () => {

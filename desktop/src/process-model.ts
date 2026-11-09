@@ -48,6 +48,7 @@ const TOOL_TITLES: Record<string, string> = {
   write_file: "Write file",
   edit_file: "Edit file",
   run_command: "Run command",
+  likec4_mcp: "LikeC4 MCP",
 };
 
 export function toolCategory(name: string): ToolCategory {

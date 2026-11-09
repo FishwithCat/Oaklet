@@ -769,7 +769,7 @@ fn cap_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
         .collect()
 }
 
-fn find_node() -> Option<PathBuf> {
+pub(crate) fn find_node() -> Option<PathBuf> {
     if let Some(path) = env::var_os("OAKLET_NODE") {
         let path = PathBuf::from(path);
         if path.is_file() {
@@ -893,7 +893,7 @@ fn helper_ready(helper: &Path) -> bool {
             .is_file()
 }
 
-fn find_helper(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn find_helper(app: &AppHandle) -> Option<PathBuf> {
     if let Some(path) = env::var_os("OAKLET_ARCHITECTURE_HELPER") {
         let path = PathBuf::from(path);
         if helper_ready(&path) {
@@ -1095,7 +1095,7 @@ async fn run_helper_with_timeout(
     Ok(response)
 }
 
-async fn read_capped<R>(reader: R, limit: usize) -> Result<Vec<u8>, String>
+pub(crate) async fn read_capped<R>(reader: R, limit: usize) -> Result<Vec<u8>, String>
 where
     R: AsyncReadExt + Unpin,
 {
@@ -1104,10 +1104,10 @@ where
         .take(limit as u64 + 1)
         .read_to_end(&mut output)
         .await
-        .map_err(|error| format!("Could not read the LikeC4 compiler output: {error}"))?;
+        .map_err(|error| format!("Could not read the LikeC4 helper output: {error}"))?;
     if output.len() > limit {
         return Err(format!(
-            "The LikeC4 compiler output exceeded the {limit}-byte limit."
+            "The LikeC4 helper output exceeded the {limit}-byte limit."
         ));
     }
     Ok(output)

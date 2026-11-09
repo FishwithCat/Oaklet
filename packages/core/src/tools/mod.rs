@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 mod fs;
+mod likec4;
 mod shell;
 mod workspace;
 
@@ -183,6 +184,15 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    pub fn with_likec4(app: &tauri::AppHandle) -> Self {
+        let mut registry = Self::new();
+        registry.tools.push(Box::new(likec4::LikeC4 {
+            node: crate::architecture::find_node(),
+            helper: crate::architecture::find_helper(app),
+        }));
+        registry
+    }
+
     pub fn new() -> Self {
         Self {
             tools: vec![

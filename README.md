@@ -10,7 +10,7 @@ enough to read in one sitting.
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
-- Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`.
+- Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`, `likec4_mcp`.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace.
@@ -30,8 +30,7 @@ enough to read in one sitting.
 
 - `desktop/` — React/TypeScript UI (Vite)
 - `packages/core/` — Rust backend (Tauri app, agent loop, tools)
-- `architecture-helper/` — pinned, data-only LikeC4 compiler used by the
-  architecture view
+- `architecture-helper/` — pinned LikeC4 preview compiler and agent MCP bridge
 
 Tools live in `packages/core/src/tools/`. Each tool owns its schema,
 system-prompt guidance, pending-call summary, approval policy, timeout, and
@@ -130,6 +129,28 @@ Limits are deliberate: 500 model files during discovery, 200 source files and
 4 MB of source per model load, 1 MB per source file, 60 seconds of compiler time,
 and 16 MB of layout output. A load that hits a limit fails with an explanation
 instead of showing a partial diagram.
+
+### LikeC4 MCP for the agent
+
+The agent's `likec4_mcp` tool connects to the pinned official `@likec4/mcp`
+server (1.60.0). Call it with `{}` to discover tool names and input schemas,
+then with `{"tool":"list-projects","arguments":{}}` to find projects. Other
+tools query elements, views, and relationships using those schemas.
+
+It uses the same Node runtime and installed `architecture-helper` dependencies
+as the preview; no global CLI, server port, or runtime package download is needed.
+Each call loads the current workspace afresh, so edits are visible on the next
+call. Calls use MCP initialization, tool discovery, and tool invocation over
+local stdio streams inside one helper process. Cancellation or the 60-second
+deadline stops that process. Missing dependencies and MCP errors become tool
+errors; ordinary chat and file tools remain usable.
+
+Unlike data-only preview compilation, the official MCP loader may execute
+workspace LikeC4 configuration and read files it references. LikeC4 MCP calls are
+automatically allowed without an approval prompt, independent of **Allow all in
+workspace** for shell commands. Use it with trusted projects. Results are returned as JSON/text;
+MCP Apps interactive widgets are not rendered in chat. Continue to use file tools
+for model edits and the Architecture view for diagrams.
 
 ## Configuration
 

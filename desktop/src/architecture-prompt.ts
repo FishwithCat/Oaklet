@@ -64,7 +64,7 @@ ${targetSection(input)}
 ${diagnosticsSection(input.diagnostics)}
 Follow these rules:
 
-1. Read the repository instructions (for example AGENTS.md) and all existing architecture model files before editing. Do not edit anything until you understand the current model's structure and IDs.
+1. Read the repository instructions (for example AGENTS.md) and all existing architecture model files before editing. Use likec4_mcp to discover its tools and query existing projects, elements, and relationships; if unavailable, inspect the files directly. Do not edit anything until you understand the current model's structure and IDs.
 2. Inspect real source evidence: manifests, entry points, routes, service boundaries, persistence, integrations, and relevant imports. Use the existing file and command tools. Do not rely on names alone.
 3. Respect ignore rules. Skip dependencies, binaries, generated output, credentials, secrets, and unrelated files. Bound your exploration and state clearly when coverage is partial.
 4. Ground every element and relationship in files you inspected. Add relative source references in descriptions or comments. Mark assumptions explicitly instead of inventing connections.
