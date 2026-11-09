@@ -443,6 +443,7 @@ export function useAgentSession({
       { role: "user", content: trimmed },
     ];
     const userItem: Item = { kind: "user", text: trimmed };
+    const title = sessionTitle([...tab.items, userItem]);
     runWorkspaceRef.current = workspaceRef.current;
     pendingSendsRef.current.add(tab.id);
     commitTabs((current) =>
@@ -450,6 +451,7 @@ export function useAgentSession({
         candidate.id === tab.id
           ? {
               ...candidate,
+              title,
               messages: nextMessages,
               items: [...candidate.items, userItem],
               running: true,
@@ -505,8 +507,10 @@ export function useAgentSession({
     }
 
     tabCountRef.current += 1;
+    const fresh = blankTab(tabCountRef.current);
     const tab: ChatTabState = {
-      ...blankTab(tabCountRef.current),
+      ...fresh,
+      title: snapshot.title || sessionTitle(snapshot.items) || fresh.title,
       messages: snapshot.messages,
       items: snapshot.items,
       savedSessionId: snapshot.id,

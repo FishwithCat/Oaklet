@@ -275,6 +275,7 @@ export function Chat({
                 role="tab"
                 aria-selected={tab.id === activeTabId}
                 className="view-tab-label"
+                title={tab.title}
                 onClick={() => {
                   onSelectTab(tab.id);
                   requestAnimationFrame(() => textareaRef.current?.focus());

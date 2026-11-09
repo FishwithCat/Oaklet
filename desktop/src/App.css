@@ -316,6 +316,9 @@ button.allow-all-chip:hover:not(:disabled) {
 }
 
 .view-tab-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border: 0;
   background: transparent;
   border-radius: 6px 0 0 6px;

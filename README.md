@@ -8,9 +8,10 @@ enough to read in one sitting.
 ## What it does
 
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
-- Multiple chat tabs, each with its own conversation and draft. Runs keep
-  streaming while you switch tabs; Command+N opens a new chat tab, and
-  Command+R restores a saved session into its existing tab or a new one.
+- Multiple chat tabs, each titled by its first prompt and with its own
+  conversation and draft. Runs keep streaming while you switch tabs; Command+N
+  opens a new chat tab, and Command+R restores a saved session into its existing
+  tab or a new one.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
