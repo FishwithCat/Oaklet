@@ -187,6 +187,11 @@ textarea:focus-visible {
   background: var(--accent-soft);
 }
 
+.sidebar button.icon-button:focus,
+.sidebar button.icon-button:focus-visible {
+  outline: none;
+}
+
 .sidebar-foot {
   margin-top: auto;
   display: flex;
