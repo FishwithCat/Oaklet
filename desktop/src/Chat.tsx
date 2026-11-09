@@ -7,7 +7,7 @@ import {
 } from "react";
 import {
   PaperPlaneRightIcon,
-  StopIcon,
+  PauseIcon,
 } from "@phosphor-icons/react";
 import { MarkdownText } from "./Markdown";
 import { ProcessGroup } from "./Process";
@@ -207,7 +207,7 @@ export function Chat({
                   aria-label="Stop"
                   title="Stop"
                 >
-                  <StopIcon size={14} weight="fill" />
+                  <PauseIcon size={14} weight="fill" />
                 </button>
               ) : (
                 <button

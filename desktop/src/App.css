@@ -73,8 +73,15 @@ button.primary:hover:not(:disabled) {
 }
 
 button.stop {
-  border-color: color-mix(in srgb, var(--red) 45%, transparent);
+  border-color: transparent;
+  background: transparent;
   color: var(--red);
+}
+
+button.stop:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: color-mix(in srgb, var(--red) 78%, black);
 }
 
 button.ghost {
