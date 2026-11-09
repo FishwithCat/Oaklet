@@ -3,19 +3,32 @@ type KeyEvent = Pick<
   "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "repeat"
 >;
 
-export type AgentShortcut = "new-session" | "history" | "stop";
+export type AgentShortcut =
+  | "new-session"
+  | "new-terminal"
+  | "history"
+  | "stop";
 
-/** Chat-view shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
+/** Chat and terminal shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
 export function agentShortcut(
   event: KeyEvent,
   view: string,
   running: boolean,
 ): AgentShortcut | null {
-  if (view !== "chat" || event.altKey || event.shiftKey || event.repeat) {
+  if (event.altKey || event.shiftKey || event.repeat) {
     return null;
   }
 
   const key = event.key.toLowerCase();
+  if (view === "terminal") {
+    return event.metaKey && !event.ctrlKey && key === "n"
+      ? "new-terminal"
+      : null;
+  }
+  if (view !== "chat") {
+    return null;
+  }
+
   if (event.metaKey && !event.ctrlKey && key === "n") return "new-session";
   if (event.metaKey && !event.ctrlKey && key === "r") return "history";
   if (event.ctrlKey && !event.metaKey && key === "c" && running) return "stop";

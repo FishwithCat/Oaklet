@@ -12,7 +12,7 @@ const press = (overrides) => ({
   ...overrides,
 });
 
-test("Command+N opens a new session only in the chat view", () => {
+test("Command+N opens a new session in chat and a new tab in the terminal", () => {
   assert.equal(
     agentShortcut(press({ key: "n", metaKey: true }), "chat", false),
     "new-session",
@@ -23,6 +23,14 @@ test("Command+N opens a new session only in the chat view", () => {
   );
   assert.equal(
     agentShortcut(press({ key: "n", metaKey: true }), "terminal", false),
+    "new-terminal",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", ctrlKey: true }), "terminal", false),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", metaKey: true }), "git", false),
     null,
   );
   assert.equal(agentShortcut(press({ key: "n" }), "chat", false), null);

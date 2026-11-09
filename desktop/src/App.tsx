@@ -122,7 +122,7 @@ function App() {
       if (!action) return;
 
       if (settingsOpen) {
-        if (action === "history") event.preventDefault();
+        if (action !== "stop") event.preventDefault();
         return;
       }
       if (historyOpen) {
@@ -134,6 +134,8 @@ function App() {
       event.preventDefault();
       if (action === "new-session") {
         newChat();
+      } else if (action === "new-terminal") {
+        terminalRef.current?.addTab();
       } else if (action === "history") {
         if (!session.running) setHistoryOpen(true);
       } else {

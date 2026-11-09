@@ -27,6 +27,7 @@ type TerminalPaneHandle = {
 
 export type TerminalHandle = {
   run: (command: string) => void;
+  addTab: () => void;
 };
 
 type Tab = { id: string; title: string };
@@ -303,6 +304,7 @@ export function Terminal({
       run: (command) => {
         if (activeId) handles.current.get(activeId)?.run(command);
       },
+      addTab,
     }),
     [activeId],
   );
