@@ -84,12 +84,10 @@ function Diff({
 }) {
   const files = useMemo(() => parseDiff(text), [text]);
   const [fileIndex, setFileIndex] = useState(0);
-  const [page, setPage] = useState(0);
-  useEffect(() => { setFileIndex(0); setPage(0); }, [text]);
+  const [shown, setShown] = useState(200);
+  useEffect(() => { setFileIndex(0); setShown(200); }, [text]);
   const selectedFile = files[fileIndex] ?? files[0];
   const lineCount = selectedFile?.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0) ?? 0;
-  const pages = Math.max(1, Math.ceil(lineCount / 200));
-  const currentPage = Math.min(page, pages - 1);
   const added = files.reduce((total, file) => total + file.added, 0);
   const removed = files.reduce((total, file) => total + file.removed, 0);
 
@@ -107,19 +105,15 @@ function Diff({
         </span>
       </div>
       {files.length > 1 && (
-        <label>
-          File{" "}
-          <select value={fileIndex} onChange={(event) => { setFileIndex(Number(event.target.value)); setPage(0); }}>
-            {files.map((file, index) => <option key={index} value={index}>{file.path}</option>)}
-          </select>
+        <label className="diff-file-picker">
+          <span className="diff-file-picker-label">File</span>
+          <span className="diff-file-picker-control">
+            <select value={fileIndex} onChange={(event) => { setFileIndex(Number(event.target.value)); setShown(200); }}>
+              {files.map((file, index) => <option key={index} value={index}>{file.path}</option>)}
+            </select>
+            <CaretDownIcon size={10} className="diff-file-picker-caret" aria-hidden="true" />
+          </span>
         </label>
-      )}
-      {pages > 1 && (
-        <nav aria-label="Diff pages">
-          <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous</button>
-          <span> Page {currentPage + 1} of {pages} · 200 lines per page </span>
-          <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>Next</button>
-        </nav>
       )}
       {[selectedFile].map((file) => (
         <div className="diff-file" key={`${file.path}-${fileIndex}`}>
@@ -135,7 +129,7 @@ function Diff({
           ) : file.hunks.length === 0 ? (
             <p className="diff-binary">No line changes.</p>
           ) : (
-            pageHunks(file.hunks, currentPage * 200, 200).map((hunk, hunkIndex) => (
+            pageHunks(file.hunks, 0, shown).map((hunk, hunkIndex) => (
               <div className="diff-hunk" key={`${hunk.header}-${hunkIndex}`}>
                 <div className="diff-hunk-head">{hunk.header}</div>
                 <div className="diff-lines">
@@ -163,6 +157,12 @@ function Diff({
                 </div>
               </div>
             ))
+          )}
+          {!file.binary && shown < lineCount && (
+            <button type="button" className="diff-more" onClick={() => setShown((current) => current + 200)}>
+              <span>Show more lines</span>
+              <span className="diff-more-count">{shown} of {lineCount}</span>
+            </button>
           )}
         </div>
       ))}
