@@ -425,23 +425,19 @@ export function useAgentSession({
           addNotice(
             tab.id,
             "muted",
-            "Nothing outside the current turn is worth compacting yet.",
+            "Nothing older to compact yet.",
           );
           return;
         }
         if (live.messages !== tab.messages) {
-          addNotice(
-            tab.id,
-            "muted",
-            "Context changed while compacting; nothing was replaced.",
-          );
+          addNotice(tab.id, "muted", "Context changed; nothing was compacted.");
           return;
         }
 
         const notice: Item = {
           kind: "notice",
           tone: "muted",
-          text: `Earlier turns replaced with a checkpoint for the next request (${formatTokens(result.before)} → ${formatTokens(result.after)} tokens).`,
+          text: `Compacted context: ${formatTokens(result.before)} → ${formatTokens(result.after)} tokens.`,
         };
         commitTabs((current) =>
           current.map((candidate) =>
