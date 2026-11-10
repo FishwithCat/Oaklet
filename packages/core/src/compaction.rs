@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::AppConfig;
 use crate::context::{estimate_message, estimate_text, estimate_tokens};
+use crate::repeat::is_reminder;
 use crate::tools::{Cancel, cap};
 
 /// Room kept for the response and for the next round of tool output.
@@ -129,10 +130,16 @@ fn select_cut(messages: &[Value], retain: usize, min_replaced: usize) -> Option<
         return None;
     }
 
-    // Never summarize the request the agent is working on right now.
+    // Never summarize the request the agent is working on right now. Loop-guard
+    // reminders are user messages too, but they are advice, not the request.
     let current_turn = messages
         .iter()
-        .rposition(|message| role(message) == Some("user"))
+        .rposition(|message| role(message) == Some("user") && !is_reminder(message))
+        .or_else(|| {
+            messages
+                .iter()
+                .rposition(|message| role(message) == Some("user"))
+        })
         .unwrap_or(1);
 
     let mut suffix = estimate_tokens(messages);
@@ -401,6 +408,38 @@ mod tests {
 
         let cut = select_cut(&messages, 500, 100).unwrap();
         assert!(cut <= messages.len() - 3);
+        assert!(
+            messages[cut..]
+                .iter()
+                .any(|message| message["content"] == "CURRENT REQUEST")
+        );
+    }
+
+    #[test]
+    fn a_loop_guard_reminder_does_not_replace_the_current_request() {
+        let mut messages = vec![system()];
+        for step in 0..20 {
+            messages.push(user(&format!("old {step} {}", "x".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        messages.push(user("CURRENT REQUEST"));
+        messages.push(json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_now",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            }]
+        }));
+        messages.push(tool("call_now", &"r".repeat(400)));
+        messages.push(user(&format!(
+            "{}you have called `read_file` 3 times in a row",
+            crate::repeat::REMINDER_PREFIX
+        )));
+        messages.push(assistant("trying another approach"));
+
+        let cut = select_cut(&messages, 500, 100).unwrap();
         assert!(
             messages[cut..]
                 .iter()

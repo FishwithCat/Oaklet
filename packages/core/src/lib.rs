@@ -3,6 +3,7 @@ mod architecture;
 mod compaction;
 mod context;
 mod git;
+mod repeat;
 mod terminal;
 mod tools;
 

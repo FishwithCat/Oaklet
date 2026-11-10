@@ -11,13 +11,12 @@ use tokio::sync::oneshot;
 
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
+use crate::repeat::RepeatGuard;
 use crate::tools::{
     ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
 };
 use crate::{AppConfig, PendingApproval, SharedState, auto_approves_command};
 
-const MAX_STEPS: usize = 200;
-const MAX_COMPACTIONS: usize = 8;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Serialize)]
@@ -173,9 +172,9 @@ pub async fn run(
 
     let mut messages = initial_messages(&config, &tools, &model_sources, input);
     let mut meter = Meter::default();
-    let mut compactions = 0usize;
+    let mut guard = RepeatGuard::new();
 
-    for _ in 0..MAX_STEPS {
+    loop {
         if cancel.is_cancelled() {
             stopped(&app, &run_id);
             return;
@@ -184,13 +183,11 @@ pub async fn run(
         let pressure = meter.prepare(&messages);
         note_pressure(pressure);
 
-        if pressure > compaction::trigger_at(config.context_window) && compactions < MAX_COMPACTIONS
-        {
+        if pressure > compaction::trigger_at(config.context_window) {
             match compaction::compact(&client, &config, &messages, &cancel).await {
                 Ok(Some(next)) => {
                     note_compaction(pressure, estimate_tokens(&next));
                     messages = next;
-                    compactions += 1;
                     // Reprice the history that is actually sent, so the next
                     // usage anchor is not measured against the old size.
                     let _ = meter.prepare(&messages);
@@ -243,6 +240,10 @@ pub async fn run(
             return;
         }
 
+        // Reminders wait until every result in this batch exists, so a user
+        // message never splits the tool results answering one assistant turn.
+        let mut reminders = Vec::new();
+
         for call in &calls {
             if cancel.is_cancelled() {
                 stopped(&app, &run_id);
@@ -273,6 +274,11 @@ pub async fn run(
                             output: message.clone(),
                         },
                     );
+                    if let Some(reminder) =
+                        guard.observe(&call.name, &Value::String(call.arguments.clone()))
+                    {
+                        reminders.push(reminder);
+                    }
                     messages.push(tool_message(&call.id, message));
                     continue;
                 }
@@ -299,6 +305,9 @@ pub async fn run(
                 workspace: tool_context.workspace.root(),
                 cancel: &cancel,
             };
+            if let Some(reminder) = guard.observe(&call.name, &args) {
+                reminders.push(reminder);
+            }
             let outcome = tools
                 .execute(&tool_context, &approver, &call.name, args)
                 .await;
@@ -319,13 +328,11 @@ pub async fn run(
                 return;
             }
         }
-    }
 
-    fail(
-        &app,
-        &run_id,
-        format!("Stopped after {MAX_STEPS} steps without a final answer."),
-    );
+        for reminder in reminders {
+            messages.push(json!({ "role": "user", "content": reminder }));
+        }
+    }
 }
 
 /// Print context pressure while developing; release builds stay quiet.

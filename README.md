@@ -298,6 +298,12 @@ Oaklet keeps long tool output to its head and tail, and when a run approaches
 the context window it asks the model to replace older history with a short
 checkpoint. The system prompt and the current turn are never summarized.
 
+A run has no fixed step limit. Three cheaper controls bound the cost instead:
+every potentially slow tool call has its own timeout (`run_command` 120 seconds,
+MCP 60, `web_search` 20), repeating one identical call earns an advisory
+reminder at the third, fifth, and eighth try, and **Stop** cancels the model
+request, a running command, or a pending approval immediately.
+
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a fully local setup with
 [Ollama](https://ollama.com), use `http://localhost:11434/v1` and a model such
