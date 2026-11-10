@@ -7,12 +7,14 @@ import {
   GearIcon,
   GitBranchIcon,
   ShieldCheckIcon,
+  SparkleIcon,
   TerminalWindowIcon,
   TreeStructureIcon,
 } from "@phosphor-icons/react";
 import { Chat, type ChatHandle } from "./Chat";
 import { errorText, SettingsPanel, type AppConfig } from "./SettingsPanel";
 import { SessionHistory } from "./SessionHistory";
+import { SkillsPopup } from "./SkillsPopup";
 import { SourceControl, type ChangeInfo } from "./SourceControl";
 import { Terminal, type TerminalHandle } from "./Terminal";
 import { useAgentSession } from "./useAgentSession";
@@ -26,6 +28,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [browsingWorkspace, setBrowsingWorkspace] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [view, setView] = useState<
     "chat" | "terminal" | "git" | "architecture"
   >("chat");
@@ -118,6 +121,10 @@ function App() {
       if (historyOpen) {
         event.preventDefault();
         if (action === "history") setHistoryOpen(false);
+        return;
+      }
+      if (skillsOpen) {
+        event.preventDefault();
         return;
       }
 
@@ -237,6 +244,18 @@ function App() {
           </button>
           <button
             type="button"
+            className={`ghost icon-button skills-toggle${
+              skillsOpen ? " active" : ""
+            }`}
+            onClick={() => setSkillsOpen((open) => !open)}
+            aria-label="Skills"
+            aria-pressed={skillsOpen}
+            title="Skills"
+          >
+            <SparkleIcon size={16} />
+          </button>
+          <button
+            type="button"
             className="ghost icon-button"
             onClick={() => setSettingsOpen(true)}
             aria-label="Settings"
@@ -331,6 +350,13 @@ function App() {
             setView("chat");
             setHistoryOpen(false);
           }}
+        />
+      )}
+
+      {skillsOpen && (
+        <SkillsPopup
+          key={config.workspace}
+          onClose={() => setSkillsOpen(false)}
         />
       )}
     </div>
