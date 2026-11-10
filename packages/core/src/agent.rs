@@ -9,12 +9,15 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
+use crate::compaction;
+use crate::context::{Meter, estimate_tokens};
 use crate::tools::{
     ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
 };
 use crate::{AppConfig, PendingApproval, SharedState, auto_approves_command};
 
 const MAX_STEPS: usize = 200;
+const MAX_COMPACTIONS: usize = 8;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Serialize)]
@@ -93,6 +96,8 @@ struct ToolCall {
 struct StreamDelta {
     content: Option<String>,
     reasoning: Option<String>,
+    /// Provider-reported prompt size, when a chunk carries usage.
+    usage: Option<usize>,
 }
 
 fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
@@ -167,6 +172,8 @@ pub async fn run(
     };
 
     let mut messages = initial_messages(&config, &tools, &model_sources, input);
+    let mut meter = Meter::default();
+    let mut compactions = 0usize;
 
     for _ in 0..MAX_STEPS {
         if cancel.is_cancelled() {
@@ -174,7 +181,33 @@ pub async fn run(
             return;
         }
 
-        let (content, reasoning, calls) =
+        let pressure = meter.prepare(&messages);
+        note_pressure(pressure);
+
+        if pressure > compaction::trigger_at(config.context_window) && compactions < MAX_COMPACTIONS
+        {
+            match compaction::compact(&client, &config, &messages, &cancel).await {
+                Ok(Some(next)) => {
+                    note_compaction(pressure, estimate_tokens(&next));
+                    messages = next;
+                    compactions += 1;
+                    // Reprice the history that is actually sent, so the next
+                    // usage anchor is not measured against the old size.
+                    let _ = meter.prepare(&messages);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    if cancel.is_cancelled() {
+                        stopped(&app, &run_id);
+                    } else {
+                        fail(&app, &run_id, err);
+                    }
+                    return;
+                }
+            }
+        }
+
+        let (content, reasoning, calls, prompt_tokens) =
             match stream_step(&app, &run_id, &client, &config, &tools, &messages, &cancel).await {
                 Ok(result) => result,
                 Err(err) => {
@@ -186,6 +219,9 @@ pub async fn run(
                     return;
                 }
             };
+        if let Some(prompt_tokens) = prompt_tokens {
+            meter.record_prompt_tokens(prompt_tokens);
+        }
 
         if content.trim().is_empty() && calls.is_empty() {
             fail(&app, &run_id, "The model returned an empty response.");
@@ -292,6 +328,19 @@ pub async fn run(
     );
 }
 
+/// Print context pressure while developing; release builds stay quiet.
+fn note_pressure(pressure: usize) {
+    if cfg!(debug_assertions) {
+        eprintln!("[oaklet] context pressure ~{pressure} tokens");
+    }
+}
+
+fn note_compaction(before: usize, after: usize) {
+    if cfg!(debug_assertions) {
+        eprintln!("[oaklet] compacted context ~{before} -> ~{after} tokens");
+    }
+}
+
 async fn stream_step(
     app: &AppHandle,
     run_id: &str,
@@ -300,13 +349,15 @@ async fn stream_step(
     tools: &ToolRegistry,
     messages: &[Value],
     cancel: &Cancel,
-) -> Result<(String, String, Vec<ToolCall>), String> {
+) -> Result<(String, String, Vec<ToolCall>, Option<usize>), String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = json!({
         "model": config.model,
         "messages": messages,
         "tools": tools.schemas(),
         "stream": true,
+        // Ask OpenAI-compatible servers to close the stream with a usage chunk.
+        "stream_options": { "include_usage": true },
     });
 
     let mut request = client.post(&url).json(&body);
@@ -330,6 +381,7 @@ async fn stream_step(
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
+    let mut prompt_tokens: Option<usize> = None;
 
     loop {
         tokio::select! {
@@ -346,6 +398,9 @@ async fn stream_step(
                     let line: Vec<u8> = buffer.drain(..=pos).collect();
                     let line = String::from_utf8_lossy(&line);
                     let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)?;
+                    if let Some(tokens) = delta.usage {
+                        prompt_tokens = Some(tokens);
+                    }
                     emit_stream_delta(app, run_id, delta);
                 }
             }
@@ -355,6 +410,9 @@ async fn stream_step(
     if !buffer.is_empty() {
         let line = String::from_utf8_lossy(&buffer);
         let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)?;
+        if let Some(tokens) = delta.usage {
+            prompt_tokens = Some(tokens);
+        }
         emit_stream_delta(app, run_id, delta);
     }
 
@@ -364,7 +422,7 @@ async fn stream_step(
             call.id = format!("call_{index}");
         }
     }
-    Ok((content, reasoning, calls))
+    Ok((content, reasoning, calls, prompt_tokens))
 }
 
 fn emit_stream_delta(app: &AppHandle, run_id: &str, delta: StreamDelta) {
@@ -513,11 +571,18 @@ fn apply_sse_line(
         return Err(format!("Model error: {message}"));
     }
 
+    let mut emitted = StreamDelta::default();
+    if let Some(tokens) = value
+        .pointer("/usage/prompt_tokens")
+        .and_then(Value::as_u64)
+    {
+        emitted.usage = Some(tokens as usize);
+    }
+
     let Some(delta) = value.pointer("/choices/0/delta") else {
-        return Ok(StreamDelta::default());
+        return Ok(emitted);
     };
 
-    let mut emitted = StreamDelta::default();
     if let Some(text) = delta.get("content").and_then(Value::as_str)
         && !text.is_empty()
     {
@@ -742,6 +807,31 @@ mod tests {
             .unwrap_err()
             .contains("bad key")
         );
+    }
+
+    #[test]
+    fn reads_prompt_tokens_from_a_usage_chunk() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut calls = BTreeMap::new();
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":5}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(delta.usage, Some(1234));
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(delta.usage, None);
     }
 
     #[test]

@@ -289,9 +289,14 @@ Open **Settings** in the app:
 | API key    | none                                       |
 | Base URL   | `https://api.deepseek.com`                 |
 | Model      | `deepseek-flash`                           |
+| Context window | `262144` tokens                        |
 | Search URL | `https://api.deepseek.com/v1/tools/search` |
 | MCP servers | none                                      |
 | Workspace  | your home directory                        |
+
+Oaklet keeps long tool output to its head and tail, and when a run approaches
+the context window it asks the model to replace older history with a short
+checkpoint. The system prompt and the current turn are never summarized.
 
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a fully local setup with
@@ -327,5 +332,4 @@ as `qwen2.5-coder`.
 ## Status
 
 Initial MVP. Open chat tabs are in memory (restarting the app clears them;
-completed sessions remain in history), and there is no syntax highlighting or
-context compaction yet.
+completed sessions remain in history), and there is no syntax highlighting.

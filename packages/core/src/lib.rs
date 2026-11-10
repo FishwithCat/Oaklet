@@ -1,5 +1,7 @@
 mod agent;
 mod architecture;
+mod compaction;
+mod context;
 mod git;
 mod terminal;
 mod tools;
@@ -66,6 +68,9 @@ pub struct AppConfig {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Prompt tokens the model accepts. History is compacted near this size.
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
     #[serde(default = "default_search_url")]
     pub search_url: String,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
@@ -165,6 +170,10 @@ fn default_model() -> String {
     "deepseek-flash".into()
 }
 
+fn default_context_window() -> usize {
+    262_144
+}
+
 fn default_search_url() -> String {
     tools::web::DEFAULT_ENDPOINT.into()
 }
@@ -192,6 +201,7 @@ impl Default for AppConfig {
             base_url: default_base_url(),
             api_key: String::new(),
             model: default_model(),
+            context_window: default_context_window(),
             search_url: default_search_url(),
             mcp_servers: BTreeMap::new(),
             workspace: default_workspace(),
@@ -343,6 +353,9 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     }
     if config.model.is_empty() {
         return Err("Model is required.".into());
+    }
+    if config.context_window < 8_192 {
+        return Err("Context window must be at least 8192 tokens.".into());
     }
     config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
     if !Path::new(&config.workspace).is_dir() {
@@ -788,6 +801,12 @@ mod tests {
             "https://api.deepseek.com/v1/tools/search"
         );
         assert!(config.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn configs_saved_before_context_window_default_to_256k() {
+        let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert_eq!(config.context_window, 262_144);
     }
 
     #[test]

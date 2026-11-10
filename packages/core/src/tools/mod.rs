@@ -24,7 +24,14 @@ mod workspace;
 
 pub use workspace::Workspace;
 
-const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
+/// Tool output above this many characters keeps only its head and tail.
+const TOOL_OUTPUT_THRESHOLD_CHARS: usize = 12_000;
+/// Head kept verbatim from an oversized tool output.
+const TOOL_OUTPUT_HEAD_CHARS: usize = 4_000;
+/// Tail kept verbatim: errors and summaries usually land at the end.
+const TOOL_OUTPUT_TAIL_CHARS: usize = 1_500;
+/// Marker substituted for the removed middle.
+const TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output middle pruned ...]\n\n";
 
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
@@ -124,14 +131,14 @@ impl ToolOutcome {
     pub fn success(output: impl Into<String>) -> Self {
         Self {
             ok: true,
-            output: cap(output.into(), MAX_TOOL_OUTPUT_CHARS),
+            output: prune_tool_output(output.into()),
         }
     }
 
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             ok: false,
-            output: cap(message.into(), MAX_TOOL_OUTPUT_CHARS),
+            output: prune_tool_output(message.into()),
         }
     }
 }
@@ -349,6 +356,24 @@ pub(crate) fn cap(text: String, max_chars: usize) -> String {
     capped
 }
 
+/// Keep the head and tail of an oversized tool output.
+///
+/// The middle of a file dump or command log is the least useful part, while the
+/// head carries the shape of the result and the tail carries errors and
+/// summaries. Slicing is by character, so multi-byte text cannot be split.
+fn prune_tool_output(text: String) -> String {
+    let total = text.chars().count();
+    if total <= TOOL_OUTPUT_THRESHOLD_CHARS {
+        return text;
+    }
+    let head_end = TOOL_OUTPUT_HEAD_CHARS.min(total);
+    let tail_start = total.saturating_sub(TOOL_OUTPUT_TAIL_CHARS).max(head_end);
+    let mut pruned: String = text.chars().take(head_end).collect();
+    pruned.push_str(TOOL_OUTPUT_MARKER);
+    pruned.extend(text.chars().skip(tail_start));
+    pruned
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::PathBuf;
@@ -386,8 +411,9 @@ mod tests {
 
     use super::test_support::context;
     use super::{
-        ApprovalDecision, ApprovalRequest, Approver, CancelHandle, Tool, ToolContext, ToolError,
-        ToolRegistry, cap,
+        ApprovalDecision, ApprovalRequest, Approver, CancelHandle, TOOL_OUTPUT_HEAD_CHARS,
+        TOOL_OUTPUT_MARKER, TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext,
+        ToolError, ToolRegistry, cap, prune_tool_output,
     };
 
     struct Allow;
@@ -487,6 +513,44 @@ mod tests {
         let capped = cap(text, 5);
         assert!(capped.starts_with("日本語日本"));
         assert!(capped.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn keeps_short_tool_output_verbatim() {
+        let text = "x".repeat(TOOL_OUTPUT_THRESHOLD_CHARS);
+        assert_eq!(prune_tool_output(text.clone()), text);
+    }
+
+    #[test]
+    fn prunes_the_middle_of_a_long_tool_output() {
+        let head = "h".repeat(TOOL_OUTPUT_HEAD_CHARS);
+        let tail = "t".repeat(TOOL_OUTPUT_TAIL_CHARS);
+        let text = format!("{head}{}{tail}", "m".repeat(TOOL_OUTPUT_THRESHOLD_CHARS));
+        let pruned = prune_tool_output(text);
+
+        assert!(pruned.starts_with(&head));
+        assert!(pruned.ends_with(&tail));
+        assert_eq!(pruned.matches(TOOL_OUTPUT_MARKER).count(), 1);
+        assert!(pruned.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+    }
+
+    #[test]
+    fn prunes_multibyte_output_without_splitting_characters() {
+        let text = "日本語".repeat(10_000);
+        let pruned = prune_tool_output(text);
+
+        assert!(pruned.starts_with(&"日本語".repeat(TOOL_OUTPUT_HEAD_CHARS / 3)));
+        assert!(pruned.ends_with(&"日本語".repeat(TOOL_OUTPUT_TAIL_CHARS / 3)));
+        assert!(!pruned.contains('\u{fffd}'));
+        assert!(pruned.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+    }
+
+    #[test]
+    fn pruning_budget_fits_inside_the_threshold() {
+        assert!(
+            TOOL_OUTPUT_HEAD_CHARS + TOOL_OUTPUT_MARKER.chars().count() + TOOL_OUTPUT_TAIL_CHARS
+                <= TOOL_OUTPUT_THRESHOLD_CHARS
+        );
     }
 
     #[test]

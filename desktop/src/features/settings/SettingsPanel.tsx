@@ -231,6 +231,27 @@ export function SettingsPanel({
                 </div>
 
                 <div className="field">
+                  <label htmlFor="context-window">Context window</label>
+                  <input
+                    id="context-window"
+                    type="number"
+                    min={8192}
+                    step={1024}
+                    value={draft.contextWindow}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        contextWindow: Number(event.target.value),
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    Prompt tokens the model accepts. Oaklet summarizes older
+                    history near 80% of this.
+                  </p>
+                </div>
+
+                <div className="field">
                   <label htmlFor="search-url">Search URL</label>
                   <input
                     id="search-url"
