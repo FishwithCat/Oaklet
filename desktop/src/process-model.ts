@@ -56,7 +56,15 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 export function toolTitle(name: string): string {
-  return TOOL_TITLES[name] ?? name.replace(/_/g, " ");
+  const known = TOOL_TITLES[name];
+  if (known) return known;
+  if (name.startsWith("mcp__")) {
+    const separator = name.indexOf("__", 5);
+    if (separator > 5) {
+      return `${name.slice(5, separator)} · ${name.slice(separator + 2)}`;
+    }
+  }
+  return name.replace(/_/g, " ");
 }
 
 export function categoryLabel(category: ToolCategory, live: boolean): string {

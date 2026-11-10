@@ -56,7 +56,7 @@ struct ApprovalEvent {
     run_id: String,
     id: String,
     request_id: String,
-    tool: &'static str,
+    tool: String,
     args: Value,
     prompt: String,
     detail: String,
@@ -144,7 +144,6 @@ pub async fn run(
         }
     };
 
-    let tools = ToolRegistry::with_host_tools(&app, &config);
     let workspace = match Workspace::new(&config.workspace) {
         Ok(workspace) => workspace,
         Err(message) => {
@@ -152,6 +151,7 @@ pub async fn run(
             return;
         }
     };
+    let tools = ToolRegistry::with_host_tools(&app, &config).await;
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
@@ -441,7 +441,7 @@ async fn request_approval(
         .lock()
         .ok()
         .and_then(|granted| granted.clone());
-    if auto_approves_command(request.tool, workspace, granted.as_deref()) {
+    if auto_approves_command(&request.tool, workspace, granted.as_deref()) {
         return true;
     }
 
@@ -630,7 +630,13 @@ fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[Stri
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
         "Paths are relative to the workspace; absolute paths inside it also work.".into(),
     ];
-    rules.extend(tools.guidance().map(str::to_string));
+    rules.extend(tools.guidance().into_iter().map(str::to_string));
+    rules.extend(
+        tools
+            .warnings()
+            .iter()
+            .map(|warning| format!("MCP warning: {warning}")),
+    );
     if !model_sources.is_empty() {
         rules.push(format!(
             "This workspace has LikeC4 architecture sources ({}). After you finish code changes, \

@@ -1,14 +1,48 @@
-import { useEffect, useState, type SubmitEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type SubmitEvent,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { XIcon } from "@phosphor-icons/react";
+import {
+  formatMcpConfig,
+  parseMcpConfig,
+  serverEnabled,
+  serverTransport,
+  setServerEnabled,
+  type McpServers,
+} from "./mcp-settings";
 
 export type AppConfig = {
   baseUrl: string;
   apiKey: string;
   model: string;
   searchUrl: string;
+  mcpServers: McpServers;
   workspace: string;
 };
+
+type SettingsTab = "model" | "mcp";
+
+type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
+  mcpText: string;
+};
+
+const TABS: { id: SettingsTab; label: string }[] = [
+  { id: "model", label: "Model" },
+  { id: "mcp", label: "MCP" },
+];
+
+function toDraft(config: AppConfig): SettingsDraft {
+  return {
+    ...config,
+    mcpText: formatMcpConfig(config.mcpServers ?? {}),
+  };
+}
 
 export function errorText(error: unknown): string {
   if (typeof error === "string") return error;
@@ -27,24 +61,63 @@ export function SettingsPanel({
   onClose: () => void;
   onSaved: (config: AppConfig) => void;
 }) {
-  const [draft, setDraft] = useState(config);
+  const [draft, setDraft] = useState(() => toDraft(config));
+  const [tab, setTab] = useState<SettingsTab>("model");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const mcpParse = useMemo(
+    () => parseMcpConfig(draft.mcpText),
+    [draft.mcpText],
+  );
+  const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
+    model: null,
+    mcp: null,
+  });
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  function onTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const index = TABS.findIndex((item) => item.id === tab);
+    let next = index;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      next = (index + 1) % TABS.length;
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      next = (index - 1 + TABS.length) % TABS.length;
+    } else if (event.key === "Home") {
+      next = 0;
+    } else if (event.key === "End") {
+      next = TABS.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const target = TABS[next];
+    if (!target) return;
+    setTab(target.id);
+    tabRefs.current[target.id]?.focus();
+  }
+
   async function save(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+    const parsed = parseMcpConfig(draft.mcpText);
+    if ("error" in parsed) {
+      setTab("mcp");
+      setError("");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      const saved = await invoke<AppConfig>("save_config", { config: draft });
+      const { mcpText: _mcpText, ...rest } = draft;
+      const saved = await invoke<AppConfig>("save_config", {
+        config: { ...rest, mcpServers: parsed.servers },
+      });
       onSaved(saved);
     } catch (err) {
       setError(errorText(err));
@@ -60,7 +133,7 @@ export function SettingsPanel({
       }}
     >
       <form
-        className="modal"
+        className="modal settings-modal"
         onSubmit={save}
         role="dialog"
         aria-modal="true"
@@ -75,71 +148,215 @@ export function SettingsPanel({
         >
           <XIcon size={16} />
         </button>
-        <h2 id="settings-title">{firstRun ? "Connect a model" : "Settings"}</h2>
-        <p className="modal-sub">
-          Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is
-          the default. Your key stays on this machine.
-        </p>
 
-        <div className="field">
-          <label htmlFor="api-key">API key</label>
-          <input
-            id="api-key"
-            type="password"
-            autoComplete="off"
-            placeholder="sk-..."
-            value={draft.apiKey}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, apiKey: event.target.value }))
-            }
-          />
-        </div>
-
-        <div className="field">
-          <label htmlFor="base-url">Base URL</label>
-          <input
-            id="base-url"
-            placeholder="https://api.deepseek.com"
-            value={draft.baseUrl}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, baseUrl: event.target.value }))
-            }
-          />
-        </div>
-
-        <div className="field">
-          <label htmlFor="model">Model</label>
-          <input
-            id="model"
-            placeholder="deepseek-flash"
-            value={draft.model}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, model: event.target.value }))
-            }
-          />
-        </div>
-
-        <div className="field">
-          <label htmlFor="search-url">Search URL</label>
-          <input
-            id="search-url"
-            placeholder="https://api.deepseek.com/v1/tools/search"
-            value={draft.searchUrl}
-            onChange={(event) =>
-              setDraft((current) => ({
-                ...current,
-                searchUrl: event.target.value,
-              }))
-            }
-          />
-          <p className="field-hint">
-            Used by web_search. Defaults to the DeepSeek Search API.
+        <div className="settings-head">
+          <h2 id="settings-title">
+            {firstRun && tab === "model" ? "Connect a model" : "Settings"}
+          </h2>
+          <p className="modal-sub">
+            {tab === "model"
+              ? firstRun
+                ? "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine."
+                : "Choose the OpenAI-compatible model provider Oaklet should use."
+              : "Connect MCP servers and choose which ones the agent can use."}
           </p>
         </div>
 
-        {error && <p className="error-text">{error}</p>}
+        <div className="settings-layout">
+          <div
+            className="settings-tablist"
+            role="tablist"
+            aria-orientation="vertical"
+            aria-label="Settings sections"
+          >
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                ref={(node) => {
+                  tabRefs.current[item.id] = node;
+                }}
+                type="button"
+                role="tab"
+                id={`settings-tab-${item.id}`}
+                aria-selected={tab === item.id}
+                aria-controls={`settings-panel-${item.id}`}
+                tabIndex={tab === item.id ? 0 : -1}
+                className={`settings-tab${tab === item.id ? " active" : ""}`}
+                onClick={() => setTab(item.id)}
+                onKeyDown={onTabKeyDown}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
 
-        <div className="modal-actions">
+          <div className="settings-content">
+            {tab === "model" ? (
+              <section
+                id="settings-panel-model"
+                role="tabpanel"
+                aria-labelledby="settings-tab-model"
+                tabIndex={0}
+              >
+                <div className="field">
+                  <label htmlFor="api-key">API key</label>
+                  <input
+                    id="api-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="sk-..."
+                    value={draft.apiKey}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        apiKey: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="base-url">Base URL</label>
+                  <input
+                    id="base-url"
+                    placeholder="https://api.deepseek.com"
+                    value={draft.baseUrl}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        baseUrl: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="model">Model</label>
+                  <input
+                    id="model"
+                    placeholder="deepseek-flash"
+                    value={draft.model}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        model: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="field">
+                  <label htmlFor="search-url">Search URL</label>
+                  <input
+                    id="search-url"
+                    placeholder="https://api.deepseek.com/v1/tools/search"
+                    value={draft.searchUrl}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        searchUrl: event.target.value,
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    Used by web_search. Defaults to the DeepSeek Search API.
+                  </p>
+                </div>
+              </section>
+            ) : (
+              <section
+                id="settings-panel-mcp"
+                role="tabpanel"
+                aria-labelledby="settings-tab-mcp"
+                tabIndex={0}
+              >
+                <p className="field-hint mcp-intro">
+                  Paste a standard <code>mcpServers</code> document. Each server
+                  can be enabled or disabled independently; a disabled server
+                  keeps its settings but exposes no tools.
+                </p>
+
+                <div className="field">
+                  <label htmlFor="mcp-json">Configuration JSON</label>
+                  <textarea
+                    id="mcp-json"
+                    className="mcp-json"
+                    spellCheck={false}
+                    value={draft.mcpText}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        mcpText: event.target.value,
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    Use <code>type</code> <code>stdio</code> or{" "}
+                    <code>streamableHttp</code>. Set{" "}
+                    <code>"enabled": false</code> to pause a server. Commands
+                    run in the workspace; environment and header values are
+                    stored on this machine.
+                  </p>
+                </div>
+
+                {"error" in mcpParse ? (
+                  <p className="error-text mcp-json-error">{mcpParse.error}</p>
+                ) : (
+                  <>
+                    <div className="mcp-heading">
+                      <h3>Servers</h3>
+                    </div>
+                    {Object.keys(mcpParse.servers).length === 0 ? (
+                      <p className="mcp-empty">
+                        No MCP servers in this config.
+                      </p>
+                    ) : (
+                      <div className="mcp-toggles">
+                        {Object.entries(mcpParse.servers).map(
+                          ([name, server]) => (
+                            <label className="mcp-toggle" key={name}>
+                              <input
+                                type="checkbox"
+                                checked={serverEnabled(server)}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setDraft((current) => {
+                                    const parsed = parseMcpConfig(
+                                      current.mcpText,
+                                    );
+                                    if ("error" in parsed) return current;
+                                    return {
+                                      ...current,
+                                      mcpText: formatMcpConfig(
+                                        setServerEnabled(
+                                          parsed.servers,
+                                          name,
+                                          enabled,
+                                        ),
+                                      ),
+                                    };
+                                  });
+                                }}
+                              />
+                              <span className="mcp-toggle-name">{name}</span>
+                              <span className="mcp-toggle-type">
+                                {serverTransport(server)}
+                              </span>
+                            </label>
+                          ),
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
+          </div>
+        </div>
+
+        {error && <p className="error-text settings-error">{error}</p>}
+
+        <div className="modal-actions settings-actions">
           <button type="button" onClick={onClose}>
             Cancel
           </button>

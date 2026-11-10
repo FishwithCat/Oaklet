@@ -38,7 +38,7 @@ impl WebSearch {
 }
 
 impl Tool for WebSearch {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "web_search"
     }
 

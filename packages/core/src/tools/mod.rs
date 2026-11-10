@@ -14,6 +14,7 @@ use tokio::sync::watch;
 
 mod fs;
 mod likec4;
+mod mcp;
 mod shell;
 pub(crate) mod web;
 mod workspace;
@@ -25,13 +26,13 @@ const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
     /// Model-facing name, also used by the registry for lookup.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     /// Model-facing description.
-    fn description(&self) -> &'static str;
+    fn description(&self) -> &str;
     /// JSON Schema for the call arguments.
     fn parameters(&self) -> Value;
     /// One system-prompt rule; omitted when empty.
-    fn guidance(&self) -> &'static str {
+    fn guidance(&self) -> &str {
         ""
     }
     /// Short pending-call summary (usually the touched path or command).
@@ -57,7 +58,7 @@ pub trait Tool: Send + Sync {
 /// Human-facing details for one approval card.
 #[derive(Clone, Debug)]
 pub struct ApprovalRequest {
-    pub tool: &'static str,
+    pub tool: String,
     pub prompt: String,
     pub detail: String,
     pub args: Value,
@@ -182,17 +183,22 @@ impl Cancel {
 /// All tools available to the agent, in model-visible order.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    warnings: Vec<String>,
 }
 
 impl ToolRegistry {
-    /// Tools that need host state beyond the workspace: LikeC4 and, when an API
-    /// key is configured, DeepSeek web search.
-    pub fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
+    /// Tools that need host state beyond the workspace: MCP servers (including
+    /// LikeC4) and, when an API key is configured, DeepSeek web search.
+    pub async fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
         let mut registry = Self::new();
         registry.tools.push(Box::new(likec4::LikeC4 {
             node: crate::architecture::find_node(),
             helper: crate::architecture::find_helper(app),
         }));
+        let (tools, warnings) =
+            mcp::discover(&config.mcp_servers, std::path::Path::new(&config.workspace)).await;
+        registry.tools.extend(tools);
+        registry.warnings = warnings;
         if !config.api_key.trim().is_empty() {
             registry.tools.push(Box::new(web::WebSearch::new(
                 &config.api_key,
@@ -211,6 +217,7 @@ impl ToolRegistry {
                 Box::new(fs::ListDir),
                 Box::new(shell::RunCommand),
             ],
+            warnings: Vec::new(),
         }
     }
 
@@ -240,12 +247,19 @@ impl ToolRegistry {
         )
     }
 
-    /// One prompt rule per tool that declares guidance.
-    pub fn guidance(&self) -> impl Iterator<Item = &'static str> + '_ {
+    /// One prompt rule per tool that declares guidance, without duplicates.
+    pub fn guidance(&self) -> Vec<&str> {
+        let mut seen = std::collections::HashSet::new();
         self.tools
             .iter()
             .map(|tool| tool.guidance())
-            .filter(|text| !text.is_empty())
+            .filter(|text| !text.is_empty() && seen.insert(*text))
+            .collect()
+    }
+
+    /// MCP servers that could not be started during discovery.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Pending-call summary for a tool, empty when the call is not visible.
@@ -386,7 +400,7 @@ mod tests {
     }
 
     impl Tool for FakeTool {
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             self.name
         }
 
@@ -400,7 +414,7 @@ mod tests {
 
         fn approval(&self, _args: &Value) -> Option<ApprovalRequest> {
             self.needs_approval.then(|| ApprovalRequest {
-                tool: self.name,
+                tool: self.name.to_string(),
                 prompt: "Allow?".into(),
                 detail: String::new(),
                 args: json!({}),
@@ -509,7 +523,10 @@ mod tests {
     #[tokio::test]
     async fn denied_approval_skips_execution() {
         let (tool, ran) = fake("risky", true, false);
-        let registry = ToolRegistry { tools: vec![tool] };
+        let registry = ToolRegistry {
+            tools: vec![tool],
+            warnings: Vec::new(),
+        };
         let (ctx, root, _handle) = context("denied");
         let outcome = registry.execute(&ctx, &Deny, "risky", json!({})).await;
         assert!(!ran.load(Ordering::SeqCst));
@@ -521,7 +538,10 @@ mod tests {
     #[tokio::test]
     async fn cancelled_approval_skips_execution() {
         let (tool, ran) = fake("risky", true, false);
-        let registry = ToolRegistry { tools: vec![tool] };
+        let registry = ToolRegistry {
+            tools: vec![tool],
+            warnings: Vec::new(),
+        };
         let (ctx, root, _handle) = context("stopped");
         let outcome = registry.execute(&ctx, &Stop, "risky", json!({})).await;
         assert!(!ran.load(Ordering::SeqCst));
@@ -532,7 +552,10 @@ mod tests {
     #[tokio::test]
     async fn timeout_is_a_failed_outcome() {
         let (tool, ran) = fake("slow", false, true);
-        let registry = ToolRegistry { tools: vec![tool] };
+        let registry = ToolRegistry {
+            tools: vec![tool],
+            warnings: Vec::new(),
+        };
         let (ctx, root, _handle) = context("timeout");
         let outcome = registry.execute(&ctx, &Allow, "slow", json!({})).await;
         assert!(ran.load(Ordering::SeqCst));

@@ -14,7 +14,7 @@ const MAX_CAPTURE_BYTES: u64 = 1_000_000;
 pub struct RunCommand;
 
 impl Tool for RunCommand {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "run_command"
     }
 
@@ -51,7 +51,7 @@ impl Tool for RunCommand {
             return None;
         }
         Some(ApprovalRequest {
-            tool: self.name(),
+            tool: self.name().to_string(),
             prompt: "Run this command in the workspace?".into(),
             detail: command.to_string(),
             args: args.clone(),

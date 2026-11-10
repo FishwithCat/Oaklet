@@ -4,7 +4,7 @@ mod git;
 mod terminal;
 mod tools;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,8 +68,93 @@ pub struct AppConfig {
     pub model: String,
     #[serde(default = "default_search_url")]
     pub search_url: String,
+    #[serde(default, deserialize_with = "deserialize_mcp_servers")]
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
     #[serde(default = "default_workspace")]
     pub workspace: String,
+}
+
+/// How Oaklet reaches an MCP server.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    #[serde(alias = "http", alias = "streamable_http")]
+    StreamableHttp,
+}
+
+/// One user-configured MCP server. Only the fields for its transport apply.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<McpTransport>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+}
+
+impl McpServerConfig {
+    /// Explicit type when present; command-first when omitted, matching common
+    /// `mcpServers` configs.
+    pub fn transport(&self) -> McpTransport {
+        self.kind.unwrap_or_else(|| {
+            if !self.command.trim().is_empty() {
+                McpTransport::Stdio
+            } else if !self.url.trim().is_empty() {
+                McpTransport::StreamableHttp
+            } else {
+                McpTransport::Stdio
+            }
+        })
+    }
+}
+
+/// Accept both the standard `mcpServers` object and the older array shape.
+fn deserialize_mcp_servers<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, McpServerConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Servers {
+        Map(BTreeMap<String, McpServerConfig>),
+        List(Vec<LegacyServer>),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyServer {
+        #[serde(default)]
+        name: String,
+        #[serde(flatten)]
+        config: McpServerConfig,
+    }
+
+    let mut servers = BTreeMap::new();
+    match Servers::deserialize(deserializer)? {
+        Servers::Map(map) => servers = map,
+        Servers::List(list) => {
+            for server in list {
+                if !server.name.trim().is_empty() {
+                    servers.insert(server.name, server.config);
+                }
+            }
+        }
+    }
+    Ok(servers)
 }
 
 fn default_base_url() -> String {
@@ -82,6 +167,14 @@ fn default_model() -> String {
 
 fn default_search_url() -> String {
     tools::web::DEFAULT_ENDPOINT.into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn default_workspace() -> String {
@@ -100,9 +193,110 @@ impl Default for AppConfig {
             api_key: String::new(),
             model: default_model(),
             search_url: default_search_url(),
+            mcp_servers: BTreeMap::new(),
             workspace: default_workspace(),
         }
     }
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            kind: None,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: String::new(),
+            headers: BTreeMap::new(),
+            enabled: true,
+        }
+    }
+}
+
+/// Trim user input, drop blank server entries, and reject incomplete enabled
+/// servers before they reach the agent loop.
+fn normalize_mcp_servers(
+    servers: BTreeMap<String, McpServerConfig>,
+) -> Result<BTreeMap<String, McpServerConfig>, String> {
+    let mut normalized = BTreeMap::new();
+
+    for (name, mut server) in servers {
+        let name = name.trim().to_string();
+        server.command = server.command.trim().to_string();
+        server.url = server.url.trim().to_string();
+        server.env = clean_pairs(server.env)?;
+        server.headers = clean_pairs(server.headers)?;
+
+        if server.command.is_empty()
+            && server.url.is_empty()
+            && server.args.is_empty()
+            && server.env.is_empty()
+            && server.headers.is_empty()
+        {
+            continue;
+        }
+        if name.is_empty() {
+            return Err("Every MCP server needs a name.".into());
+        }
+        if normalized.contains_key(&name) {
+            return Err(format!("Duplicate MCP server name: {name}."));
+        }
+        let transport = server.transport();
+        server.kind = Some(transport);
+        if !server.enabled {
+            normalized.insert(name, server);
+            continue;
+        }
+
+        match transport {
+            McpTransport::Stdio => {
+                if server.command.is_empty() {
+                    return Err(format!("MCP server \"{name}\" needs a command."));
+                }
+            }
+            McpTransport::StreamableHttp => {
+                let parsed = reqwest::Url::parse(&server.url)
+                    .map_err(|_| format!("MCP server \"{name}\" needs a valid URL."))?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(format!(
+                        "MCP server \"{name}\" needs an http:// or https:// URL."
+                    ));
+                }
+                validate_headers(&name, &server)?;
+            }
+        }
+        normalized.insert(name, server);
+    }
+
+    Ok(normalized)
+}
+
+fn clean_pairs(pairs: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    let mut cleaned = BTreeMap::new();
+    for (key, value) in pairs {
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        if key.contains('=') || key.contains('\0') {
+            return Err(format!("Invalid name: {key}"));
+        }
+        cleaned.insert(key, value);
+    }
+    Ok(cleaned)
+}
+
+fn validate_headers(server_name: &str, server: &McpServerConfig) -> Result<(), String> {
+    for (header_name, value) in &server.headers {
+        reqwest::header::HeaderName::from_bytes(header_name.as_bytes()).map_err(|_| {
+            format!("MCP server \"{server_name}\" has an invalid header name: {header_name}.")
+        })?;
+        reqwest::header::HeaderValue::from_str(value).map_err(|_| {
+            format!("MCP server \"{server_name}\" has an invalid header value for {header_name}.")
+        })?;
+    }
+    Ok(())
 }
 
 fn read_config(path: &Path) -> Option<AppConfig> {
@@ -150,6 +344,7 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     if config.model.is_empty() {
         return Err("Model is required.".into());
     }
+    config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
     if !Path::new(&config.workspace).is_dir() {
         return Err(format!(
             "Workspace is not a directory: {}",
@@ -553,9 +748,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{AppConfig, auto_approves_command};
+    use super::{
+        AppConfig, McpServerConfig, McpTransport, auto_approves_command, normalize_mcp_servers,
+    };
 
     #[test]
     fn configs_saved_before_search_gets_the_deepseek_endpoint() {
@@ -566,6 +764,106 @@ mod tests {
         assert_eq!(
             config.search_url,
             "https://api.deepseek.com/v1/tools/search"
+        );
+        assert!(config.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn normalizes_mcp_servers_and_drops_blank_rows() {
+        let servers: BTreeMap<String, McpServerConfig> = serde_json::from_str(
+            r#"{
+                " files ": {"command":" npx ","args":["server"]},
+                "blank": {},
+                "remote": {
+                    "type":"streamableHttp",
+                    "url":"https://example.com/mcp/",
+                    "headers":{"Authorization":"Bearer token"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let servers = normalize_mcp_servers(servers).unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers["files"].command, "npx");
+        assert_eq!(servers["files"].kind, Some(McpTransport::Stdio));
+        assert_eq!(servers["remote"].transport(), McpTransport::StreamableHttp);
+        assert_eq!(servers["remote"].url, "https://example.com/mcp/");
+    }
+
+    #[test]
+    fn rejects_incomplete_or_duplicate_mcp_servers() {
+        let incomplete: BTreeMap<String, McpServerConfig> =
+            serde_json::from_str(r#"{"files":{"args":["x"]}}"#).unwrap();
+        assert!(
+            normalize_mcp_servers(incomplete)
+                .unwrap_err()
+                .contains("command")
+        );
+
+        let duplicate: BTreeMap<String, McpServerConfig> = serde_json::from_str(
+            r#"{
+                " files ": {"command":"a"},
+                "files": {"command":"b"}
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            normalize_mcp_servers(duplicate)
+                .unwrap_err()
+                .contains("Duplicate")
+        );
+    }
+
+    #[test]
+    fn disabled_servers_keep_incomplete_settings() {
+        let servers: BTreeMap<String, McpServerConfig> =
+            serde_json::from_str(r#"{"off":{"args":["x"],"enabled":false}}"#).unwrap();
+        let servers = normalize_mcp_servers(servers).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert!(!servers["off"].enabled);
+    }
+
+    #[test]
+    fn mcp_servers_serialize_in_camel_case() {
+        let config = AppConfig {
+            mcp_servers: BTreeMap::from([(
+                "remote".into(),
+                McpServerConfig {
+                    kind: Some(McpTransport::StreamableHttp),
+                    url: "https://example.com/mcp".into(),
+                    ..McpServerConfig::default()
+                },
+            )]),
+            ..AppConfig::default()
+        };
+        let value = serde_json::to_value(config).unwrap();
+        assert_eq!(value["mcpServers"]["remote"]["type"], "streamableHttp");
+        assert!(value["mcpServers"]["remote"].get("enabled").is_none());
+    }
+
+    #[test]
+    fn infers_transport_and_reads_the_old_array_shape() {
+        let inferred: BTreeMap<String, McpServerConfig> =
+            serde_json::from_str(r#"{"remote":{"url":"https://example.com/mcp"}}"#).unwrap();
+        assert_eq!(inferred["remote"].transport(), McpTransport::StreamableHttp);
+        let alias: McpServerConfig =
+            serde_json::from_str(r#"{"type":"http","url":"https://example.com"}"#).unwrap();
+        assert_eq!(alias.transport(), McpTransport::StreamableHttp);
+
+        let legacy: AppConfig = serde_json::from_str(
+            r#"{"mcpServers":[{"name":"files","transport":"stdio","command":"npx"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.mcp_servers["files"].command, "npx");
+        assert_eq!(legacy.mcp_servers["files"].transport(), McpTransport::Stdio);
+
+        let legacy_http: AppConfig = serde_json::from_str(
+            r#"{"mcpServers":[{"name":"remote","transport":"http","url":"https://example.com/mcp"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_http.mcp_servers["remote"].transport(),
+            McpTransport::StreamableHttp
         );
     }
 

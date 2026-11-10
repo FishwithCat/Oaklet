@@ -15,7 +15,8 @@ enough to read in one sitting.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
-  `likec4_mcp`, and `web_search` when an API key is set.
+  `likec4_mcp`, tools from configured MCP servers, and `web_search` when an API
+  key is set.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace. Select text in chat and click **Send to Terminal** to run it in the
@@ -169,6 +170,53 @@ workspace** for shell commands. Use it with trusted projects. Results are return
 MCP Apps interactive widgets are not rendered in chat. Continue to use file tools
 for model edits and the Architecture view for diagrams.
 
+### MCP servers
+
+**Settings → MCP** connects Oaklet to other MCP servers. Each configured server
+can be enabled or disabled independently: a disabled server keeps its settings
+but exposes no tools to the agent. Changes apply to the next agent run; a turn
+that is already running keeps the tools it started with.
+
+The tab edits the standard `mcpServers` JSON document:
+
+```json
+{
+  "mcpServers": {
+    "zhihu": {
+      "type": "streamableHttp",
+      "url": "https://developer.zhihu.com/api/mcp/v1",
+      "headers": {
+        "Authorization": "Bearer your_access_secret"
+      }
+    },
+    "files": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {}
+    }
+  }
+}
+```
+
+`type` is `stdio` or `streamableHttp` (the aliases `http` and `streamable_http`
+are also accepted). When `type` is omitted, a command selects stdio and a URL
+selects Streamable HTTP. Add `"enabled": false` to pause a server; the toggle
+list under the editor does the same without deleting its configuration.
+
+Each discovered tool is exposed to the model as
+`mcp__<server>__<tool>`. Names are sanitized to the OpenAI function-name
+character set and shortened to 64 characters. Servers start in parallel when a
+run begins; a failed or slow server becomes a warning in the system prompt and
+does not stop the run. Tool calls have the same 60-second deadline as LikeC4
+MCP calls.
+
+MCP tools run without an approval prompt. Only enable servers and credentials you
+trust: a configured command runs with your user privileges, and an HTTP server
+can receive the headers entered in Settings. Tool results are treated as
+external data, never as instructions. Configuration, including environment
+values and headers, is stored in the app config file (`0600` on Unix).
+
 ## Web search
 
 With an API key in **Settings**, the agent also gets `web_search`. It sends one
@@ -195,6 +243,7 @@ Open **Settings** in the app:
 | Base URL   | `https://api.deepseek.com`                 |
 | Model      | `deepseek-flash`                           |
 | Search URL | `https://api.deepseek.com/v1/tools/search` |
+| MCP servers | none                                      |
 | Workspace  | your home directory                        |
 
 For another OpenAI-compatible provider, set its base URL (for example
@@ -212,6 +261,9 @@ as `qwen2.5-coder`.
 - `web_search` sends the model's query text to the DeepSeek Search API. It runs
   without an approval prompt, reads no workspace files, and is registered only
   while an API key is configured.
+- MCP servers are user-configured programs and endpoints. Once enabled, their
+  tools run without an approval prompt and may read or change anything those
+  servers can reach. Their output is model input, not trusted instructions.
 - **Allow all in workspace** stops prompting for `run_command` in that workspace
   for the rest of the app session. The sidebar shows an active indicator you can
   click to revoke; the grant is in memory only and never applies to file tools

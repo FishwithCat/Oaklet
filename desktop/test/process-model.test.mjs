@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   processTitle,
   reasoningSummary,
+  toolTitle,
 } from "../src/process-model.ts";
 
 test("streaming reasoning previews the latest completed paragraph", () => {
@@ -10,6 +11,11 @@ test("streaming reasoning previews the latest completed paragraph", () => {
   assert.equal(reasoningSummary("First\n\nSecond line\nmore", true), "Second line");
   assert.equal(reasoningSummary("One long unfinished line", true), "");
   assert.equal(reasoningSummary("**Bold** first line\nrest", false), "Bold first line");
+});
+
+test("labels MCP tools with their server and tool names", () => {
+  assert.equal(toolTitle("mcp__github__search_issues"), "github · search_issues");
+  assert.equal(toolTitle("read_file"), "Read file");
 });
 
 test("process title ranks tool categories after settlement", () => {

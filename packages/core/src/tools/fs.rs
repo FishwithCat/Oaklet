@@ -18,7 +18,7 @@ fn path_arg(args: &Value) -> String {
 pub struct ReadFile;
 
 impl Tool for ReadFile {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "read_file"
     }
 
@@ -107,7 +107,7 @@ fn read_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
 pub struct WriteFile;
 
 impl Tool for WriteFile {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "write_file"
     }
 
@@ -174,7 +174,7 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
 pub struct EditFile;
 
 impl Tool for EditFile {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "edit_file"
     }
 
@@ -275,7 +275,7 @@ fn edit_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
 pub struct ListDir;
 
 impl Tool for ListDir {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "list_dir"
     }
 

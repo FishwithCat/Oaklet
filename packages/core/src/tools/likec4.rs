@@ -24,7 +24,7 @@ struct Query {
 }
 
 impl Tool for LikeC4 {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "likec4_mcp"
     }
 
