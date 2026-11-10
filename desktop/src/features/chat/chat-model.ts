@@ -59,6 +59,17 @@ export function contextTier(used: number, window: number): ContextTier {
   return "normal";
 }
 
+/**
+ * Keep the plant visible for a conversation whose usage predates the gauge,
+ * such as a session restored from history without a saved context snapshot.
+ */
+export function shouldShowContextGauge(
+  context: { used: number; window: number } | null,
+  hasConversation: boolean,
+): boolean {
+  return context !== null || hasConversation;
+}
+
 /** A tab the user has not used yet; restoring a session can replace it. */
 export function isBlankTab(tab: {
   running: boolean;

@@ -25,18 +25,20 @@ function ContextGauge({
   compacting,
   onCompact,
 }: {
-  usage: ContextUsage;
+  usage: ContextUsage | null;
   running: boolean;
   compacting: boolean;
   onCompact: () => void;
 }) {
-  const label = formatContextUsage(usage.used, usage.window);
-  const tier = contextTier(usage.used, usage.window);
+  const label = usage ? formatContextUsage(usage.used, usage.window) : null;
+  const tier = usage ? contextTier(usage.used, usage.window) : "normal";
   const hint = running
     ? "Stop the run to compact context"
     : compacting
       ? "Compacting context…"
-      : "Click to compact context";
+      : usage
+        ? "Click to compact context"
+        : "Context usage is unavailable; click to compact context";
   return (
     <button
       type="button"
@@ -46,8 +48,16 @@ function ContextGauge({
       onMouseDown={(event) => event.preventDefault()}
       onClick={onCompact}
       disabled={running || compacting}
-      aria-label={`Context used: ${label}. ${hint}`}
-      title={`${label} — ${hint}`}
+      aria-label={
+        label
+          ? `Context used: ${label}. ${hint}`
+          : `Context usage unavailable. ${hint}`
+      }
+      title={
+        label
+          ? `${label} — ${hint}`
+          : `Context usage unavailable — ${hint}`
+      }
     >
       <PlantIcon size={18} weight="duotone" aria-hidden="true" />
     </button>
@@ -61,6 +71,7 @@ export function ChatComposer({
   running,
   compacting,
   context,
+  showContextGauge,
   onChange,
   onSubmit,
   onCompact,
@@ -71,6 +82,7 @@ export function ChatComposer({
   running: boolean;
   compacting: boolean;
   context: ContextUsage | null;
+  showContextGauge: boolean;
   onChange: (value: string) => void;
   onSubmit: () => boolean;
   onCompact: () => void;
@@ -131,13 +143,13 @@ export function ChatComposer({
   return (
     <div className="composer-wrap">
       <form
-        className={`composer${context ? " has-context" : ""}`}
+        className={`composer${showContextGauge ? " has-context" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
           submit();
         }}
       >
-        {context && (
+        {showContextGauge && (
           <ContextGauge
             usage={context}
             running={running}

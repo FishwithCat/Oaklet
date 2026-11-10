@@ -7,6 +7,7 @@ import {
   formatTokens,
   isBlankTab,
   mergeDraft,
+  shouldShowContextGauge,
   settleStreaming,
   toBlocks,
 } from "../src/features/chat/chat-model.ts";
@@ -131,4 +132,13 @@ test("the context plant steps color at 30%, 60%, and 80%", () => {
   assert.equal(contextTier(79, 100), "high");
   assert.equal(contextTier(80, 100), "critical");
   assert.equal(contextTier(10, 0), "normal");
+});
+
+test("the context plant stays visible for restored sessions without usage", () => {
+  assert.equal(shouldShowContextGauge(null, true), true);
+  assert.equal(shouldShowContextGauge(null, false), false);
+  assert.equal(
+    shouldShowContextGauge({ used: 1600, window: 262144 }, false),
+    true,
+  );
 });

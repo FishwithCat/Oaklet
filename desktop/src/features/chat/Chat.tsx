@@ -14,7 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatThread } from "./ChatThread";
-import { mergeDraft, type Item } from "./chat-model";
+import { mergeDraft, shouldShowContextGauge, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo, ContextUsage } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
@@ -235,6 +235,7 @@ export function Chat({
           running={running}
           compacting={compacting}
           context={context}
+          showContextGauge={shouldShowContextGauge(context, items.length > 0)}
           onChange={updateDraft}
           onSubmit={submit}
           onCompact={onCompact}
