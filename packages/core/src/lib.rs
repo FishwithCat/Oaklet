@@ -502,6 +502,27 @@ fn revoke_command_allow_all(state: State<'_, SharedState>) {
     }
 }
 
+/// Read-only snapshot of discovered skills for Settings.
+#[tauri::command]
+async fn skills_list(
+    app: AppHandle,
+    state: State<'_, SharedState>,
+) -> Result<tools::skill::SkillList, String> {
+    let workspace = {
+        let config = state
+            .config
+            .lock()
+            .map_err(|_| "Agent state is unavailable.".to_string())?;
+        PathBuf::from(&config.workspace)
+    };
+    let home = app.path().home_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        tools::skill::SkillCatalog::discover(&workspace, home.as_deref()).into_list()
+    })
+    .await
+    .map_err(|error| format!("Could not scan skills: {error}"))
+}
+
 fn workspace_path(state: &AppState) -> Result<PathBuf, String> {
     let config = state
         .config
@@ -721,6 +742,7 @@ pub fn run() {
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,
+            skills_list,
             git_log,
             git_show,
             git_switch,

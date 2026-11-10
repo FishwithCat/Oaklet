@@ -772,6 +772,27 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_includes_skill_catalog() {
+        let workspace = crate::tools::test_support::temp_root("prompt-skills");
+        let skill_dir = workspace.join(".oaklet/skills/review");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review a change.\n---\n\nRead the diff.\n",
+        )
+        .unwrap();
+
+        let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
+        let mut tools = ToolRegistry::new();
+        tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[]);
+
+        assert!(prompt.contains("Available skills"));
+        assert!(prompt.contains("`review`: Review a change."));
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
     fn system_prompt_requests_architecture_updates_when_models_exist() {
         let sources = vec!["architecture/model.c4".to_string()];
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources);

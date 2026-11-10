@@ -5,17 +5,20 @@
 //! lookup, approval, deadlines, and result normalization. The agent loop never
 //! matches on a tool name.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tauri::Manager;
 use tokio::sync::watch;
 
 mod fs;
 mod likec4;
 mod mcp;
 mod shell;
+pub(crate) mod skill;
 pub(crate) mod web;
 mod workspace;
 
@@ -191,6 +194,20 @@ impl ToolRegistry {
     /// LikeC4) and, when an API key is configured, DeepSeek web search.
     pub async fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
         let mut registry = Self::new();
+
+        let workspace = PathBuf::from(&config.workspace);
+        let home = app.path().home_dir().ok();
+        let catalog = tauri::async_runtime::spawn_blocking(move || {
+            skill::SkillCatalog::discover(&workspace, home.as_deref())
+        })
+        .await
+        .unwrap_or_default();
+        if catalog.has_model_skills() {
+            registry
+                .tools
+                .push(Box::new(skill::LoadSkill::new(catalog)));
+        }
+
         registry.tools.push(Box::new(likec4::LikeC4 {
             node: crate::architecture::find_node(),
             helper: crate::architecture::find_helper(app),
@@ -226,6 +243,11 @@ impl ToolRegistry {
             .iter()
             .find(|tool| tool.name() == name)
             .map(Box::as_ref)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_for_test(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(tool);
     }
 
     /// Model-facing `tools` payload for one chat request.
