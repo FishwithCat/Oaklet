@@ -9,6 +9,7 @@ const handlers = () => ({
   onToolResult: () => {},
   onApproval: () => {},
   onDone: () => {},
+  onContext: () => {},
   onError: () => {},
   onStopped: () => {},
 });
@@ -30,6 +31,7 @@ test("registers every agent event and releases all listeners", async () => {
     "agent:tool_result",
     "agent:approval",
     "agent:done",
+    "agent:context",
     "agent:error",
     "agent:stopped",
   ]);

@@ -23,6 +23,7 @@ export type ApprovalEvent = {
   detail: string;
 };
 export type DoneEvent = { runId: string; messages: unknown[] };
+export type ContextEvent = { runId: string; used: number; window: number };
 export type ErrorEvent = { runId: string; message: string };
 export type RunIdEvent = { runId: string };
 
@@ -33,6 +34,7 @@ export type AgentEventHandlers = {
   onToolResult: (event: ToolResultEvent) => void;
   onApproval: (event: ApprovalEvent) => void;
   onDone: (event: DoneEvent) => void;
+  onContext: (event: ContextEvent) => void;
   onError: (event: ErrorEvent) => void;
   onStopped: (event: RunIdEvent) => void;
 };
@@ -79,6 +81,9 @@ export async function subscribeAgentEvents(
       handlers.onApproval(payload),
     );
     await add<DoneEvent>("agent:done", (payload) => handlers.onDone(payload));
+    await add<ContextEvent>("agent:context", (payload) =>
+      handlers.onContext(payload),
+    );
     await add<ErrorEvent>("agent:error", (payload) => handlers.onError(payload));
     await add<RunIdEvent>("agent:stopped", (payload) =>
       handlers.onStopped(payload),

@@ -16,7 +16,7 @@ import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatThread } from "./ChatThread";
 import { mergeDraft, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
-import type { ChatTabInfo } from "./session-model";
+import type { ChatTabInfo, ContextUsage } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
 
 const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
@@ -41,6 +41,7 @@ export function Chat({
   items,
   running,
   activeRunId,
+  context,
   onSend,
   onApproval,
   onSendToTerminal,
@@ -55,6 +56,7 @@ export function Chat({
   items: Item[];
   running: boolean;
   activeRunId: string | null;
+  context: ContextUsage | null;
   onSend: (text: string) => boolean;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
@@ -227,6 +229,7 @@ export function Chat({
           activeTabId={activeTabId}
           value={input}
           running={running}
+          context={context}
           onChange={updateDraft}
           onSubmit={submit}
         />

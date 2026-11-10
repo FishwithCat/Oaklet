@@ -12,6 +12,7 @@ import {
 } from "./session-history";
 import {
   applyApproval,
+  applyContext,
   applyDeltas,
   applyToolResult,
   applyToolStart,
@@ -110,12 +111,14 @@ export function useAgentSession({
     if (!tab) return;
 
     const id = tab.savedSessionId ?? newId();
+    const context = tab.context ? { context: tab.context } : {};
     const snapshot: SessionSnapshot = {
       id,
       title,
       updatedAt: Date.now(),
       messages,
       items: nextItems,
+      ...context,
     };
     patchTab(tabId, { savedSessionId: id });
     setHistory(saveSession(workspaceRef.current, snapshot));
@@ -239,6 +242,16 @@ export function useAgentSession({
           );
           persistTab(tabId, next.items, event.messages);
           onWorkspaceRefreshRef.current();
+        });
+      },
+      onContext: (event) => {
+        if (disposed) return;
+        routeRunEvent(event.runId, (tabId) => {
+          commitTabs((current) =>
+            current.map((tab) =>
+              tab.id === tabId ? applyContext(tab, event) : tab,
+            ),
+          );
         });
       },
       onError: (event) => {
@@ -402,6 +415,7 @@ export function useAgentSession({
       messages: snapshot.messages,
       items: snapshot.items,
       savedSessionId: snapshot.id,
+      context: snapshot.context ?? null,
     };
     // Replacing the welcome tab keeps Cmd+R from leaving an empty chat beside
     // the restored session.
@@ -462,6 +476,7 @@ export function useAgentSession({
     activeRunId: activeTab?.activeRunId ?? null,
     tabs: tabs.map(toChatTabInfo),
     activeTabId: activeTab?.id ?? "",
+    context: activeTab?.context ?? null,
     allowAll,
     history,
     newTab,

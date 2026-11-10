@@ -1,4 +1,5 @@
 import type { Item } from "./chat-model";
+import type { ContextUsage } from "./session-model";
 
 export type SessionSnapshot = {
   id: string;
@@ -6,6 +7,7 @@ export type SessionSnapshot = {
   updatedAt: number;
   messages: unknown[];
   items: Item[];
+  context?: ContextUsage;
 };
 
 const STORAGE_KEY = "oaklet.history.v1";

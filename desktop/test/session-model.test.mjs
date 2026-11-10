@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyApproval,
+  applyContext,
   applyDeltas,
   applyToolResult,
   applyToolStart,
@@ -35,9 +36,17 @@ test("blankTab takes its identity from the caller", () => {
   assert.equal(created.completed, false);
   assert.deepEqual(created.items, []);
   assert.deepEqual(created.messages, []);
+  assert.equal(created.context, null);
   assert.equal(created.activeRunId, null);
   assert.equal(created.runId, null);
   assert.equal(created.savedSessionId, null);
+});
+
+test("applyContext records the latest gauge without touching the transcript", () => {
+  const updated = applyContext(tab(), { used: 12000, window: 262144 });
+
+  assert.deepEqual(updated.context, { used: 12000, window: 262144 });
+  assert.deepEqual(updated.items, []);
 });
 
 test("tabStatus ranks a blocked tool above running, done, and idle", () => {

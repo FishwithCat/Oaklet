@@ -27,6 +27,38 @@ export function settleStreaming(items: Item[]): Item[] {
   );
 }
 
+/** Share of the context window in use: 1600/262144 -> "0.6%". */
+export function formatContextPercent(used: number, window: number): string {
+  if (used <= 0 || window <= 0) return "0%";
+  const percent = (used / window) * 100;
+  if (percent < 0.1) return "<0.1%";
+  const rounded = Math.round(percent * 10) / 10;
+  return `${rounded < 10 ? rounded.toFixed(1) : Math.round(rounded)}%`;
+}
+
+/** Compact token counts for the gauge tooltip: 12400 -> "12k". */
+export function formatTokens(tokens: number): string {
+  if (tokens < 1024) return `${tokens}`;
+  const thousands = tokens / 1024;
+  return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+}
+
+/** Hover label for the context bar, e.g. "30% (77k/256k)". */
+export function formatContextUsage(used: number, window: number): string {
+  return `${formatContextPercent(used, window)} (${formatTokens(used)}/${formatTokens(window)})`;
+}
+
+export type ContextTier = "normal" | "elevated" | "high" | "critical";
+
+/** Plant color for the context gauge, stepping up at 30%, 60%, and 80%. */
+export function contextTier(used: number, window: number): ContextTier {
+  const ratio = window > 0 ? used / window : 0;
+  if (ratio >= 0.8) return "critical";
+  if (ratio >= 0.6) return "high";
+  if (ratio >= 0.3) return "elevated";
+  return "normal";
+}
+
 /** A tab the user has not used yet; restoring a session can replace it. */
 export function isBlankTab(tab: {
   running: boolean;

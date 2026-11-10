@@ -14,10 +14,13 @@ export type ChatTabState = {
   completed: boolean;
   items: Item[];
   messages: unknown[];
+  context: ContextUsage | null;
   activeRunId: string | null;
   runId: string | null;
   savedSessionId: string | null;
 };
+
+export type ContextUsage = { used: number; window: number };
 
 export type StreamDelta = {
   kind: "assistant" | "reasoning";
@@ -34,10 +37,19 @@ export function blankTab(id: string, number: number): ChatTabState {
     completed: false,
     items: [],
     messages: [],
+    context: null,
     activeRunId: null,
     runId: null,
     savedSessionId: null,
   };
+}
+
+/** Record the size of the conversation the next request will send. */
+export function applyContext(
+  tab: ChatTabState,
+  event: ContextUsage,
+): ChatTabState {
+  return { ...tab, context: { used: event.used, window: event.window } };
 }
 
 export function tabStatus(tab: ChatTabState): ChatTabInfo["status"] {

@@ -54,6 +54,14 @@ struct ToolResultEvent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ContextEvent {
+    run_id: String,
+    used: usize,
+    window: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ApprovalEvent {
     run_id: String,
     id: String,
@@ -181,7 +189,6 @@ pub async fn run(
         }
 
         let pressure = meter.prepare(&messages);
-        note_pressure(pressure);
 
         if pressure > compaction::trigger_at(config.context_window) {
             match compaction::compact(&client, &config, &messages, &cancel).await {
@@ -203,6 +210,12 @@ pub async fn run(
                 }
             }
         }
+
+        // Report the size the next request will be billed for, after any
+        // compaction and while the estimate is still fresh.
+        let pressure = meter.pressure(&messages);
+        note_pressure(pressure);
+        emit_context(&app, &run_id, pressure, config.context_window);
 
         let (content, reasoning, calls, prompt_tokens) =
             match stream_step(&app, &run_id, &client, &config, &tools, &messages, &cancel).await {
@@ -226,6 +239,12 @@ pub async fn run(
         }
 
         messages.push(assistant_message(&content, &reasoning, &calls));
+        emit_context(
+            &app,
+            &run_id,
+            meter.pressure(&messages),
+            config.context_window,
+        );
         if calls.is_empty() {
             emit(
                 &app,
@@ -340,6 +359,18 @@ fn note_pressure(pressure: usize) {
     if cfg!(debug_assertions) {
         eprintln!("[oaklet] context pressure ~{pressure} tokens");
     }
+}
+
+fn emit_context(app: &AppHandle, run_id: &str, used: usize, window: usize) {
+    emit(
+        app,
+        "agent:context",
+        ContextEvent {
+            run_id: run_id.to_string(),
+            used,
+            window,
+        },
+    );
 }
 
 fn note_compaction(before: usize, after: usize) {

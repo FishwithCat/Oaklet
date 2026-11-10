@@ -313,11 +313,39 @@
   color: var(--muted);
 }
 
+.composer.has-context textarea {
+  padding-left: 26px;
+}
+
 .composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.context-meter {
+  position: absolute;
+  top: 9px;
+  left: 7px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px;
+  color: var(--accent);
+  cursor: default;
+  transition: color 160ms ease;
+}
+
+.context-meter.elevated {
+  color: var(--yellow);
+}
+
+.context-meter.high {
+  color: color-mix(in srgb, var(--red) 60%, var(--yellow));
+}
+
+.context-meter.critical {
+  color: var(--red);
 }
 
 .shortcut-trigger-wrap {

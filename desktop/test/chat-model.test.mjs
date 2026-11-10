@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  contextTier,
+  formatContextPercent,
+  formatContextUsage,
+  formatTokens,
   isBlankTab,
   mergeDraft,
   settleStreaming,
@@ -100,4 +104,31 @@ test("merging a prompt preserves an existing composer draft", () => {
     "my notes\n\ngenerated",
   );
   assert.equal(mergeDraft("  ", "generated"), "generated");
+});
+
+test("context usage reads as a percent with one decimal below 10%", () => {
+  assert.equal(formatContextPercent(0, 262144), "0%");
+  assert.equal(formatContextPercent(100, 262144), "<0.1%");
+  assert.equal(formatContextPercent(1600, 262144), "0.6%");
+  assert.equal(formatContextPercent(12400, 262144), "4.7%");
+  assert.equal(formatContextPercent(26214, 262144), "10%");
+  assert.equal(formatContextPercent(209715, 262144), "80%");
+  assert.equal(formatContextPercent(1000, 0), "0%");
+});
+
+test("the gauge tooltip pairs the percent with compact token counts", () => {
+  assert.equal(formatContextUsage(1600, 262144), "0.6% (1.6k/256k)");
+  assert.equal(formatContextUsage(78643, 262144), "30% (77k/256k)");
+  assert.equal(formatContextUsage(262144, 262144), "100% (256k/256k)");
+  assert.equal(formatTokens(999), "999");
+});
+
+test("the context plant steps color at 30%, 60%, and 80%", () => {
+  assert.equal(contextTier(29, 100), "normal");
+  assert.equal(contextTier(30, 100), "elevated");
+  assert.equal(contextTier(59, 100), "elevated");
+  assert.equal(contextTier(60, 100), "high");
+  assert.equal(contextTier(79, 100), "high");
+  assert.equal(contextTier(80, 100), "critical");
+  assert.equal(contextTier(10, 0), "normal");
 });

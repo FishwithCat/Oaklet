@@ -6,18 +6,40 @@ import {
   useState,
   type Ref,
 } from "react";
-import { PaperPlaneRightIcon, QuestionIcon } from "@phosphor-icons/react";
+import {
+  PaperPlaneRightIcon,
+  PlantIcon,
+  QuestionIcon,
+} from "@phosphor-icons/react";
 import { isSendEnter } from "../../app/shortcuts";
+import { contextTier, formatContextUsage } from "./chat-model";
+import type { ContextUsage } from "./session-model";
 
 export type ChatComposerHandle = {
   focus: () => void;
 };
+
+function ContextGauge({ usage }: { usage: ContextUsage }) {
+  const label = formatContextUsage(usage.used, usage.window);
+  const tier = contextTier(usage.used, usage.window);
+  return (
+    <span
+      className={`context-meter${tier === "normal" ? "" : ` ${tier}`}`}
+      role="img"
+      aria-label={`Context used: ${label}`}
+      title={label}
+    >
+      <PlantIcon size={18} weight="duotone" aria-hidden="true" />
+    </span>
+  );
+}
 
 export function ChatComposer({
   ref,
   activeTabId,
   value,
   running,
+  context,
   onChange,
   onSubmit,
 }: {
@@ -25,6 +47,7 @@ export function ChatComposer({
   activeTabId: string;
   value: string;
   running: boolean;
+  context: ContextUsage | null;
   onChange: (value: string) => void;
   onSubmit: () => boolean;
 }) {
@@ -83,12 +106,13 @@ export function ChatComposer({
   return (
     <div className="composer-wrap">
       <form
-        className="composer"
+        className={`composer${context ? " has-context" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
           submit();
         }}
       >
+        {context && <ContextGauge usage={context} />}
         <textarea
           ref={textareaRef}
           rows={1}

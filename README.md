@@ -297,6 +297,9 @@ Open **Settings** in the app:
 Oaklet keeps long tool output to its head and tail, and when a run approaches
 the context window it asks the model to replace older history with a short
 checkpoint. The system prompt and the current turn are never summarized.
+The composer shows the estimated size of the next request against the window
+as a small plant in its top-left corner that turns from green to yellow to
+red; hover it for the percentage and token counts.
 
 A run has no fixed step limit. Three cheaper controls bound the cost instead:
 every potentially slow tool call has its own timeout (`run_command` 120 seconds,
