@@ -2477,10 +2477,15 @@ button.arch-generate {
 }
 
 .skill-description {
+  display: -webkit-box;
+  overflow: hidden;
   margin: 5px 0 8px;
   color: var(--text);
   font-size: 11.5px;
   line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .skill-meta {
