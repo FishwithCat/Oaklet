@@ -40,9 +40,11 @@ export function Chat({
   onCloseTab,
   items,
   running,
+  compacting,
   activeRunId,
   context,
   onSend,
+  onCompact,
   onApproval,
   onSendToTerminal,
 }: {
@@ -55,9 +57,11 @@ export function Chat({
   onCloseTab: (id: string) => void;
   items: Item[];
   running: boolean;
+  compacting: boolean;
   activeRunId: string | null;
   context: ContextUsage | null;
   onSend: (text: string) => boolean;
+  onCompact: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
 }) {
@@ -229,9 +233,11 @@ export function Chat({
           activeTabId={activeTabId}
           value={input}
           running={running}
+          compacting={compacting}
           context={context}
           onChange={updateDraft}
           onSubmit={submit}
+          onCompact={onCompact}
         />
       )}
     </>

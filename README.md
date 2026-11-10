@@ -299,7 +299,10 @@ the context window it asks the model to replace older history with a short
 checkpoint. The system prompt and the current turn are never summarized.
 The composer shows the estimated size of the next request against the window
 as a small plant in its top-left corner that turns from green to yellow to
-red; hover it for the percentage and token counts.
+red; hover it for the percentage and token counts. Click the plant while no run
+is active to replace every turn except the current one with a checkpoint
+immediately. The visible thread stays; the next request sends the shorter
+history.
 
 A run has no fixed step limit. Three cheaper controls bound the cost instead:
 every potentially slow tool call has its own timeout (`run_command` 120 seconds,

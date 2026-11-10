@@ -95,6 +95,25 @@ pub async fn compact(
     let Some(cut) = select_cut(messages, retain_at(config.context_window), MIN_REPLACED) else {
         return Ok(None);
     };
+
+    Ok(Some(
+        compact_at(client, config, messages, cut, cancel, true).await?,
+    ))
+}
+
+/// Summarize `messages[1..cut]` and replace that range with one checkpoint.
+///
+/// `drop_on_failure` keeps an automatic run fitting the window when the model
+/// cannot produce a usable summary. Manual compaction passes `false`: it is not
+/// under pressure, so it reports the failure and leaves the history intact.
+async fn compact_at(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    messages: &[Value],
+    cut: usize,
+    cancel: &Cancel,
+    drop_on_failure: bool,
+) -> Result<Vec<Value>, String> {
     let replaced = estimate_tokens(&messages[1..cut]);
     let rendered = render(&messages[1..cut]);
 
@@ -105,6 +124,11 @@ pub async fn compact(
                 "summary was {} tokens for {replaced} replaced",
                 estimate_text(&summary)
             ));
+            if !drop_on_failure {
+                return Err(format!(
+                    "The summary was not smaller than the history it replaced ({replaced} tokens); nothing was compacted."
+                ));
+            }
             DROPPED.to_string()
         }
         Err(err) => {
@@ -112,11 +136,68 @@ pub async fn compact(
                 return Err("Stopped.".into());
             }
             note_fallback(&err);
+            if !drop_on_failure {
+                return Err(err);
+            }
             DROPPED.to_string()
         }
     };
 
-    Ok(Some(assemble(messages, cut, &summary)))
+    Ok(assemble(messages, cut, &summary))
+}
+
+/// Compact a conversation the UI owns, which starts at its first user message.
+///
+/// The run loop keeps a rebuilt system prompt at index 0 because compaction
+/// leaves that slot untouched. Give the history an empty one while compacting
+/// and strip it from the result so the UI can save and resend it as-is. Unlike
+/// automatic compaction, manual compaction keeps only the current turn verbatim
+/// and summarizes everything older.
+pub async fn compact_messages(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    messages: &[Value],
+    cancel: &Cancel,
+) -> Result<Option<Vec<Value>>, String> {
+    let mut history = Vec::with_capacity(messages.len() + 1);
+    history.push(json!({ "role": "system", "content": "" }));
+    history.extend_from_slice(messages);
+
+    let Some(cut) = select_latest_turn(&history) else {
+        return Ok(None);
+    };
+    if estimate_tokens(&history[1..cut]) < MIN_REPLACED {
+        return Ok(None);
+    }
+
+    let next = compact_at(client, config, &history, cut, cancel, false).await?;
+    Ok(Some(next[1..].to_vec()))
+}
+
+/// Cut immediately before the latest user turn.
+///
+/// Manual compaction replaces every older turn with one checkpoint and keeps
+/// the current turn verbatim. Starting the tail at a user message also keeps
+/// the turn's tool-call/result block intact.
+fn select_latest_turn(messages: &[Value]) -> Option<usize> {
+    if messages.len() < 3 {
+        return None;
+    }
+    let cut = latest_user(messages);
+    (cut >= 2).then_some(cut)
+}
+
+/// Index of the latest real user message, preferring it over loop-guard advice.
+fn latest_user(messages: &[Value]) -> usize {
+    messages
+        .iter()
+        .rposition(|message| role(message) == Some("user") && !is_reminder(message))
+        .or_else(|| {
+            messages
+                .iter()
+                .rposition(|message| role(message) == Some("user"))
+        })
+        .unwrap_or(1)
 }
 
 /// Pick the earliest cut whose tail fits `retain`, without starting the tail
@@ -130,17 +211,8 @@ fn select_cut(messages: &[Value], retain: usize, min_replaced: usize) -> Option<
         return None;
     }
 
-    // Never summarize the request the agent is working on right now. Loop-guard
-    // reminders are user messages too, but they are advice, not the request.
-    let current_turn = messages
-        .iter()
-        .rposition(|message| role(message) == Some("user") && !is_reminder(message))
-        .or_else(|| {
-            messages
-                .iter()
-                .rposition(|message| role(message) == Some("user"))
-        })
-        .unwrap_or(1);
+    // Never summarize the request the agent is working on right now.
+    let current_turn = latest_user(messages);
 
     let mut suffix = estimate_tokens(messages);
     let mut replaced = 0usize;
@@ -327,6 +399,11 @@ fn note_fallback(reason: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::thread;
+
     use super::*;
 
     fn system() -> Value {
@@ -343,6 +420,51 @@ mod tests {
 
     fn tool(id: &str, text: &str) -> Value {
         json!({ "role": "tool", "tool_call_id": id, "content": text })
+    }
+
+    /// One-shot OpenAI-compatible endpoint that answers a summary request and
+    /// records its body.
+    fn summary_server() -> (String, Arc<StdMutex<String>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(StdMutex::new(String::new()));
+        let seen_by_server = seen.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buffer[..read]);
+                if let Some(head) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&raw[..head]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= head + 4 + length {
+                        let body = String::from_utf8_lossy(&raw[head + 4..head + 4 + length]);
+                        *seen_by_server.lock().unwrap() = body.to_string();
+                        break;
+                    }
+                }
+            }
+            let body = r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{address}"), seen, server)
     }
 
     #[test]
@@ -504,52 +626,9 @@ mod tests {
 
     #[tokio::test]
     async fn replaces_the_middle_with_the_model_summary() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::sync::{Arc, Mutex as StdMutex};
-        use std::thread;
-
         use crate::tools::CancelHandle;
 
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let seen = Arc::new(StdMutex::new(String::new()));
-        let seen_by_server = seen.clone();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut raw = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let read = stream.read(&mut buffer).unwrap();
-                if read == 0 {
-                    break;
-                }
-                raw.extend_from_slice(&buffer[..read]);
-                if let Some(head) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&raw[..head]).to_ascii_lowercase();
-                    let length = headers
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length: "))
-                        .and_then(|value| value.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if raw.len() >= head + 4 + length {
-                        let body = String::from_utf8_lossy(&raw[head + 4..head + 4 + length]);
-                        *seen_by_server.lock().unwrap() = body.to_string();
-                        break;
-                    }
-                }
-            }
-            let body = r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
+        let (base_url, seen, server) = summary_server();
 
         let mut messages = vec![system()];
         for step in 0..30 {
@@ -559,7 +638,7 @@ mod tests {
         let last = messages.last().unwrap().clone();
 
         let config = AppConfig {
-            base_url: format!("http://{address}"),
+            base_url,
             context_window: 8_192,
             ..AppConfig::default()
         };
@@ -584,5 +663,140 @@ mod tests {
         let request = seen.lock().unwrap();
         assert!(request.contains("Conversation to compress"));
         assert!(request.contains("request 0"));
+    }
+
+    #[tokio::test]
+    async fn compacts_ui_history_without_a_system_prompt() {
+        use crate::tools::CancelHandle;
+
+        let (base_url, _seen, server) = summary_server();
+        let mut messages = Vec::new();
+        for step in 0..30 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        let last = messages.last().unwrap().clone();
+
+        let config = AppConfig {
+            base_url,
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+
+        let next = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+            .await
+            .unwrap()
+            .expect("compaction should apply");
+
+        server.join().unwrap();
+        assert_eq!(next.len(), 2);
+        assert!(next.iter().all(|message| message["role"] != "system"));
+        let current = next[0]["content"].as_str().unwrap();
+        assert!(current.contains("ship compaction."));
+        assert!(current.contains("request 29"));
+        assert!(!current.contains("request 0"));
+        assert_eq!(next.last().unwrap(), &last);
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_keeps_the_whole_latest_turn() {
+        use crate::tools::CancelHandle;
+
+        let (base_url, _seen, server) = summary_server();
+        let mut messages = Vec::new();
+        for step in 0..10 {
+            messages.push(user(&format!("old {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        messages.push(user("LATEST REQUEST"));
+        messages.push(json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_latest",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            }]
+        }));
+        messages.push(tool("call_latest", &"r".repeat(800)));
+        messages.push(assistant("latest answer"));
+
+        let config = AppConfig {
+            base_url,
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+
+        let next = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+            .await
+            .unwrap()
+            .expect("compaction should apply");
+
+        server.join().unwrap();
+        assert_eq!(next.len(), 4);
+        assert!(
+            next[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("LATEST REQUEST")
+        );
+        assert!(
+            next.iter()
+                .any(|message| message["tool_call_id"] == "call_latest")
+        );
+        assert!(
+            next.iter()
+                .any(|message| message["content"] == "latest answer")
+        );
+        assert!(!next.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("old 0"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_skips_a_single_turn() {
+        use crate::tools::CancelHandle;
+
+        let messages = vec![user("only request"), assistant("only answer")];
+        let config = AppConfig {
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+
+        let next = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+            .await
+            .unwrap();
+
+        assert!(next.is_none());
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_keeps_history_when_the_summary_fails() {
+        use crate::tools::CancelHandle;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let mut messages = Vec::new();
+        for step in 0..11 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        let config = AppConfig {
+            base_url: format!("http://{address}"),
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+
+        let result = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel).await;
+
+        assert!(result.is_err());
     }
 }

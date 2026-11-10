@@ -331,9 +331,28 @@
   display: inline-flex;
   align-items: center;
   padding: 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--accent);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.context-meter:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: transparent;
+}
+
+.context-meter:disabled {
+  opacity: 1;
   cursor: default;
-  transition: color 160ms ease;
+}
+
+.context-meter.compacting {
+  animation: context-pulse 1.2s ease-in-out infinite;
 }
 
 .context-meter.elevated {
@@ -346,6 +365,12 @@
 
 .context-meter.critical {
   color: var(--red);
+}
+
+@keyframes context-pulse {
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .shortcut-trigger-wrap {

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
-import { isBlankTab, type Item } from "./chat-model";
+import { formatTokens, isBlankTab, type Item } from "./chat-model";
 import {
   loadSessions,
   saveSession,
@@ -12,6 +12,7 @@ import {
 } from "./session-history";
 import {
   applyApproval,
+  applyCompaction,
   applyContext,
   applyDeltas,
   applyToolResult,
@@ -33,6 +34,13 @@ function newId(): string {
   );
 }
 
+type CompactionResult = {
+  messages: unknown[];
+  before: number;
+  after: number;
+  compacted: boolean;
+};
+
 export function useAgentSession({
   workspace,
   enabled,
@@ -49,6 +57,7 @@ export function useAgentSession({
   const [activeTabId, setActiveTabId] = useState(firstTabRef.current.id);
   const [allowAll, setAllowAll] = useState(false);
   const [history, setHistory] = useState<SessionSnapshot[]>([]);
+  const [compacting, setCompacting] = useState(false);
 
   const tabsRef = useRef(tabs);
   const tabCountRef = useRef(1);
@@ -58,6 +67,7 @@ export function useAgentSession({
   const pendingSendsRef = useRef(new Set<string>());
   const pendingRunEventsRef = useRef(new Map<string, Array<(tabId: string) => void>>());
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
+  const compactingRef = useRef(false);
 
   function commitTabs(next: (current: ChatTabState[]) => ChatTabState[]) {
     const updated = next(tabsRef.current);
@@ -397,6 +407,70 @@ export function useAgentSession({
     }
   }
 
+  function compact() {
+    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
+    if (!tab || tab.running || compactingRef.current || tab.messages.length === 0) {
+      return;
+    }
+
+    compactingRef.current = true;
+    setCompacting(true);
+    const workspace = workspaceRef.current;
+    invoke<CompactionResult>("compact_context", { messages: tab.messages })
+      .then((result) => {
+        if (workspace !== workspaceRef.current) return;
+        const live = tabsRef.current.find((candidate) => candidate.id === tab.id);
+        if (!live) return;
+        if (!result.compacted) {
+          addNotice(
+            tab.id,
+            "muted",
+            "Nothing outside the current turn is worth compacting yet.",
+          );
+          return;
+        }
+        if (live.messages !== tab.messages) {
+          addNotice(
+            tab.id,
+            "muted",
+            "Context changed while compacting; nothing was replaced.",
+          );
+          return;
+        }
+
+        const notice: Item = {
+          kind: "notice",
+          tone: "muted",
+          text: `Earlier turns replaced with a checkpoint for the next request (${formatTokens(result.before)} → ${formatTokens(result.after)} tokens).`,
+        };
+        commitTabs((current) =>
+          current.map((candidate) =>
+            candidate.id === tab.id
+              ? {
+                  ...applyCompaction(
+                    candidate,
+                    result.messages,
+                    result.before,
+                    result.after,
+                  ),
+                  items: [...candidate.items, notice],
+                }
+              : candidate,
+          ),
+        );
+        persistTab(tab.id, [...tab.items, notice], result.messages);
+      })
+      .catch((error) => {
+        if (workspace === workspaceRef.current) {
+          addNotice(tab.id, "error", errorText(error));
+        }
+      })
+      .finally(() => {
+        compactingRef.current = false;
+        setCompacting(false);
+      });
+  }
+
   function restore(id: string) {
     const snapshot = history.find((session) => session.id === id);
     if (!snapshot) return;
@@ -474,6 +548,7 @@ export function useAgentSession({
     items: activeTab?.items ?? [],
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
+    compacting,
     tabs: tabs.map(toChatTabInfo),
     activeTabId: activeTab?.id ?? "",
     context: activeTab?.context ?? null,
@@ -484,6 +559,7 @@ export function useAgentSession({
     closeTab,
     send,
     stop,
+    compact,
     restore,
     respondToApproval,
     revokeAllowAll,

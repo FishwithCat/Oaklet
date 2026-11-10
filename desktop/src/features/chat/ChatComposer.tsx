@@ -19,18 +19,38 @@ export type ChatComposerHandle = {
   focus: () => void;
 };
 
-function ContextGauge({ usage }: { usage: ContextUsage }) {
+function ContextGauge({
+  usage,
+  running,
+  compacting,
+  onCompact,
+}: {
+  usage: ContextUsage;
+  running: boolean;
+  compacting: boolean;
+  onCompact: () => void;
+}) {
   const label = formatContextUsage(usage.used, usage.window);
   const tier = contextTier(usage.used, usage.window);
+  const hint = running
+    ? "Stop the run to compact context"
+    : compacting
+      ? "Compacting context…"
+      : "Click to compact context";
   return (
-    <span
-      className={`context-meter${tier === "normal" ? "" : ` ${tier}`}`}
-      role="img"
-      aria-label={`Context used: ${label}`}
-      title={label}
+    <button
+      type="button"
+      className={`context-meter${tier === "normal" ? "" : ` ${tier}`}${
+        compacting ? " compacting" : ""
+      }`}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onCompact}
+      disabled={running || compacting}
+      aria-label={`Context used: ${label}. ${hint}`}
+      title={`${label} — ${hint}`}
     >
       <PlantIcon size={18} weight="duotone" aria-hidden="true" />
-    </span>
+    </button>
   );
 }
 
@@ -39,17 +59,21 @@ export function ChatComposer({
   activeTabId,
   value,
   running,
+  compacting,
   context,
   onChange,
   onSubmit,
+  onCompact,
 }: {
   ref?: Ref<ChatComposerHandle>;
   activeTabId: string;
   value: string;
   running: boolean;
+  compacting: boolean;
   context: ContextUsage | null;
   onChange: (value: string) => void;
   onSubmit: () => boolean;
+  onCompact: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -112,7 +136,14 @@ export function ChatComposer({
           submit();
         }}
       >
-        {context && <ContextGauge usage={context} />}
+        {context && (
+          <ContextGauge
+            usage={context}
+            running={running}
+            compacting={compacting}
+            onCompact={onCompact}
+          />
+        )}
         <textarea
           ref={textareaRef}
           rows={1}

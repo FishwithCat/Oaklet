@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyApproval,
+  applyCompaction,
   applyContext,
   applyDeltas,
   applyToolResult,
@@ -47,6 +48,30 @@ test("applyContext records the latest gauge without touching the transcript", ()
 
   assert.deepEqual(updated.context, { used: 12000, window: 262144 });
   assert.deepEqual(updated.items, []);
+});
+
+test("applyCompaction swaps the history and lowers the gauge by what it removed", () => {
+  const messages = [{ role: "user", content: "<compacted-summary>..." }];
+  const updated = applyCompaction(
+    tab({ context: { used: 12000, window: 262144 } }),
+    messages,
+    9000,
+    2000,
+  );
+
+  assert.deepEqual(updated.messages, messages);
+  assert.deepEqual(updated.context, { used: 5000, window: 262144 });
+});
+
+test("applyCompaction never drives the gauge below zero", () => {
+  const updated = applyCompaction(
+    tab({ context: { used: 20, window: 262144 } }),
+    [],
+    100,
+    5,
+  );
+
+  assert.equal(updated.context.used, 0);
 });
 
 test("tabStatus ranks a blocked tool above running, done, and idle", () => {

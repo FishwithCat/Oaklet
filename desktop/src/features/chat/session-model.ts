@@ -52,6 +52,26 @@ export function applyContext(
   return { ...tab, context: { used: event.used, window: event.window } };
 }
 
+/** Swap in checkpointed history and lower the gauge by the estimate removed. */
+export function applyCompaction(
+  tab: ChatTabState,
+  messages: unknown[],
+  before: number,
+  after: number,
+): ChatTabState {
+  const removed = Math.max(0, before - after);
+  return {
+    ...tab,
+    messages,
+    context: tab.context
+      ? {
+          ...tab.context,
+          used: Math.max(0, tab.context.used - removed),
+        }
+      : null,
+  };
+}
+
 export function tabStatus(tab: ChatTabState): ChatTabInfo["status"] {
   const blocked = tab.items.some(
     (item) => item.kind === "tool" && item.status === "awaiting",

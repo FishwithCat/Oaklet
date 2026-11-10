@@ -468,6 +468,51 @@ fn agent_stop(state: State<'_, SharedState>, run_id: String) {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompactionResult {
+    messages: Vec<serde_json::Value>,
+    before: usize,
+    after: usize,
+    compacted: bool,
+}
+
+/// Replace older turns of an idle conversation with a checkpoint, on request
+/// from the composer's context gauge.
+#[tauri::command]
+async fn compact_context(
+    state: State<'_, SharedState>,
+    messages: Vec<serde_json::Value>,
+) -> Result<CompactionResult, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .clone();
+    let before = context::estimate_tokens(&messages);
+    let (_handle, cancel) = CancelHandle::new();
+    let next =
+        compaction::compact_messages(&reqwest::Client::new(), &config, &messages, &cancel).await?;
+
+    match next {
+        Some(messages) => {
+            let after = context::estimate_tokens(&messages);
+            Ok(CompactionResult {
+                messages,
+                before,
+                after,
+                compacted: true,
+            })
+        }
+        None => Ok(CompactionResult {
+            messages,
+            before,
+            after: before,
+            compacted: false,
+        }),
+    }
+}
+
 #[tauri::command]
 fn approve_tool(
     state: State<'_, SharedState>,
@@ -753,6 +798,7 @@ pub fn run() {
             save_config,
             agent_send,
             agent_stop,
+            compact_context,
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,

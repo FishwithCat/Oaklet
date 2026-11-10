@@ -131,9 +131,11 @@ function App() {
           onCloseTab={session.closeTab}
           items={session.items}
           running={session.running}
+          compacting={session.compacting}
           activeRunId={session.activeRunId}
           context={session.context}
           onSend={session.send}
+          onCompact={session.compact}
           onApproval={session.respondToApproval}
           onSendToTerminal={(text) => {
             setView("terminal");
