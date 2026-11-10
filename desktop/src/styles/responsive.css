@@ -65,6 +65,10 @@
     animation: none;
   }
 
+  .context-meter.compacting {
+    animation: none;
+  }
+
   .process-chevron,
   .row-chevron {
     transition: none;

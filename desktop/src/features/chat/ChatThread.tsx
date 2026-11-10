@@ -1,4 +1,5 @@
 import type { RefObject } from "react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import { MarkdownText } from "../../shared/Markdown";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
@@ -7,12 +8,14 @@ import type { ApprovalChoice, ToolItem } from "./process-model";
 export function ChatThread({
   items,
   running,
+  compacting,
   activeRunId,
   onApproval,
   endRef,
 }: {
   items: Item[];
   running: boolean;
+  compacting: boolean;
   activeRunId: string | null;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   endRef: RefObject<HTMLDivElement | null>;
@@ -69,6 +72,12 @@ export function ChatThread({
           </div>
         );
       })}
+      {compacting && (
+        <div className="compacting-status" role="status">
+          <CircleNotchIcon size={13} className="spin" aria-hidden="true" />
+          <span className="shimmer">Compacting context…</span>
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   );

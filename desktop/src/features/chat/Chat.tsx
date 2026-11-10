@@ -88,7 +88,7 @@ export function Chat({
     if (stickToBottomRef.current) {
       endRef.current?.scrollIntoView({ block: "end" });
     }
-  }, [items]);
+  }, [items, compacting]);
 
   useImperativeHandle(
     ref,
@@ -200,6 +200,7 @@ export function Chat({
           <ChatThread
             items={items}
             running={running}
+            compacting={compacting}
             activeRunId={activeRunId}
             onApproval={onApproval}
             endRef={endRef}
