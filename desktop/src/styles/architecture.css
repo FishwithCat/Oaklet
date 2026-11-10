@@ -1,0 +1,351 @@
+.arch {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.arch[hidden] {
+  display: none;
+}
+
+.arch-loading {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.arch-head {
+  flex: none;
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.arch-icon {
+  flex: none;
+  display: flex;
+  color: var(--muted);
+}
+
+.arch-title {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.arch-dropdown {
+  position: relative;
+  min-width: 0;
+}
+
+.arch-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+button.arch-select {
+  min-width: 0;
+  max-width: 230px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+button.arch-select:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--border-strong);
+}
+
+button.arch-select[aria-expanded="true"] {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+}
+
+.arch-select-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-select-caret {
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+button.arch-select[aria-expanded="true"] .arch-select-caret {
+  transform: rotate(180deg);
+}
+
+.arch-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 40;
+  width: max-content;
+  max-width: 340px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px var(--shadow-color);
+}
+
+.arch-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.arch-menu-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-menu-item > svg {
+  flex: none;
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.arch-menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+}
+
+.arch-menu-item:focus-visible {
+  outline: none;
+  background: var(--panel-2);
+}
+
+.arch-menu-item[aria-checked="true"] {
+  color: var(--accent);
+}
+
+.arch-head .icon-button.arch-refresh {
+  width: 26px;
+  height: 26px;
+}
+
+.arch-head .icon-button.arch-ignored {
+  width: 26px;
+  height: 26px;
+}
+
+.arch-head .arch-ignored.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.arch-head .arch-refresh:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+button.arch-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+button.arch-agent:hover:not(:disabled) {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-surface-hover);
+}
+
+.arch-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.arch-diagram {
+  width: 100%;
+  height: 100%;
+}
+
+.arch-empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 auto;
+  padding: 32px 22px;
+  max-width: 580px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.arch-empty h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 17px;
+}
+
+.arch-empty p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.arch-empty code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.arch-empty .arch-small {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.arch-empty .spin {
+  color: var(--accent);
+}
+
+.arch-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+button.arch-generate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arch-banner {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.arch-banner > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.arch-banner > div {
+  min-width: 0;
+}
+
+.arch-banner strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.arch-banner p {
+  margin: 2px 0 0;
+}
+
+.arch-banner button {
+  margin-top: 6px;
+  padding: 3px 8px;
+}
+
+.arch-banner.warning {
+  border-color: color-mix(in srgb, var(--yellow) 30%, transparent);
+  background: color-mix(in srgb, var(--yellow) 6%, transparent);
+  color: var(--yellow);
+}
+
+.arch-banner.error {
+  border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
+  color: var(--red);
+}
+
+.arch-banner.muted {
+  display: block;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.arch-banner summary {
+  cursor: pointer;
+}
+
+.arch-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.arch-diagnostics {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  max-height: 170px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: left;
+  color: var(--muted);
+}
+
+.arch-diagnostics li {
+  margin-bottom: 5px;
+  overflow-wrap: anywhere;
+}
+
+.arch-diagnostic-loc {
+  margin-right: 6px;
+  color: var(--accent);
+  white-space: nowrap;
+}

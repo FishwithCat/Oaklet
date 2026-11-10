@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isBlankTab, settleStreaming, toBlocks } from "../src/chat-model.ts";
+import {
+  isBlankTab,
+  mergeDraft,
+  settleStreaming,
+  toBlocks,
+} from "../src/features/chat/chat-model.ts";
 
 const reasoning = (text = "thinking") => ({
   kind: "reasoning",
@@ -85,4 +90,14 @@ test("isBlankTab only accepts an idle, unused tab", () => {
     false,
   );
   assert.equal(isBlankTab({ ...blank, savedSessionId: "saved" }), false);
+});
+
+test("merging a prompt preserves an existing composer draft", () => {
+  assert.equal(mergeDraft("", "generated"), "generated");
+  assert.equal(mergeDraft("my notes\n\n", "generated"), "my notes\n\ngenerated");
+  assert.equal(
+    mergeDraft("my notes\n\ngenerated", "generated"),
+    "my notes\n\ngenerated",
+  );
+  assert.equal(mergeDraft("  ", "generated"), "generated");
 });

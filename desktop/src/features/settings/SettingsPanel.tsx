@@ -8,23 +8,14 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { XIcon } from "@phosphor-icons/react";
+import { errorText } from "../../shared/error-text";
+import { McpSettings } from "./McpSettings";
 import {
   formatMcpConfig,
   parseMcpConfig,
-  serverEnabled,
-  serverTransport,
   setServerEnabled,
-  type McpServers,
 } from "./mcp-settings";
-
-export type AppConfig = {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  searchUrl: string;
-  mcpServers: McpServers;
-  workspace: string;
-};
+import type { AppConfig } from "./config";
 
 type SettingsTab = "model" | "mcp";
 
@@ -42,12 +33,6 @@ function toDraft(config: AppConfig): SettingsDraft {
     ...config,
     mcpText: formatMcpConfig(config.mcpServers ?? {}),
   };
-}
-
-export function errorText(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return JSON.stringify(error);
 }
 
 export function SettingsPanel({
@@ -270,85 +255,25 @@ export function SettingsPanel({
                 aria-labelledby="settings-tab-mcp"
                 tabIndex={0}
               >
-                <p className="field-hint mcp-intro">
-                  Paste a standard <code>mcpServers</code> document. Each server
-                  can be enabled or disabled independently; a disabled server
-                  keeps its settings but exposes no tools.
-                </p>
-
-                <div className="field">
-                  <label htmlFor="mcp-json">Configuration JSON</label>
-                  <textarea
-                    id="mcp-json"
-                    className="mcp-json"
-                    spellCheck={false}
-                    value={draft.mcpText}
-                    onChange={(event) =>
-                      setDraft((current) => ({
+                <McpSettings
+                  text={draft.mcpText}
+                  parsed={mcpParse}
+                  onChange={(mcpText) =>
+                    setDraft((current) => ({ ...current, mcpText }))
+                  }
+                  onToggleServer={(name, enabled) =>
+                    setDraft((current) => {
+                      const parsed = parseMcpConfig(current.mcpText);
+                      if ("error" in parsed) return current;
+                      return {
                         ...current,
-                        mcpText: event.target.value,
-                      }))
-                    }
-                  />
-                  <p className="field-hint">
-                    Use <code>type</code> <code>stdio</code> or{" "}
-                    <code>streamableHttp</code>. Set{" "}
-                    <code>"enabled": false</code> to pause a server. Commands
-                    run in the workspace; environment and header values are
-                    stored on this machine.
-                  </p>
-                </div>
-
-                {"error" in mcpParse ? (
-                  <p className="error-text mcp-json-error">{mcpParse.error}</p>
-                ) : (
-                  <>
-                    <div className="mcp-heading">
-                      <h3>Servers</h3>
-                    </div>
-                    {Object.keys(mcpParse.servers).length === 0 ? (
-                      <p className="mcp-empty">
-                        No MCP servers in this config.
-                      </p>
-                    ) : (
-                      <div className="mcp-toggles">
-                        {Object.entries(mcpParse.servers).map(
-                          ([name, server]) => (
-                            <label className="mcp-toggle" key={name}>
-                              <input
-                                type="checkbox"
-                                checked={serverEnabled(server)}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setDraft((current) => {
-                                    const parsed = parseMcpConfig(
-                                      current.mcpText,
-                                    );
-                                    if ("error" in parsed) return current;
-                                    return {
-                                      ...current,
-                                      mcpText: formatMcpConfig(
-                                        setServerEnabled(
-                                          parsed.servers,
-                                          name,
-                                          enabled,
-                                        ),
-                                      ),
-                                    };
-                                  });
-                                }}
-                              />
-                              <span className="mcp-toggle-name">{name}</span>
-                              <span className="mcp-toggle-type">
-                                {serverTransport(server)}
-                              </span>
-                            </label>
-                          ),
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
+                        mcpText: formatMcpConfig(
+                          setServerEnabled(parsed.servers, name, enabled),
+                        ),
+                      };
+                    })
+                  }
+                />
               </section>
             )}
           </div>

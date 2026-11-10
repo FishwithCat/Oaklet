@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pageHunks, parseDiff } from "../src/git-diff.ts";
+import { pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644

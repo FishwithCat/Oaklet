@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentShortcut, isSendEnter } from "../src/shortcuts.ts";
+import { agentShortcut, isSendEnter } from "../src/app/shortcuts.ts";
 
 const press = (overrides) => ({
   key: "",

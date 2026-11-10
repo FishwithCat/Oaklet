@@ -5,7 +5,7 @@ import {
   SparkleIcon,
   XIcon,
 } from "@phosphor-icons/react";
-import { errorText } from "./SettingsPanel";
+import { errorText } from "../../shared/error-text";
 import { sourceLabel, type SkillList } from "./skills";
 
 export function SkillsPopup({ onClose }: { onClose: () => void }) {

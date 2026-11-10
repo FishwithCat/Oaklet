@@ -1,0 +1,229 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.field label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.2px;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  font-family: var(--mono);
+  outline: none;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 58px;
+  line-height: 1.45;
+}
+
+.field select {
+  font-family: var(--sans);
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: color-mix(in srgb, var(--palette-primary) 55%, transparent);
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.error-text {
+  margin: 0 0 12px;
+  color: var(--red);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.settings-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  padding: 0;
+  overflow: hidden;
+}
+
+.settings-head {
+  padding: 22px 22px 0;
+}
+
+.settings-head .modal-sub {
+  margin-bottom: 18px;
+}
+
+.settings-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-tablist {
+  flex: none;
+  width: 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 12px 18px;
+  border-right: 1px solid var(--border);
+}
+
+.settings-tab {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.settings-tab:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: transparent;
+}
+
+.settings-tab.active,
+.settings-tab.active:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 2px 22px 20px;
+}
+
+.settings-content [role="tabpanel"]:focus-visible {
+  outline: none;
+}
+
+.settings-error {
+  margin: 0 22px 12px;
+}
+
+.settings-actions {
+  margin-top: 0;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border);
+}
+
+.mcp-intro {
+  margin-bottom: 16px;
+}
+
+.field-hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel-muted-strong);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.mcp-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.mcp-heading h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+}
+
+.field textarea.mcp-json {
+  min-height: 300px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.mcp-empty {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.mcp-json-error {
+  margin: 0 0 12px;
+}
+
+.mcp-toggles {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.mcp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-muted);
+  cursor: pointer;
+}
+
+.mcp-toggle:last-child {
+  border-bottom: 0;
+}
+
+.mcp-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.mcp-toggle-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mcp-toggle-type {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}

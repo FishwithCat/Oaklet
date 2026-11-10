@@ -78,16 +78,3 @@ Follow these rules:
 
 When done, report which files you changed and which areas your inspection did not cover.`;
 }
-
-/**
- * Put a generated request into the composer without discarding a draft the
- * user is already writing. Re-appending the same prompt is a no-op.
- */
-export function mergeDraft(current: string, prompt: string): string {
-  const draft = current.trimEnd();
-  const addition = prompt.trim();
-  if (!addition) return current;
-  if (!draft) return addition;
-  if (draft.includes(addition)) return draft;
-  return `${draft}\n\n${addition}`;
-}

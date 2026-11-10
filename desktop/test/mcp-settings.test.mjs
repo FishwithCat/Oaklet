@@ -6,7 +6,7 @@ import {
   serverEnabled,
   serverTransport,
   setServerEnabled,
-} from "../src/mcp-settings.ts";
+} from "../src/features/settings/mcp-settings.ts";
 
 const standard = {
   mcpServers: {

@@ -6,7 +6,7 @@ import {
   pickModelRoot,
   pickViewId,
   rootLabel,
-} from "../src/architecture-model.ts";
+} from "../src/features/architecture/architecture-model.ts";
 
 const roots = [{ root: "." }, { root: "architecture" }];
 const views = [

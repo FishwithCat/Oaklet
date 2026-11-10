@@ -1,0 +1,211 @@
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+button.ghost {
+  border-color: transparent;
+  color: var(--muted);
+  padding-inline: 10px;
+}
+
+button.ghost:hover:not(:disabled) {
+  color: var(--text);
+}
+
+button.icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.view-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.view-head[hidden] {
+  display: none;
+}
+
+.view-icon {
+  flex: none;
+  display: flex;
+  color: var(--muted);
+}
+
+.view-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.view-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.view-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.view-tab:hover {
+  background: var(--panel-2);
+}
+
+.view-tab.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.tab-status {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.tab-status.working {
+  background: var(--green);
+}
+
+.tab-status.block {
+  background: var(--yellow);
+}
+
+.tab-status.done {
+  background: var(--palette-secondary);
+}
+
+.view-tab-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 0;
+  background: transparent;
+  border-radius: 6px 0 0 6px;
+  padding: 4px 2px 4px 8px;
+  font-size: 11.5px;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.view-tab-label:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+}
+
+.view-tab-close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.view-tab:hover .view-tab-close,
+.view-tab.active .view-tab-close,
+.view-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.chat-tab.active .view-tab-close {
+  opacity: 0;
+}
+
+.chat-tab:hover .view-tab-close,
+.chat-tab .view-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.view-tab-close:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+
+.view-head .icon-button.view-add {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.view-head .view-add:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+.view-head .view-add:focus,
+.view-head .view-add:focus-visible {
+  outline: none;
+}
+
+.view-head .icon-button {
+  width: 28px;
+  height: 28px;
+}

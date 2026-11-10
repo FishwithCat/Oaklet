@@ -1,91 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { errorText } from "../../shared/error-text";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
-import { isBlankTab, settleStreaming, type Item } from "./chat-model";
+import { isBlankTab, type Item } from "./chat-model";
 import {
   loadSessions,
   saveSession,
   sessionTitle,
   type SessionSnapshot,
 } from "./session-history";
-
-type DeltaEvent = { runId: string; text: string };
-type ReasoningEvent = { runId: string; text: string };
-type ToolStartEvent = {
-  runId: string;
-  id: string;
-  name: string;
-  summary: string;
-};
-type ToolResultEvent = { runId: string; id: string; ok: boolean; output: string };
-type ApprovalEvent = {
-  runId: string;
-  id: string;
-  requestId: string;
-  tool: string;
-  prompt: string;
-  detail: string;
-};
-type DoneEvent = { runId: string; messages: unknown[] };
-type ErrorEvent = { runId: string; message: string };
-type RunIdEvent = { runId: string };
-
-export type ChatTabInfo = {
-  id: string;
-  title: string;
-  running: boolean;
-  status: "working" | "idle" | "done" | "block";
-};
-
-type ChatTabState = {
-  id: string;
-  title: string;
-  running: boolean;
-  completed: boolean;
-  items: Item[];
-  messages: unknown[];
-  activeRunId: string | null;
-  runId: string | null;
-  savedSessionId: string | null;
-};
-
-function errorText(error: unknown): string {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  return JSON.stringify(error);
-}
+import {
+  applyApproval,
+  applyDeltas,
+  applyToolResult,
+  applyToolStart,
+  blankTab,
+  finishDone,
+  finishError,
+  finishStopped,
+  toChatTabInfo,
+  type ChatTabState,
+  type StreamDelta,
+} from "./session-model.ts";
+import { subscribeAgentEvents } from "./agent-events.ts";
 
 function newId(): string {
   return (
     crypto.randomUUID?.() ??
     `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   );
-}
-
-function blankTab(number: number): ChatTabState {
-  return {
-    id: newId(),
-    title: `Chat ${number}`,
-    running: false,
-    completed: false,
-    items: [],
-    messages: [],
-    activeRunId: null,
-    runId: null,
-    savedSessionId: null,
-  };
-}
-
-function tabStatus(tab: ChatTabState): ChatTabInfo["status"] {
-  const blocked = tab.items.some(
-    (item) => item.kind === "tool" && item.status === "awaiting",
-  );
-  if (blocked) return "block";
-  if (tab.running) return "working";
-  if (tab.completed) return "done";
-  return "idle";
 }
 
 export function useAgentSession({
@@ -98,7 +42,7 @@ export function useAgentSession({
   onWorkspaceRefresh: () => void;
 }) {
   const firstTabRef = useRef<ChatTabState | null>(null);
-  if (!firstTabRef.current) firstTabRef.current = blankTab(1);
+  if (!firstTabRef.current) firstTabRef.current = blankTab(newId(), 1);
 
   const [tabs, setTabs] = useState<ChatTabState[]>(() => [firstTabRef.current!]);
   const [activeTabId, setActiveTabId] = useState(firstTabRef.current.id);
@@ -190,7 +134,7 @@ export function useAgentSession({
       pendingSendsRef.current.clear();
       pendingRunEventsRef.current.clear();
       tabCountRef.current = 1;
-      const replacement = blankTab(1);
+      const replacement = blankTab(newId(), 1);
       commitTabs(() => [replacement]);
       setActiveTabId(replacement.id);
     }
@@ -212,11 +156,11 @@ export function useAgentSession({
   }, []);
 
   useEffect(() => {
-    const unlisteners: UnlistenFn[] = [];
     let disposed = false;
+    let release: (() => void) | null = null;
 
-    const batch = createStreamBatch((deltas) => {
-      const byRun = new Map<string, typeof deltas>();
+    const batch = createStreamBatch((deltas: StreamDelta[]) => {
+      const byRun = new Map<string, StreamDelta[]>();
       for (const delta of deltas) {
         const group = byRun.get(delta.runId);
         if (group) group.push(delta);
@@ -226,209 +170,126 @@ export function useAgentSession({
       for (const [runId, group] of byRun) {
         routeRunEvent(runId, (tabId) => {
           commitTabs((current) =>
-            current.map((tab) => {
-              if (tab.id !== tabId) return tab;
-              let items = tab.items;
-              for (const delta of group) {
-                const last = items[items.length - 1];
-                if (
-                  last?.kind === delta.kind &&
-                  last.streaming &&
-                  (last.kind === "assistant" || last.runId === delta.runId)
-                ) {
-                  items = [
-                    ...items.slice(0, -1),
-                    { ...last, text: last.text + delta.text },
-                  ];
-                } else {
-                  items = [
-                    ...settleStreaming(items),
-                    { ...delta, streaming: true },
-                  ];
-                }
-              }
-              return { ...tab, items, activeRunId: runId };
-            }),
+            current.map((tab) =>
+              tab.id === tabId ? applyDeltas(tab, runId, group) : tab,
+            ),
           );
         });
       }
     });
     streamBatchRef.current = batch;
 
-    const register = async () => {
-      const subscriptions = await Promise.all([
-        listen<DeltaEvent>("agent:delta", (event) => {
-          if (runWorkspaceRef.current !== workspaceRef.current) return;
-          batch.push({ ...event.payload, kind: "assistant" });
-        }),
-        listen<ReasoningEvent>("agent:reasoning", (event) => {
-          if (runWorkspaceRef.current !== workspaceRef.current) return;
-          batch.push({ ...event.payload, kind: "reasoning" });
-        }),
-        listen<ToolStartEvent>("agent:tool_start", (event) => {
-          const { runId, id, name, summary } = event.payload;
-          batch.flush();
-          routeRunEvent(runId, (tabId) => {
-            commitTabs((current) =>
-              current.map((tab) =>
-                tab.id === tabId
-                  ? {
-                      ...tab,
-                      activeRunId: runId,
-                      items: [
-                        ...settleStreaming(tab.items),
-                        {
-                          kind: "tool",
-                          runId,
-                          id,
-                          name,
-                          status: "pending",
-                          summary,
-                          startedAt: Date.now(),
-                        },
-                      ],
-                    }
-                  : tab,
-              ),
-            );
-          });
-        }),
-        listen<ToolResultEvent>("agent:tool_result", (event) => {
-          const { runId, id, ok, output } = event.payload;
-          routeRunEvent(runId, (tabId) => {
-            commitTabs((current) =>
-              current.map((tab) =>
-                tab.id === tabId
-                  ? {
-                      ...tab,
-                      items: tab.items.map((item) =>
-                        item.kind === "tool" && item.id === id
-                          ? {
-                              ...item,
-                              status: ok ? "ok" : "error",
-                              output,
-                              durationMs:
-                                item.startedAt === undefined
-                                  ? undefined
-                                  : Date.now() - item.startedAt,
-                              startedAt: undefined,
-                            }
-                          : item,
-                      ),
-                    }
-                  : tab,
-              ),
-            );
-          });
-        }),
-        listen<ApprovalEvent>("agent:approval", (event) => {
-          const { runId, id, requestId, prompt, detail } = event.payload;
-          routeRunEvent(runId, (tabId) => {
-            commitTabs((current) =>
-              current.map((tab) =>
-                tab.id === tabId
-                  ? {
-                      ...tab,
-                      items: tab.items.map((item) =>
-                        item.kind === "tool" && item.id === id
-                          ? {
-                              ...item,
-                              status: "awaiting",
-                              requestId,
-                              approvalPrompt: prompt,
-                              approvalDetail: detail,
-                            }
-                          : item,
-                      ),
-                    }
-                  : tab,
-              ),
-            );
-          });
-        }),
-        listen<DoneEvent>("agent:done", (event) => {
-          const { runId, messages } = event.payload;
-          batch.flush();
-          routeRunEvent(runId, (tabId) => {
-            const tab = tabsRef.current.find(
-              (candidate) => candidate.id === tabId,
-            );
-            if (!tab) return;
-            const nextItems = settleStreaming(tab.items);
-            patchTab(tabId, {
-              messages,
-              running: false,
-              completed: true,
-              activeRunId: null,
-              runId: null,
-              items: nextItems,
-            });
-            persistTab(tabId, nextItems, messages);
-            onWorkspaceRefreshRef.current();
-          });
-        }),
-        listen<ErrorEvent>("agent:error", (event) => {
-          const { runId, message } = event.payload;
-          batch.flush();
-          routeRunEvent(runId, (tabId) => {
-            const tab = tabsRef.current.find(
-              (candidate) => candidate.id === tabId,
-            );
-            if (!tab) return;
-            const notice: Item = { kind: "notice", tone: "error", text: message };
-            patchTab(tabId, {
-              running: false,
-              completed: false,
-              activeRunId: null,
-              runId: null,
-              items: [...settleStreaming(tab.items), notice],
-            });
-            onWorkspaceRefreshRef.current();
-          });
-        }),
-        listen<RunIdEvent>("agent:stopped", (event) => {
-          const { runId } = event.payload;
-          batch.flush();
-          routeRunEvent(runId, (tabId) => {
-            const tab = tabsRef.current.find(
-              (candidate) => candidate.id === tabId,
-            );
-            if (!tab) return;
-            const notice: Item = { kind: "notice", tone: "muted", text: "Stopped." };
-            patchTab(tabId, {
-              running: false,
-              completed: false,
-              activeRunId: null,
-              runId: null,
-              items: [...settleStreaming(tab.items), notice],
-            });
-            onWorkspaceRefreshRef.current();
-          });
-        }),
-      ]);
+    const sameWorkspace = () => runWorkspaceRef.current === workspaceRef.current;
 
-      if (disposed) {
-        subscriptions.forEach((unlisten) => unlisten());
-      } else {
-        unlisteners.push(...subscriptions);
-      }
-    };
-
-    register().catch((error) => {
-      const tab = tabsRef.current[0];
-      if (tab) addNotice(tab.id, "error", errorText(error));
-    });
+    subscribeAgentEvents({
+      onDelta: (event) => {
+        if (disposed || !sameWorkspace()) return;
+        batch.push({ ...event, kind: "assistant" });
+      },
+      onReasoning: (event) => {
+        if (disposed || !sameWorkspace()) return;
+        batch.push({ ...event, kind: "reasoning" });
+      },
+      onToolStart: (event) => {
+        if (disposed) return;
+        batch.flush();
+        routeRunEvent(event.runId, (tabId) => {
+          const startedAt = Date.now();
+          commitTabs((current) =>
+            current.map((tab) =>
+              tab.id === tabId ? applyToolStart(tab, event, startedAt) : tab,
+            ),
+          );
+        });
+      },
+      onToolResult: (event) => {
+        if (disposed) return;
+        routeRunEvent(event.runId, (tabId) => {
+          const finishedAt = Date.now();
+          commitTabs((current) =>
+            current.map((tab) =>
+              tab.id === tabId
+                ? applyToolResult(tab, event, finishedAt)
+                : tab,
+            ),
+          );
+        });
+      },
+      onApproval: (event) => {
+        if (disposed) return;
+        routeRunEvent(event.runId, (tabId) => {
+          commitTabs((current) =>
+            current.map((tab) =>
+              tab.id === tabId ? applyApproval(tab, event) : tab,
+            ),
+          );
+        });
+      },
+      onDone: (event) => {
+        if (disposed) return;
+        batch.flush();
+        routeRunEvent(event.runId, (tabId) => {
+          const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+          if (!tab) return;
+          const next = finishDone(tab, event.messages);
+          commitTabs((current) =>
+            current.map((candidate) =>
+              candidate.id === tabId ? next : candidate,
+            ),
+          );
+          persistTab(tabId, next.items, event.messages);
+          onWorkspaceRefreshRef.current();
+        });
+      },
+      onError: (event) => {
+        if (disposed) return;
+        batch.flush();
+        routeRunEvent(event.runId, (tabId) => {
+          const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+          if (!tab) return;
+          commitTabs((current) =>
+            current.map((candidate) =>
+              candidate.id === tabId
+                ? finishError(candidate, event.message)
+                : candidate,
+            ),
+          );
+          onWorkspaceRefreshRef.current();
+        });
+      },
+      onStopped: (event) => {
+        if (disposed) return;
+        batch.flush();
+        routeRunEvent(event.runId, (tabId) => {
+          commitTabs((current) =>
+            current.map((candidate) =>
+              candidate.id === tabId ? finishStopped(candidate) : candidate,
+            ),
+          );
+          onWorkspaceRefreshRef.current();
+        });
+      },
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else release = unlisten;
+      })
+      .catch((error) => {
+        if (disposed) return;
+        const tab = tabsRef.current[0];
+        if (tab) addNotice(tab.id, "error", errorText(error));
+      });
 
     return () => {
       disposed = true;
       batch.clear();
-      unlisteners.forEach((unlisten) => unlisten());
+      release?.();
     };
   }, []);
 
   function newTab() {
     tabCountRef.current += 1;
-    const tab = blankTab(tabCountRef.current);
+    const tab = blankTab(newId(), tabCountRef.current);
     commitTabs((current) => [...current, tab]);
     setActiveTabId(tab.id);
   }
@@ -445,7 +306,7 @@ export function useAgentSession({
     const remaining = current.filter((tab) => tab.id !== id);
     if (remaining.length === 0) {
       tabCountRef.current += 1;
-      const replacement = blankTab(tabCountRef.current);
+      const replacement = blankTab(newId(), tabCountRef.current);
       commitTabs(() => [replacement]);
       setActiveTabId(replacement.id);
       return;
@@ -534,7 +395,7 @@ export function useAgentSession({
     }
 
     tabCountRef.current += 1;
-    const fresh = blankTab(tabCountRef.current);
+    const fresh = blankTab(newId(), tabCountRef.current);
     const tab: ChatTabState = {
       ...fresh,
       title: snapshot.title || sessionTitle(snapshot.items) || fresh.title,
@@ -599,12 +460,7 @@ export function useAgentSession({
     items: activeTab?.items ?? [],
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
-    tabs: tabs.map((tab): ChatTabInfo => ({
-      id: tab.id,
-      title: tab.title,
-      running: tab.running,
-      status: tabStatus(tab),
-    })),
+    tabs: tabs.map(toChatTabInfo),
     activeTabId: activeTab?.id ?? "",
     allowAll,
     history,

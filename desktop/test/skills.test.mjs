@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sourceLabel } from "../src/skills.ts";
+import { sourceLabel } from "../src/features/skills/skills.ts";
 
 test("labels skill sources in the skills popup", () => {
   assert.equal(sourceLabel("project-oaklet"), "Project · .oaklet");

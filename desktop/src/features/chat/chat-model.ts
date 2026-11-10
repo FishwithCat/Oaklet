@@ -6,6 +6,19 @@ export type Item =
   | ProcessItem
   | { kind: "notice"; text: string; tone: "error" | "muted" };
 
+/**
+ * Put a generated request into the composer without discarding a draft the
+ * user is already writing. Re-appending the same prompt is a no-op.
+ */
+export function mergeDraft(current: string, prompt: string): string {
+  const draft = current.trimEnd();
+  const addition = prompt.trim();
+  if (!addition) return current;
+  if (!draft) return addition;
+  if (draft.includes(addition)) return draft;
+  return `${draft}\n\n${addition}`;
+}
+
 export function settleStreaming(items: Item[]): Item[] {
   return items.map((item) =>
     (item.kind === "assistant" || item.kind === "reasoning") && item.streaming

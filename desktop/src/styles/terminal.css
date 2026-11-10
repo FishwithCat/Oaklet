@@ -1,0 +1,31 @@
+.terminal {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.terminal[hidden] {
+  display: none;
+}
+
+.terminal-screen {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+.terminal-screen[hidden] {
+  display: none;
+}
+
+.terminal-screen .xterm {
+  height: 100%;
+}
+
+.terminal-screen .xterm-viewport {
+  background-color: transparent;
+  scrollbar-width: thin;
+}

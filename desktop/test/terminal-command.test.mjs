@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commandForTerminal } from "../src/terminal-command.ts";
+import { commandForTerminal } from "../src/features/terminal/terminal-command.ts";
 
 test("a selected sentence becomes a shell command followed by Enter", () => {
   assert.equal(commandForTerminal("  ls -la  "), "ls -la\r");

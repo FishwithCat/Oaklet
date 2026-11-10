@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createStreamBatch } from "../src/stream-batch.ts";
+import { createStreamBatch } from "../src/features/chat/stream-batch.ts";
 
 test("stream batching merges adjacent deltas, preserves order and flushes at boundaries", () => {
   const frames = new Map();

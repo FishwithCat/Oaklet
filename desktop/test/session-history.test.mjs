@@ -5,7 +5,7 @@ import {
   mergeSessions,
   saveSession,
   sessionTitle,
-} from "../src/session-history.ts";
+} from "../src/features/chat/session-history.ts";
 
 const snapshot = (id, updatedAt) => ({
   id,

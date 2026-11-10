@@ -12,7 +12,7 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
-import { MarkdownText } from "./Markdown";
+import { MarkdownText } from "../../shared/Markdown";
 import {
   isActive,
   primaryCategory,

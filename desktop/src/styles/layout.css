@@ -1,0 +1,113 @@
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  flex: none;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.sidebar .new-chat {
+  width: 36px;
+  height: 36px;
+}
+
+.sidebar .terminal-toggle {
+  width: 36px;
+  height: 36px;
+}
+
+.sidebar .sc-toggle {
+  position: relative;
+  width: 36px;
+  height: 36px;
+}
+
+.sc-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 2px solid var(--bg);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--sans);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.sidebar .icon-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+.sidebar button.icon-button.active {
+  color: var(--accent);
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+
+.sidebar button.icon-button.active:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+
+.sidebar button.icon-button:focus,
+.sidebar button.icon-button:focus-visible {
+  outline: none;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Empty chat: center the headline and composer together. */
+.main.empty-state .chat {
+  flex: none;
+  margin-top: auto;
+}
+
+.main.empty-state .composer-wrap {
+  margin-bottom: auto;
+}
+
+button.allow-all-chip {
+  width: 32px;
+  height: 32px;
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 30%, transparent);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
+button.allow-all-chip:hover:not(:disabled) {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 50%, transparent);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}

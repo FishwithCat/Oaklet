@@ -6,7 +6,7 @@ import {
   reasoningSummary,
   toolSummary,
   toolTitle,
-} from "../src/process-model.ts";
+} from "../src/features/chat/process-model.ts";
 
 test("streaming reasoning previews the latest completed paragraph", () => {
   assert.equal(reasoningSummary("First line\nrest of paragraph", true), "First line");
