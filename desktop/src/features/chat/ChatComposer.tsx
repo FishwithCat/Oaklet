@@ -123,6 +123,7 @@ export function ChatComposer({
   }
 
   function submit() {
+    if (compacting) return;
     if (!onSubmit()) return;
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
@@ -237,9 +238,9 @@ export function ChatComposer({
           <button
             type="submit"
             className="primary icon-button"
-            disabled={running || !value.trim()}
-            aria-label="Send"
-            title="Send"
+            disabled={running || compacting || !value.trim()}
+            aria-label={compacting ? "Compacting context" : "Send"}
+            title={compacting ? "Compacting context…" : "Send"}
           >
             <PaperPlaneRightIcon size={16} weight="fill" />
           </button>

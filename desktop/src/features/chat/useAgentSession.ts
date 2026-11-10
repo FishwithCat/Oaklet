@@ -346,7 +346,7 @@ export function useAgentSession({
     if (!trimmed || !enabled) return false;
 
     const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
-    if (!tab || tab.running) return false;
+    if (!tab || tab.running || compactingRef.current) return false;
 
     const nextMessages = [
       ...tab.messages,
