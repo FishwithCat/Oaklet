@@ -2157,24 +2157,6 @@ button.arch-generate {
   line-height: 1.5;
 }
 
-.field-row {
-  display: flex;
-  gap: 8px;
-}
-
-.field-row input {
-  flex: 1;
-  min-width: 0;
-}
-
-.field-row button {
-  flex: none;
-}
-
-.field-row .icon-button {
-  height: auto;
-}
-
 .error-text {
   margin: 0 0 12px;
   color: var(--red);

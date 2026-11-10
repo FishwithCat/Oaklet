@@ -1,7 +1,6 @@
 import { useEffect, useState, type SubmitEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpenIcon, XIcon } from "@phosphor-icons/react";
+import { XIcon } from "@phosphor-icons/react";
 
 export type AppConfig = {
   baseUrl: string;
@@ -30,7 +29,6 @@ export function SettingsPanel({
 }) {
   const [draft, setDraft] = useState(config);
   const [saving, setSaving] = useState(false);
-  const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -40,24 +38,6 @@ export function SettingsPanel({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-
-  async function browse() {
-    setBrowsing(true);
-    try {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: draft.workspace || undefined,
-      });
-      if (typeof picked === "string") {
-        setDraft((current) => ({ ...current, workspace: picked }));
-      }
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBrowsing(false);
-    }
-  }
 
   async function save(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -155,33 +135,6 @@ export function SettingsPanel({
           <p className="field-hint">
             Used by web_search. Defaults to the DeepSeek Search API.
           </p>
-        </div>
-
-        <div className="field">
-          <label htmlFor="workspace">Workspace</label>
-          <div className="field-row">
-            <input
-              id="workspace"
-              placeholder="/path/to/project"
-              value={draft.workspace}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  workspace: event.target.value,
-                }))
-              }
-            />
-            <button
-              type="button"
-              className="icon-button"
-              onClick={browse}
-              disabled={browsing}
-              aria-label="Browse"
-              title="Browse"
-            >
-              <FolderOpenIcon size={16} />
-            </button>
-          </div>
         </div>
 
         {error && <p className="error-text">{error}</p>}
