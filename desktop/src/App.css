@@ -1385,7 +1385,9 @@ button.arch-generate {
 }
 
 .diff-lines {
-  overflow-x: auto;
+  /* Keep the scrollbar in the layout: WebKit paints an `auto` scrollbar on
+     top of the next hunk header. */
+  overflow-x: scroll;
   background: var(--panel);
 }
 
