@@ -19,6 +19,7 @@ import {
   processTitle,
   reasoningSummary,
   toolCategory,
+  toolSummary,
   toolTitle,
   type ApprovalChoice,
   type ProcessItem,
@@ -187,7 +188,7 @@ function ToolRow({
       <DisclosureHead
         icon={categoryIcon(category)}
         title={toolTitle(item.name)}
-        summary={item.summary}
+        summary={toolSummary(item)}
         live={running}
         open={open}
         expandable={hasOutput}

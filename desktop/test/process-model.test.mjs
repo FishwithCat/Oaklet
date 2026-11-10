@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatDuration,
   processTitle,
   reasoningSummary,
+  toolSummary,
   toolTitle,
 } from "../src/process-model.ts";
 
@@ -17,6 +19,29 @@ test("labels MCP tools with their server and tool names", () => {
   assert.equal(toolTitle("mcp__github__search_issues"), "github · search_issues");
   assert.equal(toolTitle("read_file"), "Read file");
   assert.equal(toolTitle("skill"), "Load skill");
+});
+
+test("formats command execution time after the summary", () => {
+  assert.equal(formatDuration(400), "0.4s");
+  assert.equal(formatDuration(12_000), "12s");
+  assert.equal(formatDuration(65_000), "1m 5s");
+  assert.equal(formatDuration(120_000), "2m");
+
+  const command = {
+    kind: "tool",
+    runId: "run",
+    id: "1",
+    name: "run_command",
+    status: "ok",
+    summary: "pnpm test",
+    durationMs: 12_000,
+  };
+  assert.equal(toolSummary(command), "pnpm test (12s)");
+  assert.equal(toolSummary({ ...command, durationMs: undefined }), "pnpm test");
+  assert.equal(
+    toolSummary({ ...command, name: "read_file" }),
+    "pnpm test",
+  );
 });
 
 test("process title ranks tool categories after settlement", () => {

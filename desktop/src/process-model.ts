@@ -16,6 +16,10 @@ export type ToolItem = {
   name: string;
   status: ToolStatus;
   output?: string;
+  /** Epoch ms when execution started, cleared once the duration is known. */
+  startedAt?: number;
+  /** Execution time reported when the tool finishes. */
+  durationMs?: number;
   requestId?: string;
   summary?: string;
   approvalPrompt?: string;
@@ -66,6 +70,30 @@ export function toolTitle(name: string): string {
     }
   }
   return name.replace(/_/g, " ");
+}
+
+/** Human-readable elapsed time, e.g. `0.4s`, `12s`, `1m 5s`. */
+export function formatDuration(ms: number): string {
+  const seconds = Math.max(0, ms) / 1000;
+  const total = Math.round(seconds);
+  if (total < 10) return `${seconds.toFixed(1)}s`;
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
+}
+
+/** Row summary with the command's execution time appended once known. */
+export function toolSummary(item: ToolItem): string {
+  const summary = item.summary ?? "";
+  if (
+    !summary ||
+    item.name !== "run_command" ||
+    item.durationMs === undefined
+  ) {
+    return summary;
+  }
+  return `${summary} (${formatDuration(item.durationMs)})`;
 }
 
 export function categoryLabel(category: ToolCategory, live: boolean): string {

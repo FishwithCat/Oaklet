@@ -284,6 +284,7 @@ export function useAgentSession({
                           name,
                           status: "pending",
                           summary,
+                          startedAt: Date.now(),
                         },
                       ],
                     }
@@ -302,7 +303,16 @@ export function useAgentSession({
                       ...tab,
                       items: tab.items.map((item) =>
                         item.kind === "tool" && item.id === id
-                          ? { ...item, status: ok ? "ok" : "error", output }
+                          ? {
+                              ...item,
+                              status: ok ? "ok" : "error",
+                              output,
+                              durationMs:
+                                item.startedAt === undefined
+                                  ? undefined
+                                  : Date.now() - item.startedAt,
+                              startedAt: undefined,
+                            }
                           : item,
                       ),
                     }
@@ -553,7 +563,12 @@ export function useAgentSession({
     patchTab(tab.id, {
       items: tab.items.map((entry) =>
         entry.kind === "tool" && entry.id === item.id
-          ? { ...entry, status: "running", requestId: undefined }
+          ? {
+              ...entry,
+              status: "running",
+              requestId: undefined,
+              startedAt: choice === "deny" ? undefined : Date.now(),
+            }
           : entry,
       ),
     });
