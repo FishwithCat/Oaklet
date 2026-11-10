@@ -15,8 +15,8 @@ enough to read in one sitting.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
-  `likec4_mcp`, tools from configured MCP servers, and `web_search` when an API
-  key is set.
+  `likec4_mcp`, `skill` when the workspace defines skills, tools from
+  configured MCP servers, and `web_search` when an API key is set.
 - A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
   shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
   workspace. Select text in chat and click **Send to Terminal** to run it in the
@@ -216,6 +216,53 @@ trust: a configured command runs with your user privileges, and an HTTP server
 can receive the headers entered in Settings. Tool results are treated as
 external data, never as instructions. Configuration, including environment
 values and headers, is stored in the app config file (`0600` on Unix).
+
+## Skills
+
+Skills are reusable Markdown instructions the agent loads only when a task
+matches. Oaklet scans these folders directly (no recursion) at the start of
+every agent run; a higher row wins a duplicate name:
+
+| Priority | Folder                       |
+| -------- | ---------------------------- |
+| 1        | `<workspace>/.oaklet/skills` |
+| 2        | `<workspace>/.agents/skills` |
+| 3        | `~/.oaklet/skills`           |
+| 4        | `~/.agents/skills`           |
+
+A skill is either a directory containing `SKILL.md` or a flat
+`<name>.md` file:
+
+```markdown
+---
+name: review
+description: Review a pull request for correctness, lifecycle, and test gaps.
+whenToUse: When the user asks for a code review.
+disable-model-invocation: false
+user-invocable: true
+---
+
+# Reviewing a change
+
+Read the diff first...
+```
+
+`name` must be lower-case kebab-case and `description` is required. Set
+`disable-model-invocation: true` to keep the model from loading a skill;
+`user-invocable` is reserved for future `/name` invocation. The body is
+returned inside `<skill_content>` with the skill's base directory, so relative
+references resolve next to the skill.
+
+The system prompt carries a summary of model-invocable skills. The agent calls
+`skill({"name":"review"})` to load the full body. Files are re-read on each
+load, so body edits apply to the next call; new or removed skills apply to the
+next message. Skill files are limited to 256 KiB and bodies to 24,000
+characters.
+
+The **Skills** icon in the sidebar opens a popup listing discovered skills,
+their source and invocation flags, and any files that were skipped. **Refresh**
+rescans immediately. The popup is read-only; edits and new files belong in the
+folders above.
 
 ## Web search
 
