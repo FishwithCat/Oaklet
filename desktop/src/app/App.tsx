@@ -1,5 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { homeDir } from "@tauri-apps/api/path";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Chat, type ChatHandle } from "../features/chat/Chat";
+import { formatWorkdir } from "../features/chat/chat-model";
 import { SessionHistory } from "../features/chat/SessionHistory";
 import { useAgentSession } from "../features/chat/useAgentSession";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
@@ -18,6 +21,7 @@ const Architecture = lazy(() => import("../features/architecture/Architecture"))
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [home, setHome] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [view, setView] = useState<AppView>("chat");
@@ -45,6 +49,17 @@ function App() {
     enabled: config !== null,
     onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });
+
+  useEffect(() => {
+    homeDir().then(setHome).catch(() => setHome(""));
+  }, []);
+
+  useEffect(() => {
+    if (!config || home === null) return;
+    const title = formatWorkdir(config.workspace, home);
+    document.title = title;
+    getCurrentWindow().setTitle(title).catch(() => {});
+  }, [config, home]);
 
   const { changes, changesError, unstaged } = useGitChanges({
     enabled: config !== null,

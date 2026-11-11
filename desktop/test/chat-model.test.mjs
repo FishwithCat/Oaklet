@@ -5,6 +5,7 @@ import {
   formatContextPercent,
   formatContextUsage,
   formatTokens,
+  formatWorkdir,
   isBlankTab,
   mergeDraft,
   shouldShowContextGauge,
@@ -122,6 +123,30 @@ test("the gauge tooltip pairs the percent with compact token counts", () => {
   assert.equal(formatContextUsage(78643, 262144), "30% (77k/256k)");
   assert.equal(formatContextUsage(262144, 262144), "100% (256k/256k)");
   assert.equal(formatTokens(999), "999");
+});
+
+test("the workdir shortens under the home directory", () => {
+  assert.equal(
+    formatWorkdir("/Users/linear/Workspace/Acorn", "/Users/linear"),
+    "~/Workspace/Acorn",
+  );
+  assert.equal(formatWorkdir("/Users/linear", "/Users/linear"), "~");
+  assert.equal(
+    formatWorkdir("/Volumes/Work/Acorn", "/Users/linear"),
+    "/Volumes/Work/Acorn",
+  );
+  assert.equal(
+    formatWorkdir("/Users/linear2/Acorn", "/Users/linear"),
+    "/Users/linear2/Acorn",
+  );
+  assert.equal(
+    formatWorkdir("C:\\Users\\me\\project", "C:\\Users\\me"),
+    "~/project",
+  );
+  assert.equal(
+    formatWorkdir("/Users/linear/Workspace/Acorn", ""),
+    "/Users/linear/Workspace/Acorn",
+  );
 });
 
 test("the context plant steps color at 30%, 60%, and 80%", () => {

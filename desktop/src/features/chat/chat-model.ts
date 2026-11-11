@@ -48,6 +48,15 @@ export function formatContextUsage(used: number, window: number): string {
   return `${formatContextPercent(used, window)} (${formatTokens(used)}/${formatTokens(window)})`;
 }
 
+/** Show the workspace relative to the home directory: ~/Workspace/Acorn. */
+export function formatWorkdir(workspace: string, home: string): string {
+  const separator = workspace.includes("\\") ? "\\" : "/";
+  if (home && workspace === home) return "~";
+  return home && workspace.startsWith(home + separator)
+    ? `~/${workspace.slice(home.length + 1)}`
+    : workspace;
+}
+
 export type ContextTier = "normal" | "elevated" | "high" | "critical";
 
 /** Plant color for the context gauge, stepping up at 30%, 60%, and 80%. */
