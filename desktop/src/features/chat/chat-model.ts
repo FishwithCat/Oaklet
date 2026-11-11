@@ -3,7 +3,7 @@ import type { SentAttachment } from "./attachments";
 
 export type Item =
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
-  | { kind: "assistant"; text: string; streaming: boolean }
+  | { kind: "assistant"; runId?: string; text: string; streaming: boolean }
   | ProcessItem
   | { kind: "notice"; text: string; tone: "error" | "muted" };
 
@@ -84,9 +84,8 @@ export function shouldShowContextGauge(
 export function isBlankTab(tab: {
   running: boolean;
   items: Item[];
-  savedSessionId: string | null;
 }): boolean {
-  return !tab.running && tab.items.length === 0 && !tab.savedSessionId;
+  return !tab.running && tab.items.length === 0;
 }
 
 export type Block =

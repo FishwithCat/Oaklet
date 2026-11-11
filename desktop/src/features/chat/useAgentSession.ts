@@ -3,49 +3,41 @@ import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
-import { formatTokens, isBlankTab, type Item } from "./chat-model";
+import { isBlankTab, type Item } from "./chat-model";
+import { sentAttachments, type Attachment } from "./attachments";
 import {
-  sentAttachments,
-  userContent,
-  type Attachment,
-} from "./attachments";
-import {
-  loadSessions,
-  saveSession,
-  sessionTitle,
-  type SessionSnapshot,
-} from "./session-history";
-import {
+  appendNotice,
   applyApproval,
-  applyCompaction,
+  applyApprovalResolved,
   applyContext,
   applyDeltas,
   applyToolResult,
   applyToolStart,
-  blankTab,
-  finishDone,
-  finishError,
-  finishStopped,
+  settleRun,
   toChatTabInfo,
-  type ChatTabState,
+  withItems,
+  type SessionSummary,
+  type SessionView,
   type StreamDelta,
 } from "./session-model.ts";
 import { subscribeAgentEvents } from "./agent-events.ts";
 
-function newId(): string {
-  return (
-    crypto.randomUUID?.() ??
-    `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  );
-}
+type OpenTab = { id: string; number: number };
 
-type CompactionResult = {
-  messages: unknown[];
+type SendResult = { runId: string; session: SessionView };
+
+type CompactResult = {
+  session: SessionView;
   before: number;
   after: number;
   compacted: boolean;
 };
 
+/**
+ * Chat tabs backed by Rust. The backend owns sessions, runs, and the transcript;
+ * this hook keeps a render cache hydrated from command responses and events.
+ * Open tabs are client UI state and are never written back to storage.
+ */
 export function useAgentSession({
   workspace,
   enabled,
@@ -55,113 +47,112 @@ export function useAgentSession({
   enabled: boolean;
   onWorkspaceRefresh: () => void;
 }) {
-  const firstTabRef = useRef<ChatTabState | null>(null);
-  if (!firstTabRef.current) firstTabRef.current = blankTab(newId(), 1);
-
-  const [tabs, setTabs] = useState<ChatTabState[]>(() => [firstTabRef.current!]);
-  const [activeTabId, setActiveTabId] = useState(firstTabRef.current.id);
+  const [sessions, setSessions] = useState<Record<string, SessionView>>({});
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState("");
   const [allowAll, setAllowAll] = useState(false);
-  const [history, setHistory] = useState<SessionSnapshot[]>([]);
+  const [history, setHistory] = useState<SessionSummary[]>([]);
   const [compacting, setCompacting] = useState(false);
 
-  const tabsRef = useRef(tabs);
-  const tabCountRef = useRef(1);
-  const streamBatchRef = useRef<ReturnType<typeof createStreamBatch> | null>(null);
+  const sessionsRef = useRef(sessions);
+  const openTabsRef = useRef(openTabs);
+  const activeTabIdRef = useRef(activeTabId);
   const workspaceRef = useRef(workspace);
-  const runWorkspaceRef = useRef(workspace);
-  const pendingSendsRef = useRef(new Set<string>());
-  const pendingRunEventsRef = useRef(new Map<string, Array<(tabId: string) => void>>());
-  const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
+  const tabCountRef = useRef(0);
   const compactingRef = useRef(false);
+  const startedForRef = useRef<string | null>(null);
+  const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
 
-  function commitTabs(next: (current: ChatTabState[]) => ChatTabState[]) {
-    const updated = next(tabsRef.current);
-    tabsRef.current = updated;
-    setTabs(updated);
+  function commitSessions(next: Record<string, SessionView>) {
+    sessionsRef.current = next;
+    setSessions(next);
   }
 
-  function patchTab(tabId: string, patch: Partial<ChatTabState>) {
-    commitTabs((current) =>
-      current.map((tab) => (tab.id === tabId ? { ...tab, ...patch } : tab)),
-    );
+  function putSession(view: SessionView) {
+    commitSessions({ ...sessionsRef.current, [view.id]: view });
   }
 
-  function addNotice(tabId: string, tone: "error" | "muted", text: string) {
-    const notice: Item = { kind: "notice", tone, text };
-    commitTabs((current) =>
-      current.map((tab) =>
-        tab.id === tabId ? { ...tab, items: [...tab.items, notice] } : tab,
-      ),
-    );
+  function updateSession(
+    id: string,
+    update: (view: SessionView) => SessionView,
+  ) {
+    const current = sessionsRef.current[id];
+    if (!current) return;
+    putSession(update(current));
   }
 
-  function routeRunEvent(runId: string, apply: (tabId: string) => void) {
-    if (runWorkspaceRef.current !== workspaceRef.current) return;
-    const tab = tabsRef.current.find((candidate) => candidate.runId === runId);
-    if (tab) {
-      apply(tab.id);
-      return;
-    }
-    // The invoke response can arrive after the backend's first events.
-    if (pendingSendsRef.current.size > 0) {
-      const queued = pendingRunEventsRef.current.get(runId) ?? [];
-      queued.push(apply);
-      pendingRunEventsRef.current.set(runId, queued);
-    }
+  function commitTabs(next: OpenTab[]) {
+    openTabsRef.current = next;
+    setOpenTabs(next);
   }
 
-  function drainRunEvents(runId: string) {
-    const queued = pendingRunEventsRef.current.get(runId);
-    if (!queued) return;
-    pendingRunEventsRef.current.delete(runId);
-    const tab = tabsRef.current.find((candidate) => candidate.runId === runId);
-    if (!tab) return;
-    for (const apply of queued) apply(tab.id);
+  function activate(id: string) {
+    activeTabIdRef.current = id;
+    setActiveTabId(id);
   }
 
-  function persistTab(tabId: string, nextItems: Item[], messages: unknown[]) {
-    const title = sessionTitle(nextItems);
-    if (!title) return;
-    const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
-    if (!tab) return;
-
-    const id = tab.savedSessionId ?? newId();
-    const context = tab.context ? { context: tab.context } : {};
-    const snapshot: SessionSnapshot = {
-      id,
-      title,
-      updatedAt: Date.now(),
-      messages,
-      items: nextItems,
-      ...context,
-    };
-    patchTab(tabId, { savedSessionId: id });
-    setHistory(saveSession(workspaceRef.current, snapshot));
+  function reset() {
+    commitSessions({});
+    commitTabs([]);
+    activate("");
+    tabCountRef.current = 0;
+    setHistory([]);
   }
 
-  useEffect(() => {
-    const switched = workspaceRef.current !== workspace;
-    workspaceRef.current = workspace;
-    if (switched) {
-      streamBatchRef.current?.clear();
-      for (const tab of tabsRef.current) {
-        if (tab.runId) {
-          void invoke("agent_stop", { runId: tab.runId });
-        }
-      }
-      pendingSendsRef.current.clear();
-      pendingRunEventsRef.current.clear();
-      tabCountRef.current = 1;
-      const replacement = blankTab(newId(), 1);
-      commitTabs(() => [replacement]);
-      setActiveTabId(replacement.id);
-    }
-    setHistory(workspace ? loadSessions(workspace) : []);
-  }, [workspace]);
+  function addTab(view: SessionView) {
+    tabCountRef.current += 1;
+    commitTabs([...openTabsRef.current, { id: view.id, number: tabCountRef.current }]);
+    putSession(view);
+    activate(view.id);
+  }
+
+  function showError(text: string) {
+    const tab = sessionsRef.current[activeTabIdRef.current];
+    if (tab) updateSession(tab.id, (view) => appendNotice(view, "error", text));
+    else console.error(text);
+  }
+
+  function refreshHistory() {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    invoke<SessionSummary[]>("session_list", { workspace })
+      .then((list) => {
+        if (workspaceRef.current === workspace) setHistory(list);
+      })
+      .catch(() => {});
+  }
 
   useEffect(() => {
     onWorkspaceRefreshRef.current = onWorkspaceRefresh;
   }, [onWorkspaceRefresh]);
+
+  useEffect(() => {
+    if (!enabled || !workspace) return;
+    // StrictMode runs this effect twice; the first async pass owns the work.
+    if (startedForRef.current === workspace) return;
+    startedForRef.current = workspace;
+
+    const switched = workspaceRef.current !== workspace;
+    workspaceRef.current = workspace;
+    if (switched) reset();
+
+    void (async () => {
+      try {
+        const list = await invoke<SessionSummary[]>("session_list", { workspace });
+        if (workspaceRef.current !== workspace) return;
+        setHistory(list);
+        if (openTabsRef.current.length > 0) return;
+
+        const created = await invoke<SessionView>("session_create", { workspace });
+        if (workspaceRef.current !== workspace) return;
+        if (openTabsRef.current.length > 0) return;
+        addTab(created);
+      } catch (error) {
+        startedForRef.current = null;
+        console.error(`Could not start a chat: ${errorText(error)}`);
+      }
+    })();
+  }, [workspace, enabled]);
 
   function loadAllowance() {
     invoke<boolean>("command_allow_all_active")
@@ -178,123 +169,87 @@ export function useAgentSession({
     let release: (() => void) | null = null;
 
     const batch = createStreamBatch((deltas: StreamDelta[]) => {
-      const byRun = new Map<string, StreamDelta[]>();
+      const bySession = new Map<string, StreamDelta[]>();
       for (const delta of deltas) {
-        const group = byRun.get(delta.runId);
+        const group = bySession.get(delta.sessionId);
         if (group) group.push(delta);
-        else byRun.set(delta.runId, [delta]);
+        else bySession.set(delta.sessionId, [delta]);
       }
 
-      for (const [runId, group] of byRun) {
-        routeRunEvent(runId, (tabId) => {
-          commitTabs((current) =>
-            current.map((tab) =>
-              tab.id === tabId ? applyDeltas(tab, runId, group) : tab,
-            ),
-          );
-        });
+      for (const [sessionId, group] of bySession) {
+        updateSession(sessionId, (tab) =>
+          applyDeltas(tab, group[0]!.runId, group),
+        );
       }
     });
-    streamBatchRef.current = batch;
 
-    const sameWorkspace = () => runWorkspaceRef.current === workspaceRef.current;
+    function finish(
+      sessionId: string,
+      session: SessionView | null,
+      notice?: { tone: "error" | "muted"; text: string },
+    ) {
+      const tab = sessionsRef.current[sessionId];
+      if (!tab) return;
+      putSession(session ?? settleRun(tab, notice));
+      refreshHistory();
+      onWorkspaceRefreshRef.current();
+    }
 
     subscribeAgentEvents({
       onDelta: (event) => {
-        if (disposed || !sameWorkspace()) return;
+        if (disposed) return;
         batch.push({ ...event, kind: "assistant" });
       },
       onReasoning: (event) => {
-        if (disposed || !sameWorkspace()) return;
+        if (disposed) return;
         batch.push({ ...event, kind: "reasoning" });
       },
       onToolStart: (event) => {
         if (disposed) return;
         batch.flush();
-        routeRunEvent(event.runId, (tabId) => {
-          const startedAt = Date.now();
-          commitTabs((current) =>
-            current.map((tab) =>
-              tab.id === tabId ? applyToolStart(tab, event, startedAt) : tab,
-            ),
-          );
-        });
+        updateSession(event.sessionId, (tab) =>
+          applyToolStart(tab, event, Date.now()),
+        );
       },
       onToolResult: (event) => {
         if (disposed) return;
-        routeRunEvent(event.runId, (tabId) => {
-          const finishedAt = Date.now();
-          commitTabs((current) =>
-            current.map((tab) =>
-              tab.id === tabId
-                ? applyToolResult(tab, event, finishedAt)
-                : tab,
-            ),
-          );
-        });
+        updateSession(event.sessionId, (tab) =>
+          applyToolResult(tab, event, Date.now()),
+        );
       },
       onApproval: (event) => {
         if (disposed) return;
-        routeRunEvent(event.runId, (tabId) => {
-          commitTabs((current) =>
-            current.map((tab) =>
-              tab.id === tabId ? applyApproval(tab, event) : tab,
-            ),
-          );
-        });
+        updateSession(event.sessionId, (tab) => applyApproval(tab, event));
+      },
+      onApprovalResolved: (event) => {
+        if (disposed) return;
+        updateSession(event.sessionId, (tab) =>
+          applyApprovalResolved(tab, event, Date.now()),
+        );
       },
       onDone: (event) => {
         if (disposed) return;
         batch.flush();
-        routeRunEvent(event.runId, (tabId) => {
-          const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
-          if (!tab) return;
-          const next = finishDone(tab, event.messages);
-          commitTabs((current) =>
-            current.map((candidate) =>
-              candidate.id === tabId ? next : candidate,
-            ),
-          );
-          persistTab(tabId, next.items, event.messages);
-          onWorkspaceRefreshRef.current();
-        });
+        finish(event.sessionId, event.session);
       },
       onContext: (event) => {
         if (disposed) return;
-        routeRunEvent(event.runId, (tabId) => {
-          commitTabs((current) =>
-            current.map((tab) =>
-              tab.id === tabId ? applyContext(tab, event) : tab,
-            ),
-          );
-        });
+        updateSession(event.sessionId, (tab) => applyContext(tab, event));
       },
       onError: (event) => {
         if (disposed) return;
         batch.flush();
-        routeRunEvent(event.runId, (tabId) => {
-          const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
-          if (!tab) return;
-          commitTabs((current) =>
-            current.map((candidate) =>
-              candidate.id === tabId
-                ? finishError(candidate, event.message)
-                : candidate,
-            ),
-          );
-          onWorkspaceRefreshRef.current();
+        finish(event.sessionId, event.session, {
+          tone: "error",
+          text: event.message,
         });
       },
       onStopped: (event) => {
         if (disposed) return;
         batch.flush();
-        routeRunEvent(event.runId, (tabId) => {
-          commitTabs((current) =>
-            current.map((candidate) =>
-              candidate.id === tabId ? finishStopped(candidate) : candidate,
-            ),
-          );
-          onWorkspaceRefreshRef.current();
+        finish(event.sessionId, event.session, {
+          tone: "muted",
+          text: "Stopped.",
         });
       },
     })
@@ -303,9 +258,7 @@ export function useAgentSession({
         else release = unlisten;
       })
       .catch((error) => {
-        if (disposed) return;
-        const tab = tabsRef.current[0];
-        if (tab) addNotice(tab.id, "error", errorText(error));
+        if (!disposed) showError(errorText(error));
       });
 
     return () => {
@@ -315,48 +268,54 @@ export function useAgentSession({
     };
   }, []);
 
-  function newTab() {
-    tabCountRef.current += 1;
-    const tab = blankTab(newId(), tabCountRef.current);
-    commitTabs((current) => [...current, tab]);
-    setActiveTabId(tab.id);
+  async function newTab() {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    try {
+      const view = await invoke<SessionView>("session_create", { workspace });
+      if (workspaceRef.current !== workspace) return;
+      addTab(view);
+    } catch (error) {
+      if (workspaceRef.current === workspace) showError(errorText(error));
+    }
   }
 
   function selectTab(id: string) {
-    if (tabsRef.current.some((tab) => tab.id === id)) setActiveTabId(id);
+    if (openTabsRef.current.some((tab) => tab.id === id)) activate(id);
   }
 
   function closeTab(id: string) {
-    const current = tabsRef.current;
-    const index = current.findIndex((tab) => tab.id === id);
-    if (index < 0 || current[index].running) return;
+    const index = openTabsRef.current.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+    const tab = sessionsRef.current[id];
+    if (tab?.running) return;
 
-    const remaining = current.filter((tab) => tab.id !== id);
+    const remaining = openTabsRef.current.filter((entry) => entry.id !== id);
+    const next = { ...sessionsRef.current };
+    delete next[id];
+    commitSessions(next);
+
     if (remaining.length === 0) {
-      tabCountRef.current += 1;
-      const replacement = blankTab(newId(), tabCountRef.current);
-      commitTabs(() => [replacement]);
-      setActiveTabId(replacement.id);
+      commitTabs([]);
+      void newTab();
       return;
     }
 
-    commitTabs(() => remaining);
-    setActiveTabId((selected) =>
-      selected === id ? (remaining[index] ?? remaining[index - 1]).id : selected,
-    );
+    commitTabs(remaining);
+    if (activeTabIdRef.current === id) {
+      activate((remaining[index] ?? remaining[index - 1])!.id);
+    }
   }
 
   function send(text: string, attachments: Attachment[] = []): boolean {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || !enabled) return false;
 
-    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
+    const tab = sessionsRef.current[activeTabIdRef.current];
     if (!tab || tab.running || compactingRef.current) return false;
 
-    const nextMessages = [
-      ...tab.messages,
-      { role: "user", content: userContent(trimmed, attachments) },
-    ];
+    const workspaceAtSend = workspaceRef.current;
+    const previous = tab;
     const userItem: Item =
       attachments.length > 0
         ? {
@@ -365,112 +324,75 @@ export function useAgentSession({
             attachments: sentAttachments(attachments),
           }
         : { kind: "user", text: trimmed };
-    const title = sessionTitle([...tab.items, userItem]);
-    runWorkspaceRef.current = workspaceRef.current;
-    pendingSendsRef.current.add(tab.id);
-    commitTabs((current) =>
-      current.map((candidate) =>
-        candidate.id === tab.id
-          ? {
-              ...candidate,
-              title,
-              messages: nextMessages,
-              items: [...candidate.items, userItem],
-              running: true,
-              completed: false,
-              activeRunId: null,
-              runId: null,
-            }
-          : candidate,
+    putSession(
+      withItems(
+        { ...tab, running: true, activeRunId: null },
+        [...tab.items, userItem],
       ),
     );
 
-    invoke<string>("agent_send", { messages: nextMessages })
-      .then((runId) => {
-        pendingSendsRef.current.delete(tab.id);
-        if (runWorkspaceRef.current !== workspaceRef.current) {
-          void invoke("agent_stop", { runId });
+    invoke<SendResult>("session_send", {
+      sessionId: tab.id,
+      text: trimmed,
+      attachments,
+    })
+      .then(({ runId, session }) => {
+        if (workspaceRef.current !== workspaceAtSend) return;
+        const current = sessionsRef.current[tab.id];
+        // A terminal event may already have replaced the optimistic view.
+        if (!current || !current.running) return;
+        // The run finished before the command response; its view is final.
+        if (!session.running) {
+          putSession(session);
           return;
         }
-        if (!tabsRef.current.some((candidate) => candidate.id === tab.id)) {
-          void invoke("agent_stop", { runId });
-          return;
-        }
-        patchTab(tab.id, { runId });
-        drainRunEvents(runId);
+        putSession({
+          ...current,
+          title: session.title,
+          turns: session.turns,
+          updatedAt: session.updatedAt,
+          running: true,
+          activeRunId: runId,
+        });
       })
       .catch((error) => {
-        pendingSendsRef.current.delete(tab.id);
-        if (runWorkspaceRef.current !== workspaceRef.current) return;
-        patchTab(tab.id, {
-          running: false,
-          activeRunId: null,
-          runId: null,
-        });
-        addNotice(tab.id, "error", errorText(error));
+        if (workspaceRef.current !== workspaceAtSend) return;
+        if (!sessionsRef.current[tab.id]) return;
+        putSession(appendNotice(previous, "error", errorText(error)));
       });
     return true;
   }
 
   function stop() {
-    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
-    if (tab?.runId) {
-      void invoke("agent_stop", { runId: tab.runId });
-    }
+    const tab = sessionsRef.current[activeTabIdRef.current];
+    if (tab?.running) void invoke("session_stop", { sessionId: tab.id });
   }
 
   function compact() {
-    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
-    if (!tab || tab.running || compactingRef.current || tab.messages.length === 0) {
+    const tab = sessionsRef.current[activeTabIdRef.current];
+    if (!tab || tab.running || compactingRef.current || tab.turns === 0) {
       return;
     }
 
     compactingRef.current = true;
     setCompacting(true);
-    const workspace = workspaceRef.current;
-    invoke<CompactionResult>("compact_context", { messages: tab.messages })
-      .then((result) => {
-        if (workspace !== workspaceRef.current) return;
-        const live = tabsRef.current.find((candidate) => candidate.id === tab.id);
-        if (!live) return;
-        if (!result.compacted) {
-          addNotice(
-            tab.id,
-            "muted",
-            "Nothing older to compact yet.",
+    const workspaceAtStart = workspaceRef.current;
+    invoke<CompactResult>("session_compact", { sessionId: tab.id })
+      .then(({ session, compacted }) => {
+        if (workspaceRef.current !== workspaceAtStart) return;
+        if (!sessionsRef.current[tab.id]) return;
+        putSession(session);
+        if (!compacted) {
+          updateSession(tab.id, (view) =>
+            appendNotice(view, "muted", "Nothing older to compact yet."),
           );
-          return;
         }
-        if (live.messages !== tab.messages) {
-          addNotice(tab.id, "muted", "Context changed; nothing was compacted.");
-          return;
-        }
-
-        const notice: Item = {
-          kind: "notice",
-          tone: "muted",
-          text: `Compacted context: ${formatTokens(result.before)} → ${formatTokens(result.after)} tokens.`,
-        };
-        commitTabs((current) =>
-          current.map((candidate) =>
-            candidate.id === tab.id
-              ? {
-                  ...applyCompaction(
-                    candidate,
-                    result.messages,
-                    result.before,
-                    result.after,
-                  ),
-                  items: [...candidate.items, notice],
-                }
-              : candidate,
-          ),
-        );
-        persistTab(tab.id, [...tab.items, notice], result.messages);
       })
       .catch((error) => {
-        if (workspace === workspaceRef.current) {
-          addNotice(tab.id, "error", errorText(error));
+        if (workspaceRef.current === workspaceAtStart) {
+          updateSession(tab.id, (view) =>
+            appendNotice(view, "error", errorText(error)),
+          );
         }
       })
       .finally(() => {
@@ -479,56 +401,59 @@ export function useAgentSession({
       });
   }
 
-  function restore(id: string) {
-    const snapshot = history.find((session) => session.id === id);
-    if (!snapshot) return;
-
-    const open = tabsRef.current.find((tab) => tab.savedSessionId === id);
-    if (open) {
-      setActiveTabId(open.id);
+  async function restore(id: string) {
+    if (openTabsRef.current.some((tab) => tab.id === id)) {
+      activate(id);
       return;
     }
 
-    tabCountRef.current += 1;
-    const fresh = blankTab(newId(), tabCountRef.current);
-    const tab: ChatTabState = {
-      ...fresh,
-      title: snapshot.title || sessionTitle(snapshot.items) || fresh.title,
-      messages: snapshot.messages,
-      items: snapshot.items,
-      savedSessionId: snapshot.id,
-      context: snapshot.context ?? null,
-    };
-    // Replacing the welcome tab keeps Cmd+R from leaving an empty chat beside
-    // the restored session.
-    commitTabs((current) => [
-      ...current.filter(
-        (candidate) =>
-          candidate.id !== activeTabId || !isBlankTab(candidate),
-      ),
-      tab,
-    ]);
-    setActiveTabId(tab.id);
+    const workspaceAtStart = workspaceRef.current;
+    try {
+      const view = await invoke<SessionView>("session_get", { id });
+      if (workspaceRef.current !== workspaceAtStart) return;
+      if (openTabsRef.current.some((tab) => tab.id === id)) {
+        activate(id);
+        return;
+      }
+
+      // Replacing the welcome tab keeps Cmd+R from leaving an empty chat beside
+      // the restored session.
+      const activeId = activeTabIdRef.current;
+      const active = sessionsRef.current[activeId];
+      if (activeId && active && isBlankTab(active)) {
+        const remaining = openTabsRef.current.filter((tab) => tab.id !== activeId);
+        commitTabs(remaining);
+        const next = { ...sessionsRef.current };
+        delete next[activeId];
+        commitSessions(next);
+      }
+      addTab(view);
+    } catch (error) {
+      if (workspaceRef.current === workspaceAtStart) showError(errorText(error));
+    }
   }
 
   function respondToApproval(item: ToolItem, choice: ApprovalChoice) {
     if (!item.requestId) return;
-    const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
+    const tab = sessionsRef.current[activeTabIdRef.current];
     if (!tab) return;
 
     const requestId = item.requestId;
-    patchTab(tab.id, {
-      items: tab.items.map((entry) =>
-        entry.kind === "tool" && entry.id === item.id
-          ? {
-              ...entry,
-              status: "running",
-              requestId: undefined,
-              startedAt: choice === "deny" ? undefined : Date.now(),
-            }
-          : entry,
+    updateSession(tab.id, (view) =>
+      withItems(
+        view,
+        view.items.map((entry) =>
+          entry.kind === "tool" && entry.id === item.id
+            ? {
+                ...entry,
+                status: "running" as const,
+                requestId: undefined,
+                startedAt: choice === "deny" ? undefined : Date.now(),
+              }
+            : entry,
+        ),
       ),
-    });
+    );
     invoke("approve_tool", {
       requestId,
       allow: choice !== "deny",
@@ -538,27 +463,34 @@ export function useAgentSession({
         if (choice === "allowAll") setAllowAll(true);
       })
       .catch((error) => {
-        addNotice(tab.id, "error", errorText(error));
+        updateSession(tab.id, (view) =>
+          appendNotice(view, "error", errorText(error)),
+        );
       });
   }
 
   function revokeAllowAll() {
     invoke("revoke_command_allow_all")
       .then(() => setAllowAll(false))
-      .catch((error) => {
-        const tab = tabsRef.current[0];
-        if (tab) addNotice(tab.id, "error", errorText(error));
-      });
+      .catch((error) => showError(errorText(error)));
   }
 
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+  const tabs = openTabs.flatMap(({ id, number }) => {
+    const view = sessions[id];
+    return view ? [toChatTabInfo(view, number)] : [];
+  });
+  const resolvedActiveId = sessions[activeTabId]
+    ? activeTabId
+    : (openTabs[0]?.id ?? "");
+  const activeTab = sessions[resolvedActiveId];
+
   return {
     items: activeTab?.items ?? [],
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
-    compacting,
-    tabs: tabs.map(toChatTabInfo),
-    activeTabId: activeTab?.id ?? "",
+    compacting: compacting || (activeTab?.compacting ?? false),
+    tabs,
+    activeTabId: resolvedActiveId,
     context: activeTab?.context ?? null,
     allowAll,
     history,
@@ -572,5 +504,6 @@ export function useAgentSession({
     respondToApproval,
     revokeAllowAll,
     reloadAllowance: loadAllowance,
+    refreshHistory,
   };
 }

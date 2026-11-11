@@ -1,5 +1,31 @@
 import { settleStreaming, type Item } from "./chat-model.ts";
 
+export type ContextUsage = { used: number; window: number };
+
+/** Authoritative session state from Rust. Items are the rendered transcript. */
+export type SessionView = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  turns: number;
+  items: Item[];
+  context: ContextUsage | null;
+  running: boolean;
+  blocked: boolean;
+  compacting: boolean;
+  activeRunId: string | null;
+};
+
+export type SessionSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  turns: number;
+  running: boolean;
+  blocked: boolean;
+  compacting: boolean;
+};
+
 export type ChatTabInfo = {
   id: string;
   title: string;
@@ -7,101 +33,63 @@ export type ChatTabInfo = {
   status: "working" | "idle" | "done" | "block";
 };
 
-export type ChatTabState = {
-  id: string;
-  title: string;
-  running: boolean;
-  completed: boolean;
-  items: Item[];
-  messages: unknown[];
-  context: ContextUsage | null;
-  activeRunId: string | null;
-  runId: string | null;
-  savedSessionId: string | null;
-};
-
-export type ContextUsage = { used: number; window: number };
-
 export type StreamDelta = {
   kind: "assistant" | "reasoning";
+  sessionId: string;
   runId: string;
   text: string;
 };
 
-/** Create a tab from an id supplied by the caller so conversions stay deterministic. */
-export function blankTab(id: string, number: number): ChatTabState {
+/** Replace items and keep the blocked flag consistent with them. */
+export function withItems(tab: SessionView, items: Item[]): SessionView {
   return {
-    id,
-    title: `Chat ${number}`,
-    running: false,
-    completed: false,
-    items: [],
-    messages: [],
-    context: null,
-    activeRunId: null,
-    runId: null,
-    savedSessionId: null,
+    ...tab,
+    items,
+    blocked: items.some(
+      (item) => item.kind === "tool" && item.status === "awaiting",
+    ),
   };
 }
 
-/** Record the size of the conversation the next request will send. */
 export function applyContext(
-  tab: ChatTabState,
+  tab: SessionView,
   event: ContextUsage,
-): ChatTabState {
+): SessionView {
   return { ...tab, context: { used: event.used, window: event.window } };
 }
 
-/** Swap in checkpointed history and lower the gauge by the estimate removed. */
-export function applyCompaction(
-  tab: ChatTabState,
-  messages: unknown[],
-  before: number,
-  after: number,
-): ChatTabState {
-  const removed = Math.max(0, before - after);
-  return {
-    ...tab,
-    messages,
-    context: tab.context
-      ? {
-          ...tab.context,
-          used: Math.max(0, tab.context.used - removed),
-        }
-      : null,
-  };
-}
-
-export function tabStatus(tab: ChatTabState): ChatTabInfo["status"] {
+export function tabStatus(tab: SessionView): ChatTabInfo["status"] {
   const blocked = tab.items.some(
     (item) => item.kind === "tool" && item.status === "awaiting",
   );
   if (blocked) return "block";
   if (tab.running) return "working";
-  if (tab.completed) return "done";
+  if (tab.turns > 0) return "done";
   return "idle";
 }
 
-export function toChatTabInfo(tab: ChatTabState): ChatTabInfo {
+export function toChatTabInfo(tab: SessionView, number: number): ChatTabInfo {
   return {
     id: tab.id,
-    title: tab.title,
+    title: tab.title || `Chat ${number}`,
     running: tab.running,
     status: tabStatus(tab),
   };
 }
 
-/** Merge a batch of streamed deltas into one tab, settling the previous stream. */
+/** Merge a batch of streamed deltas into one session. */
 export function applyDeltas(
-  tab: ChatTabState,
+  tab: SessionView,
   runId: string,
   deltas: readonly StreamDelta[],
-): ChatTabState {
+): SessionView {
   let items = tab.items;
   for (const delta of deltas) {
     const last = items[items.length - 1];
     if (
-      last?.kind === delta.kind &&
+      last &&
+      last.kind === delta.kind &&
+      (last.kind === "assistant" || last.kind === "reasoning") &&
       last.streaming &&
       (last.kind === "assistant" || last.runId === delta.runId)
     ) {
@@ -110,123 +98,146 @@ export function applyDeltas(
         { ...last, text: last.text + delta.text },
       ];
     } else {
-      items = [...settleStreaming(items), { ...delta, streaming: true }];
+      items = [
+        ...settleStreaming(items),
+        {
+          kind: delta.kind,
+          runId: delta.runId,
+          text: delta.text,
+          streaming: true,
+        },
+      ];
     }
   }
-  return { ...tab, items, activeRunId: runId };
+  return { ...withItems(tab, items), running: true, activeRunId: runId };
 }
 
 export function applyToolStart(
-  tab: ChatTabState,
+  tab: SessionView,
   event: { runId: string; id: string; name: string; summary: string },
   startedAt: number,
-): ChatTabState {
+): SessionView {
+  const items = [
+    ...settleStreaming(tab.items),
+    {
+      kind: "tool" as const,
+      runId: event.runId,
+      id: event.id,
+      name: event.name,
+      status: "pending" as const,
+      summary: event.summary,
+      startedAt,
+    },
+  ];
   return {
-    ...tab,
+    ...withItems(tab, items),
+    running: true,
     activeRunId: event.runId,
-    items: [
-      ...settleStreaming(tab.items),
-      {
-        kind: "tool",
-        runId: event.runId,
-        id: event.id,
-        name: event.name,
-        status: "pending",
-        summary: event.summary,
-        startedAt,
-      },
-    ],
   };
 }
 
 export function applyToolResult(
-  tab: ChatTabState,
+  tab: SessionView,
   event: { id: string; ok: boolean; output: string },
   finishedAt: number,
-): ChatTabState {
-  return {
-    ...tab,
-    items: tab.items.map((item) =>
-      item.kind === "tool" && item.id === event.id
-        ? {
-            ...item,
-            status: event.ok ? "ok" : "error",
-            output: event.output,
-            durationMs:
-              item.startedAt === undefined
-                ? undefined
-                : finishedAt - item.startedAt,
-            startedAt: undefined,
-          }
-        : item,
-    ),
-  };
+): SessionView {
+  const items = tab.items.map((item) =>
+    item.kind === "tool" && item.id === event.id
+      ? {
+          ...item,
+          status: event.ok ? ("ok" as const) : ("error" as const),
+          output: event.output,
+          durationMs:
+            item.startedAt === undefined
+              ? undefined
+              : finishedAt - item.startedAt,
+          startedAt: undefined,
+        }
+      : item,
+  );
+  return withItems(tab, items);
 }
 
 export function applyApproval(
-  tab: ChatTabState,
+  tab: SessionView,
   event: {
     id: string;
     requestId: string;
     prompt: string;
     detail: string;
   },
-): ChatTabState {
-  return {
-    ...tab,
-    items: tab.items.map((item) =>
-      item.kind === "tool" && item.id === event.id
+): SessionView {
+  const items = tab.items.map((item) =>
+    item.kind === "tool" && item.id === event.id
+      ? {
+          ...item,
+          status: "awaiting" as const,
+          requestId: event.requestId,
+          approvalPrompt: event.prompt,
+          approvalDetail: event.detail,
+        }
+      : item,
+  );
+  return withItems(tab, items);
+}
+
+export function applyApprovalResolved(
+  tab: SessionView,
+  event: { id: string; allow: boolean },
+  now: number,
+): SessionView {
+  const items = tab.items.map((item) =>
+    item.kind === "tool" && item.id === event.id
+      ? {
+          ...item,
+          status: "running" as const,
+          requestId: undefined,
+          approvalPrompt: undefined,
+          approvalDetail: undefined,
+          startedAt: event.allow ? now : undefined,
+        }
+      : item,
+  );
+  return withItems(tab, items);
+}
+
+export function appendNotice(
+  tab: SessionView,
+  tone: "error" | "muted",
+  text: string,
+): SessionView {
+  return withItems(tab, [...tab.items, { kind: "notice", tone, text }]);
+}
+
+/** Settle a run whose terminal event could not include a persisted session. */
+export function settleRun(
+  tab: SessionView,
+  notice?: { tone: "error" | "muted"; text: string },
+): SessionView {
+  const items = settleStreaming(
+    tab.items.map((item) =>
+      item.kind === "tool" &&
+      (item.status === "pending" ||
+        item.status === "awaiting" ||
+        item.status === "running")
         ? {
             ...item,
-            status: "awaiting",
-            requestId: event.requestId,
-            approvalPrompt: event.prompt,
-            approvalDetail: event.detail,
+            status: "error" as const,
+            requestId: undefined,
+            startedAt: undefined,
+            approvalPrompt: undefined,
+            approvalDetail: undefined,
           }
         : item,
     ),
-  };
-}
-
-export function finishDone(
-  tab: ChatTabState,
-  messages: unknown[],
-): ChatTabState {
+  );
   return {
-    ...tab,
-    messages,
+    ...withItems(
+      tab,
+      notice ? [...items, { kind: "notice", ...notice }] : items,
+    ),
     running: false,
-    completed: true,
     activeRunId: null,
-    runId: null,
-    items: settleStreaming(tab.items),
-  };
-}
-
-export function finishError(tab: ChatTabState, message: string): ChatTabState {
-  return {
-    ...tab,
-    running: false,
-    completed: false,
-    activeRunId: null,
-    runId: null,
-    items: [
-      ...settleStreaming(tab.items),
-      { kind: "notice", tone: "error", text: message },
-    ],
-  };
-}
-
-export function finishStopped(tab: ChatTabState): ChatTabState {
-  return {
-    ...tab,
-    running: false,
-    completed: false,
-    activeRunId: null,
-    runId: null,
-    items: [
-      ...settleStreaming(tab.items),
-      { kind: "notice", tone: "muted", text: "Stopped." },
-    ],
+    blocked: false,
   };
 }

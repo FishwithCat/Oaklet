@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   formatBytes,
   sentAttachments,
-  userContent,
 } from "../src/features/chat/attachments.ts";
 
 const image = {
@@ -20,30 +19,6 @@ const file = {
   bytes: 120,
   text: "# Notes\n\nShip it.",
 };
-
-test("text without attachments stays a plain string", () => {
-  assert.equal(userContent("hello", []), "hello");
-});
-
-test("images become image parts after the typed text", () => {
-  assert.deepEqual(userContent("look", [image]), [
-    { type: "text", text: "look" },
-    { type: "image_url", image_url: { url: image.dataUrl } },
-  ]);
-});
-
-test("an image-only message has no empty text part", () => {
-  assert.deepEqual(userContent("", [image]), [
-    { type: "image_url", image_url: { url: image.dataUrl } },
-  ]);
-});
-
-test("text files are inlined with their name", () => {
-  const parts = userContent("read this", [file]);
-  assert.equal(parts.length, 2);
-  assert.equal(parts[0].text, "read this");
-  assert.match(parts[1].text, /^Attached file notes\.md:\n\n# Notes/);
-});
 
 test("sent attachments keep the thumbnail but drop file contents", () => {
   assert.deepEqual(sentAttachments([image, file]), [

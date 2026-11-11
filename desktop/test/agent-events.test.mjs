@@ -8,6 +8,7 @@ const handlers = () => ({
   onToolStart: () => {},
   onToolResult: () => {},
   onApproval: () => {},
+  onApprovalResolved: () => {},
   onDone: () => {},
   onContext: () => {},
   onError: () => {},
@@ -30,6 +31,7 @@ test("registers every agent event and releases all listeners", async () => {
     "agent:tool_start",
     "agent:tool_result",
     "agent:approval",
+    "agent:approval_resolved",
     "agent:done",
     "agent:context",
     "agent:error",
@@ -52,12 +54,20 @@ test("dispatches each payload to its handler", async () => {
   received.onDone = (payload) => seen.push(["done", payload]);
 
   await subscribeAgentEvents(received, register);
-  registered.get("agent:delta")({ runId: "run-1", text: "hi" });
-  registered.get("agent:done")({ runId: "run-1", messages: [] });
+  registered.get("agent:delta")({
+    sessionId: "session-1",
+    runId: "run-1",
+    text: "hi",
+  });
+  registered.get("agent:done")({
+    sessionId: "session-1",
+    runId: "run-1",
+    session: null,
+  });
 
   assert.deepEqual(seen, [
-    ["delta", { runId: "run-1", text: "hi" }],
-    ["done", { runId: "run-1", messages: [] }],
+    ["delta", { sessionId: "session-1", runId: "run-1", text: "hi" }],
+    ["done", { sessionId: "session-1", runId: "run-1", session: null }],
   ]);
 });
 

@@ -5,14 +5,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { HistoryRegular } from "@mingcute/react/core-regular";
-import type { SessionSnapshot } from "./session-history";
+import type { SessionSummary } from "./session-model";
 
 export function SessionHistory({
   sessions,
   onPick,
   onClose,
 }: {
-  sessions: SessionSnapshot[];
+  sessions: SessionSummary[];
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
@@ -102,9 +102,7 @@ export function SessionHistory({
             ref={listRef}
           >
             {matches.map((session, index) => {
-              const turns = session.items.filter(
-                (item) => item.kind === "user",
-              ).length;
+              const turns = session.turns;
               return (
                 <li
                   key={session.id}

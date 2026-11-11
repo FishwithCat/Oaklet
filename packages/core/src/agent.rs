@@ -4,93 +4,19 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
-use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
+use crate::chat::RunContext;
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
 use crate::repeat::RepeatGuard;
 use crate::tools::{
     ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
 };
-use crate::{AppConfig, PendingApproval, SharedState, auto_approves_command};
+use crate::{AppConfig, PendingApproval, auto_approves_command};
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeltaEvent {
-    run_id: String,
-    text: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReasoningEvent {
-    run_id: String,
-    text: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolStartEvent {
-    run_id: String,
-    id: String,
-    name: String,
-    args: Value,
-    summary: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ToolResultEvent {
-    run_id: String,
-    id: String,
-    ok: bool,
-    output: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ContextEvent {
-    run_id: String,
-    used: usize,
-    window: usize,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApprovalEvent {
-    run_id: String,
-    id: String,
-    request_id: String,
-    tool: String,
-    args: Value,
-    prompt: String,
-    detail: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DoneEvent {
-    run_id: String,
-    messages: Vec<Value>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RunIdEvent {
-    run_id: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ErrorEvent {
-    run_id: String,
-    message: String,
-}
 
 #[derive(Default)]
 struct ToolCall {
@@ -107,39 +33,10 @@ struct StreamDelta {
     usage: Option<usize>,
 }
 
-fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
-    let _ = app.emit(event, payload);
-}
-
-fn fail(app: &AppHandle, run_id: &str, message: impl Into<String>) {
-    emit(
-        app,
-        "agent:error",
-        ErrorEvent {
-            run_id: run_id.to_string(),
-            message: message.into(),
-        },
-    );
-}
-
-fn stopped(app: &AppHandle, run_id: &str) {
-    emit(
-        app,
-        "agent:stopped",
-        RunIdEvent {
-            run_id: run_id.to_string(),
-        },
-    );
-}
-
-pub async fn run(
-    app: AppHandle,
-    state: SharedState,
-    run_id: String,
-    input: Vec<Value>,
-    config: AppConfig,
-    cancel: Cancel,
-) {
+/// One turn. The backend already persisted the user message and registered the
+/// run; this loop streams, executes tools, and finishes through `ctx`, which
+/// writes the transcript and publishes the terminal event.
+pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunContext) {
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
@@ -147,11 +44,11 @@ pub async fn run(
     {
         Ok(client) => client,
         Err(err) => {
-            fail(
-                &app,
-                &run_id,
+            ctx.finish_error(
+                strip_system(&input),
                 format!("Could not create HTTP client: {err}"),
-            );
+            )
+            .await;
             return;
         }
     };
@@ -159,11 +56,11 @@ pub async fn run(
     let workspace = match Workspace::new(&config.workspace) {
         Ok(workspace) => workspace,
         Err(message) => {
-            fail(&app, &run_id, message);
+            ctx.finish_error(strip_system(&input), message).await;
             return;
         }
     };
-    let tools = ToolRegistry::with_host_tools(&app, &config).await;
+    let tools = ToolRegistry::with_host_tools(ctx.app(), &config).await;
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
@@ -184,7 +81,7 @@ pub async fn run(
 
     loop {
         if cancel.is_cancelled() {
-            stopped(&app, &run_id);
+            ctx.finish_stopped(messages[1..].to_vec()).await;
             return;
         }
 
@@ -202,9 +99,9 @@ pub async fn run(
                 Ok(None) => {}
                 Err(err) => {
                     if cancel.is_cancelled() {
-                        stopped(&app, &run_id);
+                        ctx.finish_stopped(messages[1..].to_vec()).await;
                     } else {
-                        fail(&app, &run_id, err);
+                        ctx.finish_error(messages[1..].to_vec(), err).await;
                     }
                     return;
                 }
@@ -215,16 +112,16 @@ pub async fn run(
         // compaction and while the estimate is still fresh.
         let pressure = meter.pressure(&messages);
         note_pressure(pressure);
-        emit_context(&app, &run_id, pressure, config.context_window);
+        ctx.context(pressure, config.context_window);
 
         let (content, reasoning, calls, prompt_tokens) =
-            match stream_step(&app, &run_id, &client, &config, &tools, &messages, &cancel).await {
+            match stream_step(&ctx, &client, &config, &tools, &messages, &cancel).await {
                 Ok(result) => result,
                 Err(err) => {
                     if cancel.is_cancelled() {
-                        stopped(&app, &run_id);
+                        ctx.finish_stopped(messages[1..].to_vec()).await;
                     } else {
-                        fail(&app, &run_id, err);
+                        ctx.finish_error(messages[1..].to_vec(), err).await;
                     }
                     return;
                 }
@@ -234,28 +131,20 @@ pub async fn run(
         }
 
         if content.trim().is_empty() && calls.is_empty() {
-            fail(&app, &run_id, "The model returned an empty response.");
+            ctx.finish_error(
+                messages[1..].to_vec(),
+                "The model returned an empty response.",
+            )
+            .await;
             return;
         }
 
         messages.push(assistant_message(&content, &reasoning, &calls));
-        emit_context(
-            &app,
-            &run_id,
-            meter.pressure(&messages),
-            config.context_window,
-        );
+        ctx.context(meter.pressure(&messages), config.context_window);
         if calls.is_empty() {
-            emit(
-                &app,
-                "agent:done",
-                DoneEvent {
-                    run_id,
-                    // The system prompt is rebuilt every turn; keep it out of
-                    // the conversation the UI sends back.
-                    messages: messages[1..].to_vec(),
-                },
-            );
+            // The system prompt is rebuilt every turn; keep it out of the
+            // conversation that is saved.
+            ctx.finish_done(messages[1..].to_vec()).await;
             return;
         }
 
@@ -265,34 +154,15 @@ pub async fn run(
 
         for call in &calls {
             if cancel.is_cancelled() {
-                stopped(&app, &run_id);
+                ctx.finish_stopped(messages[1..].to_vec()).await;
                 return;
             }
 
             let args = match parse_args(&call.arguments) {
                 Ok(args) => args,
                 Err(message) => {
-                    emit(
-                        &app,
-                        "agent:tool_start",
-                        ToolStartEvent {
-                            run_id: run_id.clone(),
-                            id: call.id.clone(),
-                            name: call.name.clone(),
-                            args: Value::Null,
-                            summary: String::new(),
-                        },
-                    );
-                    emit(
-                        &app,
-                        "agent:tool_result",
-                        ToolResultEvent {
-                            run_id: run_id.clone(),
-                            id: call.id.clone(),
-                            ok: false,
-                            output: message.clone(),
-                        },
-                    );
+                    ctx.tool_start(&call.id, &call.name, "");
+                    ctx.tool_result(&call.id, false, &message);
                     if let Some(reminder) =
                         guard.observe(&call.name, &Value::String(call.arguments.clone()))
                     {
@@ -304,22 +174,10 @@ pub async fn run(
             };
 
             let summary = tools.summary(&call.name, &args);
-            emit(
-                &app,
-                "agent:tool_start",
-                ToolStartEvent {
-                    run_id: run_id.clone(),
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    args: args.clone(),
-                    summary,
-                },
-            );
+            ctx.tool_start(&call.id, &call.name, &summary);
 
             let approver = TauriApprover {
-                app: &app,
-                state: &state,
-                run_id: &run_id,
+                ctx: &ctx,
                 call_id: &call.id,
                 workspace: tool_context.workspace.root(),
                 cancel: &cancel,
@@ -330,20 +188,11 @@ pub async fn run(
             let outcome = tools
                 .execute(&tool_context, &approver, &call.name, args)
                 .await;
-            emit(
-                &app,
-                "agent:tool_result",
-                ToolResultEvent {
-                    run_id: run_id.clone(),
-                    id: call.id.clone(),
-                    ok: outcome.ok,
-                    output: outcome.output.clone(),
-                },
-            );
+            ctx.tool_result(&call.id, outcome.ok, &outcome.output);
             messages.push(tool_message(&call.id, outcome.output));
 
             if cancel.is_cancelled() {
-                stopped(&app, &run_id);
+                ctx.finish_stopped(messages[1..].to_vec()).await;
                 return;
             }
         }
@@ -354,23 +203,19 @@ pub async fn run(
     }
 }
 
+fn strip_system(input: &[Value]) -> Vec<Value> {
+    input
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) != Some("system"))
+        .cloned()
+        .collect()
+}
+
 /// Print context pressure while developing; release builds stay quiet.
 fn note_pressure(pressure: usize) {
     if cfg!(debug_assertions) {
         eprintln!("[oaklet] context pressure ~{pressure} tokens");
     }
-}
-
-fn emit_context(app: &AppHandle, run_id: &str, used: usize, window: usize) {
-    emit(
-        app,
-        "agent:context",
-        ContextEvent {
-            run_id: run_id.to_string(),
-            used,
-            window,
-        },
-    );
 }
 
 fn note_compaction(before: usize, after: usize) {
@@ -380,8 +225,7 @@ fn note_compaction(before: usize, after: usize) {
 }
 
 async fn stream_step(
-    app: &AppHandle,
-    run_id: &str,
+    ctx: &RunContext,
     client: &reqwest::Client,
     config: &AppConfig,
     tools: &ToolRegistry,
@@ -439,7 +283,7 @@ async fn stream_step(
                     if let Some(tokens) = delta.usage {
                         prompt_tokens = Some(tokens);
                     }
-                    emit_stream_delta(app, run_id, delta);
+                    emit_stream_delta(ctx, delta);
                 }
             }
         }
@@ -451,7 +295,7 @@ async fn stream_step(
         if let Some(tokens) = delta.usage {
             prompt_tokens = Some(tokens);
         }
-        emit_stream_delta(app, run_id, delta);
+        emit_stream_delta(ctx, delta);
     }
 
     let mut calls: Vec<ToolCall> = calls.into_values().collect();
@@ -463,33 +307,17 @@ async fn stream_step(
     Ok((content, reasoning, calls, prompt_tokens))
 }
 
-fn emit_stream_delta(app: &AppHandle, run_id: &str, delta: StreamDelta) {
+fn emit_stream_delta(ctx: &RunContext, delta: StreamDelta) {
     if let Some(text) = delta.reasoning {
-        emit(
-            app,
-            "agent:reasoning",
-            ReasoningEvent {
-                run_id: run_id.to_string(),
-                text,
-            },
-        );
+        ctx.reasoning(&text);
     }
     if let Some(text) = delta.content {
-        emit(
-            app,
-            "agent:delta",
-            DeltaEvent {
-                run_id: run_id.to_string(),
-                text,
-            },
-        );
+        ctx.delta(&text);
     }
 }
 
 struct TauriApprover<'a> {
-    app: &'a AppHandle,
-    state: &'a SharedState,
-    run_id: &'a str,
+    ctx: &'a RunContext,
     call_id: &'a str,
     workspace: &'a Path,
     cancel: &'a Cancel,
@@ -498,16 +326,9 @@ struct TauriApprover<'a> {
 impl Approver for TauriApprover<'_> {
     fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, ApprovalDecision> {
         Box::pin(async move {
-            let allowed = request_approval(
-                self.app,
-                self.state,
-                self.run_id,
-                self.call_id,
-                self.workspace,
-                request,
-                self.cancel,
-            )
-            .await;
+            let allowed =
+                request_approval(self.ctx, self.call_id, self.workspace, request, self.cancel)
+                    .await;
             if allowed {
                 ApprovalDecision::Allow
             } else if self.cancel.is_cancelled() {
@@ -520,10 +341,8 @@ impl Approver for TauriApprover<'_> {
 }
 
 async fn request_approval(
-    app: &AppHandle,
-    state: &SharedState,
-    run_id: &str,
-    id: &str,
+    ctx: &RunContext,
+    call_id: &str,
     workspace: &Path,
     request: ApprovalRequest,
     cancel: &Cancel,
@@ -532,6 +351,7 @@ async fn request_approval(
         return false;
     }
 
+    let state = ctx.state();
     let granted = state
         .command_allow_all
         .lock()
@@ -547,7 +367,7 @@ async fn request_approval(
         approvals.insert(
             request_id.clone(),
             PendingApproval {
-                run_id: run_id.to_string(),
+                run_id: ctx.run_id().to_string(),
                 workspace: workspace.to_path_buf(),
                 sender,
             },
@@ -562,18 +382,13 @@ async fn request_approval(
         return false;
     }
 
-    emit(
-        app,
-        "agent:approval",
-        ApprovalEvent {
-            run_id: run_id.to_string(),
-            id: id.to_string(),
-            request_id: request_id.clone(),
-            tool: request.tool,
-            args: request.args,
-            prompt: request.prompt,
-            detail: request.detail,
-        },
+    ctx.approval(
+        call_id,
+        &request_id,
+        &request.tool,
+        request.args,
+        &request.prompt,
+        &request.detail,
     );
 
     let decision = tokio::time::timeout(APPROVAL_TIMEOUT, receiver).await;
@@ -581,7 +396,9 @@ async fn request_approval(
         approvals.remove(&request_id);
     }
 
-    matches!(decision, Ok(Ok(true)))
+    let allowed = matches!(decision, Ok(Ok(true)));
+    ctx.approval_resolved(call_id, allowed);
+    allowed
 }
 
 fn apply_sse_line(
@@ -743,11 +560,11 @@ fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[Stri
     if !model_sources.is_empty() {
         rules.push(format!(
             "This workspace has LikeC4 architecture sources ({}). After you finish code changes, \
-update the affected model before your final answer so it matches the code. Read the current model \
-first and preserve its element and view IDs, style, and manual descriptions; keep the edit minimal \
-and grounded in the code you changed. Use likec4_mcp to understand existing elements and \
-relationships, and file tools to edit. If the code change has no architectural effect, leave the \
-model unchanged and say so; do not create a model when none exists.",
+             update the affected model before your final answer so it matches the code. Read the current model \
+             first and preserve its element and view IDs, style, and manual descriptions; keep the edit minimal \
+             and grounded in the code you changed. Use likec4_mcp to understand existing elements and \
+             relationships, and file tools to edit. If the code change has no architectural effect, leave the \
+             model unchanged and say so; do not create a model when none exists.",
             model_sources.join(", ")
         ));
     }
@@ -755,9 +572,9 @@ model unchanged and say so; do not create a model when none exists.",
 
     format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
-inspect and change the project in their workspace.\n\n\
-Workspace: {workspace}\nPlatform: {platform}\n\n\
-Rules:\n- {rules}",
+         inspect and change the project in their workspace.\n\n\
+         Workspace: {workspace}\nPlatform: {platform}\n\n\
+         Rules:\n- {rules}",
         workspace = config.workspace,
         platform = std::env::consts::OS,
         rules = rules.join("\n- "),

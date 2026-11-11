@@ -1,20 +1,24 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { SessionView } from "./session-model.ts";
 
-export type DeltaEvent = { runId: string; text: string };
-export type ReasoningEvent = { runId: string; text: string };
+export type DeltaEvent = { sessionId: string; runId: string; text: string };
+export type ReasoningEvent = { sessionId: string; runId: string; text: string };
 export type ToolStartEvent = {
+  sessionId: string;
   runId: string;
   id: string;
   name: string;
   summary: string;
 };
 export type ToolResultEvent = {
+  sessionId: string;
   runId: string;
   id: string;
   ok: boolean;
   output: string;
 };
 export type ApprovalEvent = {
+  sessionId: string;
   runId: string;
   id: string;
   requestId: string;
@@ -22,10 +26,34 @@ export type ApprovalEvent = {
   prompt: string;
   detail: string;
 };
-export type DoneEvent = { runId: string; messages: unknown[] };
-export type ContextEvent = { runId: string; used: number; window: number };
-export type ErrorEvent = { runId: string; message: string };
-export type RunIdEvent = { runId: string };
+export type ApprovalResolvedEvent = {
+  sessionId: string;
+  runId: string;
+  id: string;
+  allow: boolean;
+};
+export type DoneEvent = {
+  sessionId: string;
+  runId: string;
+  session: SessionView | null;
+};
+export type ContextEvent = {
+  sessionId: string;
+  runId: string;
+  used: number;
+  window: number;
+};
+export type ErrorEvent = {
+  sessionId: string;
+  runId: string;
+  message: string;
+  session: SessionView | null;
+};
+export type StoppedEvent = {
+  sessionId: string;
+  runId: string;
+  session: SessionView | null;
+};
 
 export type AgentEventHandlers = {
   onDelta: (event: DeltaEvent) => void;
@@ -33,10 +61,11 @@ export type AgentEventHandlers = {
   onToolStart: (event: ToolStartEvent) => void;
   onToolResult: (event: ToolResultEvent) => void;
   onApproval: (event: ApprovalEvent) => void;
+  onApprovalResolved: (event: ApprovalResolvedEvent) => void;
   onDone: (event: DoneEvent) => void;
   onContext: (event: ContextEvent) => void;
   onError: (event: ErrorEvent) => void;
-  onStopped: (event: RunIdEvent) => void;
+  onStopped: (event: StoppedEvent) => void;
 };
 
 export type RegisterListener = <T>(
@@ -80,12 +109,15 @@ export async function subscribeAgentEvents(
     await add<ApprovalEvent>("agent:approval", (payload) =>
       handlers.onApproval(payload),
     );
+    await add<ApprovalResolvedEvent>("agent:approval_resolved", (payload) =>
+      handlers.onApprovalResolved(payload),
+    );
     await add<DoneEvent>("agent:done", (payload) => handlers.onDone(payload));
     await add<ContextEvent>("agent:context", (payload) =>
       handlers.onContext(payload),
     );
     await add<ErrorEvent>("agent:error", (payload) => handlers.onError(payload));
-    await add<RunIdEvent>("agent:stopped", (payload) =>
+    await add<StoppedEvent>("agent:stopped", (payload) =>
       handlers.onStopped(payload),
     );
   } catch (error) {

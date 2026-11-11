@@ -106,7 +106,10 @@ function App() {
       } else if (action === "new-terminal") {
         terminalRef.current?.addTab();
       } else if (action === "history") {
-        if (!session.running) setHistoryOpen(true);
+        if (!session.running) {
+          session.refreshHistory();
+          setHistoryOpen(true);
+        }
       } else {
         session.stop();
       }

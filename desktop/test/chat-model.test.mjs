@@ -87,7 +87,7 @@ test("settleStreaming clears only streaming assistant and reasoning items", () =
 });
 
 test("isBlankTab only accepts an idle, unused tab", () => {
-  const blank = { running: false, items: [], savedSessionId: null };
+  const blank = { running: false, items: [] };
 
   assert.equal(isBlankTab(blank), true);
   assert.equal(isBlankTab({ ...blank, running: true }), false);
@@ -95,7 +95,6 @@ test("isBlankTab only accepts an idle, unused tab", () => {
     isBlankTab({ ...blank, items: [{ kind: "notice", tone: "muted", text: "Stopped." }] }),
     false,
   );
-  assert.equal(isBlankTab({ ...blank, savedSessionId: "saved" }), false);
 });
 
 test("merging a prompt preserves an existing composer draft", () => {

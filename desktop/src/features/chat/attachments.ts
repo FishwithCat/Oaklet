@@ -142,30 +142,3 @@ export function sentAttachments(
         },
   );
 }
-
-/**
- * Build the `content` of a user message. Text is kept as a plain string until
- * an attachment needs the multimodal part array.
- */
-export function userContent(
-  text: string,
-  attachments: readonly Attachment[],
-): string | Array<Record<string, unknown>> {
-  if (attachments.length === 0) return text;
-  const parts: Array<Record<string, unknown>> = [];
-  if (text) parts.push({ type: "text", text });
-  for (const attachment of attachments) {
-    if (attachment.kind === "image") {
-      parts.push({
-        type: "image_url",
-        image_url: { url: attachment.dataUrl },
-      });
-    } else {
-      parts.push({
-        type: "text",
-        text: `Attached file ${attachment.name}:\n\n${attachment.text}`,
-      });
-    }
-  }
-  return parts;
-}

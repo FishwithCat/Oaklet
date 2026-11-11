@@ -1,11 +1,11 @@
 mod agent;
 mod architecture;
+mod chat;
 mod compaction;
 mod context;
-mod git;
 mod files;
+mod git;
 mod repeat;
-#[allow(dead_code)]
 mod store;
 mod terminal;
 mod tools;
@@ -20,15 +20,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
-use tools::CancelHandle;
-
 pub type SharedState = Arc<AppState>;
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
     pub approvals: Mutex<HashMap<String, PendingApproval>>,
-    pub runs: Mutex<HashMap<String, CancelHandle>>,
+    pub chat: chat::ChatState,
     /// Canonical workspace where `run_command` approvals were waived for this
     /// session. `None` means every command is confirmed.
     pub command_allow_all: Mutex<Option<PathBuf>>,
@@ -381,6 +379,7 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
         *granted = None;
     }
     if previous_workspace != config.workspace {
+        chat::stop_all(state.inner());
         architecture::cancel_for_workspace_change(state.inner());
     }
     Ok(config)
@@ -410,110 +409,6 @@ async fn architecture_load(
     let workspace = workspace_path(&state)?;
     let shared = state.inner().clone();
     architecture::load(app, shared, workspace, root, include_ignored).await
-}
-
-#[tauri::command]
-fn agent_send(
-    app: AppHandle,
-    state: State<'_, SharedState>,
-    messages: Vec<serde_json::Value>,
-) -> Result<String, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
-        .clone();
-    if !Path::new(&config.workspace).is_dir() {
-        return Err("Choose an existing workspace folder first.".into());
-    }
-
-    let run_id = state.next_id();
-    let (cancel_handle, cancel) = CancelHandle::new();
-    state
-        .runs
-        .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
-        .insert(run_id.clone(), cancel_handle);
-
-    let shared = state.inner().clone();
-    let id = run_id.clone();
-    tauri::async_runtime::spawn(async move {
-        agent::run(app, shared.clone(), id.clone(), messages, config, cancel).await;
-        if let Ok(mut runs) = shared.runs.lock() {
-            runs.remove(&id);
-        }
-    });
-
-    Ok(run_id)
-}
-
-#[tauri::command]
-fn agent_stop(state: State<'_, SharedState>, run_id: String) {
-    if let Ok(runs) = state.runs.lock()
-        && let Some(cancel) = runs.get(&run_id)
-    {
-        cancel.cancel();
-    }
-
-    let mut approvals = match state.approvals.lock() {
-        Ok(approvals) => approvals,
-        Err(_) => return,
-    };
-    let ids: Vec<String> = approvals
-        .iter()
-        .filter(|(_, pending)| pending.run_id == run_id)
-        .map(|(id, _)| id.clone())
-        .collect();
-    for id in ids {
-        if let Some(pending) = approvals.remove(&id) {
-            let _ = pending.sender.send(false);
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CompactionResult {
-    messages: Vec<serde_json::Value>,
-    before: usize,
-    after: usize,
-    compacted: bool,
-}
-
-/// Replace older turns of an idle conversation with a checkpoint, on request
-/// from the composer's context gauge.
-#[tauri::command]
-async fn compact_context(
-    state: State<'_, SharedState>,
-    messages: Vec<serde_json::Value>,
-) -> Result<CompactionResult, String> {
-    let config = state
-        .config
-        .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
-        .clone();
-    let before = context::estimate_tokens(&messages);
-    let (_handle, cancel) = CancelHandle::new();
-    let next =
-        compaction::compact_messages(&reqwest::Client::new(), &config, &messages, &cancel).await?;
-
-    match next {
-        Some(messages) => {
-            let after = context::estimate_tokens(&messages);
-            Ok(CompactionResult {
-                messages,
-                before,
-                after,
-                compacted: true,
-            })
-        }
-        None => Ok(CompactionResult {
-            messages,
-            before,
-            after: before,
-            compacted: false,
-        }),
-    }
 }
 
 #[tauri::command]
@@ -784,11 +679,14 @@ pub fn run() {
             if let Ok(canonical) = Path::new(&config.workspace).canonicalize() {
                 config.workspace = canonical.to_string_lossy().into_owned();
             }
+            let data_dir = app.path().app_data_dir()?;
+            let chat = chat::ChatState::open(&data_dir.join("oaklet.db"))
+                .map_err(std::io::Error::other)?;
             app.manage(Arc::new(AppState {
                 config: Mutex::new(config),
                 config_path,
                 approvals: Mutex::new(HashMap::new()),
-                runs: Mutex::new(HashMap::new()),
+                chat,
                 command_allow_all: Mutex::new(None),
                 terminal: Mutex::new(HashMap::new()),
                 architecture: Mutex::new(architecture::ArchitectureCache::default()),
@@ -799,9 +697,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
-            agent_send,
-            agent_stop,
-            compact_context,
+            chat::session_create,
+            chat::session_list,
+            chat::session_get,
+            chat::session_send,
+            chat::session_stop,
+            chat::session_compact,
+            chat::session_import,
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,
@@ -830,6 +732,7 @@ pub fn run() {
                 tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
             ) {
                 architecture::cancel_all(app.state::<SharedState>().inner());
+                chat::stop_all(app.state::<SharedState>().inner());
             }
         });
 }

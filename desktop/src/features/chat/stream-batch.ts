@@ -1,4 +1,9 @@
-type Delta = { kind: "assistant" | "reasoning"; runId: string; text: string };
+type Delta = {
+  kind: "assistant" | "reasoning";
+  sessionId: string;
+  runId: string;
+  text: string;
+};
 
 export function createStreamBatch(consume: (deltas: Delta[]) => void) {
   let pending: Delta[] = [];

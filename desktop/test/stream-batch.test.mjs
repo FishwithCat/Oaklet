@@ -10,7 +10,8 @@ test("stream batching merges adjacent deltas, preserves order and flushes at bou
   try {
     const updates = [];
     const batch = createStreamBatch((deltas) => updates.push(deltas));
-    const push = (kind, text, runId = "run") => batch.push({ kind, text, runId });
+    const push = (kind, text, runId = "run") =>
+      batch.push({ kind, text, runId, sessionId: "session" });
     push("reasoning", "a");
     push("reasoning", "b");
     push("assistant", "c");
@@ -18,8 +19,8 @@ test("stream batching merges adjacent deltas, preserves order and flushes at bou
     assert.equal(updates.length, 0);
     [...frames.values()][0]();
     assert.deepEqual(updates[0], [
-      { kind: "reasoning", text: "ab", runId: "run" },
-      { kind: "assistant", text: "c", runId: "run" },
+      { kind: "reasoning", sessionId: "session", text: "ab", runId: "run" },
+      { kind: "assistant", sessionId: "session", text: "c", runId: "run" },
     ]);
     push("assistant", "tail");
     push("assistant", "next", "other");

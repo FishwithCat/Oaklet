@@ -537,7 +537,7 @@ mod tests {
             config: std::sync::Mutex::new(crate::AppConfig::default()),
             config_path: PathBuf::new(),
             approvals: std::sync::Mutex::new(std::collections::HashMap::new()),
-            runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            chat: crate::chat::ChatState::in_memory(),
             command_allow_all: std::sync::Mutex::new(None),
             terminal: std::sync::Mutex::new(std::collections::HashMap::new()),
             architecture: std::sync::Mutex::new(ArchitectureCache::default()),
