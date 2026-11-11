@@ -77,8 +77,10 @@ export function Chat({
   const draftsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
+  // The welcome screen is the blank first tab: no tabs, find or selection.
+  const welcome = tabs.length <= 1 && items.length === 0;
   const { selectionAction, selectionButtonRef, clearSelection } =
-    useSelectionAction({ active, containerRef: chatRef });
+    useSelectionAction({ active: active && !welcome, containerRef: chatRef });
 
   useLayoutEffect(() => {
     if (lastTabIdRef.current === activeTabId) return;
@@ -143,6 +145,56 @@ export function Chat({
   }
 
   const showTabs = items.length > 0 || tabs.length > 1;
+  const empty = (
+    <div className="empty">
+      <img
+        className="empty-logo"
+        src={oakletIcon}
+        alt="Oaklet"
+        width={76}
+        height={76}
+      />
+      <h1>What should we build?</h1>
+    </div>
+  );
+  const composer = active && (
+    <ChatComposer
+      ref={composerRef}
+      activeTabId={activeTabId}
+      value={input}
+      running={running}
+      compacting={compacting}
+      context={context}
+      showContextGauge={shouldShowContextGauge(context, items.length > 0)}
+      welcome={welcome}
+      attachments={attachments}
+      onChange={updateDraft}
+      onAddAttachments={addAttachments}
+      onRemoveAttachment={(index) =>
+        updateAttachments(
+          attachments.filter((_, position) => position !== index),
+        )
+      }
+      onSubmit={submit}
+      onCompact={onCompact}
+    />
+  );
+
+  if (welcome) {
+    return (
+      <>
+        <main
+          className="chat"
+          hidden={!active}
+          ref={chatRef}
+          onScroll={onScroll}
+        >
+          {empty}
+        </main>
+        {composer}
+      </>
+    );
+  }
 
   return (
     <>
@@ -212,16 +264,7 @@ export function Chat({
         onScroll={onScroll}
       >
         {items.length === 0 ? (
-          <div className="empty">
-            <img
-              className="empty-logo"
-              src={oakletIcon}
-              alt="Oaklet"
-              width={76}
-              height={76}
-            />
-            <h1>What should we build?</h1>
-          </div>
+          empty
         ) : (
           <ChatThread
             items={items}
@@ -261,27 +304,7 @@ export function Chat({
         </button>
       )}
 
-      {active && (
-        <ChatComposer
-          ref={composerRef}
-          activeTabId={activeTabId}
-          value={input}
-          running={running}
-          compacting={compacting}
-          context={context}
-          showContextGauge={shouldShowContextGauge(context, items.length > 0)}
-          attachments={attachments}
-          onChange={updateDraft}
-          onAddAttachments={addAttachments}
-          onRemoveAttachment={(index) =>
-            updateAttachments(
-              attachments.filter((_, position) => position !== index),
-            )
-          }
-          onSubmit={submit}
-          onCompact={onCompact}
-        />
-      )}
+      {composer}
     </>
   );
 }

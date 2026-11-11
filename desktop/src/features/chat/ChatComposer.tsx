@@ -81,6 +81,7 @@ export function ChatComposer({
   compacting,
   context,
   showContextGauge,
+  welcome,
   attachments,
   onChange,
   onAddAttachments,
@@ -95,6 +96,7 @@ export function ChatComposer({
   compacting: boolean;
   context: ContextUsage | null;
   showContextGauge: boolean;
+  welcome?: boolean;
   attachments: Attachment[];
   onChange: (value: string) => void;
   onAddAttachments: (attachments: Attachment[]) => void;
@@ -301,30 +303,36 @@ export function ChatComposer({
               >
                 <h3>Shortcuts</h3>
                 <dl>
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⌘ N</kbd>
-                    </dt>
-                    <dd>New session</dd>
-                  </div>
+                  {!welcome && (
+                    <div className="shortcut">
+                      <dt>
+                        <kbd>⌘ N</kbd>
+                      </dt>
+                      <dd>New session</dd>
+                    </div>
+                  )}
                   <div className="shortcut">
                     <dt>
                       <kbd>⌘ R</kbd>
                     </dt>
                     <dd>Search history</dd>
                   </div>
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⌘ F</kbd>
-                    </dt>
-                    <dd>Find in chat</dd>
-                  </div>
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⌃ C</kbd>
-                    </dt>
-                    <dd>Stop run</dd>
-                  </div>
+                  {!welcome && (
+                    <div className="shortcut">
+                      <dt>
+                        <kbd>⌘ F</kbd>
+                      </dt>
+                      <dd>Find in chat</dd>
+                    </div>
+                  )}
+                  {running && (
+                    <div className="shortcut">
+                      <dt>
+                        <kbd>⌃ C</kbd>
+                      </dt>
+                      <dd>Stop run</dd>
+                    </div>
+                  )}
                   <div className="shortcut">
                     <dt>
                       <kbd>↵</kbd>

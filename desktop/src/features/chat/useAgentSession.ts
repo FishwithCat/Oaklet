@@ -282,6 +282,9 @@ export function useAgentSession({
   async function newTab() {
     const workspace = workspaceRef.current;
     if (!workspace) return;
+    // The welcome tab is already a new chat; another one would just duplicate it.
+    const active = sessionsRef.current[activeTabIdRef.current];
+    if (active && isBlankTab(active)) return;
     try {
       const view = await invoke<SessionView>("session_create", { workspace });
       if (workspaceRef.current !== workspace) return;
