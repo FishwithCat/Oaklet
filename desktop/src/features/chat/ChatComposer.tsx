@@ -315,6 +315,12 @@ export function ChatComposer({
                   </div>
                   <div className="shortcut">
                     <dt>
+                      <kbd>⌘ F</kbd>
+                    </dt>
+                    <dd>Find in chat</dd>
+                  </div>
+                  <div className="shortcut">
+                    <dt>
                       <kbd>⌃ C</kbd>
                     </dt>
                     <dd>Stop run</dd>

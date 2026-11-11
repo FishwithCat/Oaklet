@@ -50,6 +50,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   files are inlined up to 200 KB.
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
   expandable process rows.
+- **⌘F** finds text in the open conversation and highlights every match;
+  **Enter** and **Shift+Enter** step through them.
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
 - **Stop** cancels the model request, a running command, or a pending approval.

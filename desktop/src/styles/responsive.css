@@ -1,4 +1,15 @@
 @media (max-width: 640px) {
+  .chat-find {
+    right: 12px;
+    left: 68px;
+  }
+
+  .chat-find-input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
   .settings-layout {
     flex-direction: column;
   }

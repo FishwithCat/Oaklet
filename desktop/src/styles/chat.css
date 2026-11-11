@@ -11,6 +11,84 @@
   display: none;
 }
 
+.chat-find {
+  position: fixed;
+  top: 52px;
+  right: 18px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 5px 4px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px var(--shadow-color);
+  color: var(--muted);
+}
+
+.chat-find:focus-within {
+  border-color: var(--accent-border-strong);
+}
+
+.chat-find-icon {
+  flex: none;
+}
+
+.chat-find-input {
+  width: 170px;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  font-size: 12.5px;
+}
+
+.chat-find-input:focus,
+.chat-find-input:focus-visible {
+  outline: none;
+}
+
+.chat-find-count {
+  flex: none;
+  min-width: 38px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-find-step {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.chat-find-step:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.chat-find-step:disabled {
+  opacity: 0.4;
+}
+
+.chat-find-close {
+  width: 28px;
+  height: 28px;
+}
+
+::highlight(chat-find) {
+  background-color: var(--find-match);
+}
+
+::highlight(chat-find-current) {
+  background-color: var(--find-match-active);
+}
+
 .selection-action {
   position: fixed;
   z-index: 20;

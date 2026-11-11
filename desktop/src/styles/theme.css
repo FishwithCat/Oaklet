@@ -32,6 +32,8 @@
   --yellow: #856315;
   --warning-bg: color-mix(in srgb, var(--yellow) 8%, var(--panel));
   --warning-border: color-mix(in srgb, var(--yellow) 30%, transparent);
+  --find-match: #ffe9a8;
+  --find-match-active: #ffc247;
   --success-bg: color-mix(in srgb, var(--green) 9%, var(--panel));
   --danger-bg: color-mix(in srgb, var(--red) 8%, var(--panel));
   --hover-overlay: color-mix(in srgb, var(--text) 8%, transparent);

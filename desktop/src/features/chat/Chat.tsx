@@ -13,6 +13,7 @@ import {
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
+import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
 import type { Attachment } from "./attachments";
 import { mergeDraft, shouldShowContextGauge, type Item } from "./chat-model";
@@ -232,6 +233,13 @@ export function Chat({
           />
         )}
       </main>
+
+      <ChatFind
+        active={active}
+        tabId={activeTabId}
+        containerRef={chatRef}
+        items={items}
+      />
 
       {active && selectionAction && (
         <button
