@@ -92,8 +92,7 @@
 }
 
 .msg.user .bubble {
-  background: var(--accent-soft);
-  border: 1px solid var(--panel-muted-border-strong);
+  background: var(--panel-muted);
   border-radius: 14px 14px 4px 14px;
   padding: 10px 14px;
   max-width: 78%;
