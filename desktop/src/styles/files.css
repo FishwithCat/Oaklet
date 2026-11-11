@@ -1,5 +1,6 @@
-.files-panel { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.files-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .files-panel[hidden] { display: none; }
+.files-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .files-browser { width: 300px; min-width: 150px; max-width: 35%; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); padding: 0; }
 .files-toolbar { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 32px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--border); overflow: hidden; }
 .files-breadcrumbs { display: flex; align-items: center; gap: 1px; flex: 1; min-width: 0; height: 100%; overflow: hidden; font-size: 12px; color: var(--muted); }
@@ -11,9 +12,6 @@
 .files-actions { display: flex; flex: none; align-items: center; gap: 2px; }
 .files-toolbar .icon-button { flex-shrink: 0; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; }
 .files-toolbar button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
-.files-tree-header { display: flex; align-items: center; justify-content: space-between; height: 32px; padding: 0 12px; font-size: 12px; }
-.files-tree-header strong { font-weight: 600; }
-.files-tree-header .icon-button { width: 24px; height: 24px; border: 0; border-radius: 4px; }
 button.files-entry { position: relative; display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; height: 24px; min-height: 24px; padding: 0 8px; border: 0; border-radius: 0; text-align: left; margin: 0; font-size: 13px; font-weight: 400; }
 button.files-root { font-size: 11px; font-weight: 600; text-transform: uppercase; }
 .files-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); pointer-events: none; }

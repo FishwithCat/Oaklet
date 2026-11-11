@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ChangeInfo, GitLog } from "./git-model";
+import { useGitBranch } from "./useGitBranch";
 
 export function useSourceControl({
   active,
@@ -23,16 +24,28 @@ export function useSourceControl({
   const [diffError, setDiffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
-  const [branchError, setBranchError] = useState("");
+  const {
+    branch,
+    branches,
+    branchLoaded,
+    loadError,
+    switchingBranch,
+    branchError,
+    switchBranch,
+    clearBranchError,
+  } = useGitBranch({ active, refreshToken, onRefresh });
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || tab !== "commits") {
+      setLoading(false);
+      setError("");
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError("");
 
-    invoke<GitLog>("git_log", { includeCommits: tab === "commits" })
+    invoke<GitLog>("git_log", { includeCommits: true })
       .then((nextLog) => {
         if (cancelled) return;
         setLog(nextLog);
@@ -108,35 +121,15 @@ export function useSourceControl({
   }, [active, tab, target, refreshToken]);
 
   const commits = log?.commits ?? [];
-  const branches = log?.branches ?? [];
-  const branch = log?.branch ?? "";
   const commit = commits.find((entry) => entry.hash === selectedCommit) ?? null;
   const change =
     changes?.find((entry) => entry.path === selectedChange) ?? null;
   const diffReady = targetKey !== null && patchFor === targetKey;
 
-  async function switchBranch(nextBranch: string): Promise<boolean> {
-    if (!log || switchingBranch) return false;
-    if (nextBranch === log.branch) return true;
-
-    setSwitchingBranch(nextBranch);
-    setBranchError("");
-    try {
-      await invoke("git_switch", { branch: nextBranch });
-      onRefresh();
-      return true;
-    } catch (err) {
-      setBranchError(errorText(err));
-      return false;
-    } finally {
-      setSwitchingBranch(null);
-    }
-  }
-
   return {
     tab,
     setTab,
-    hasLog: log !== null,
+    hasLog: branchLoaded,
     commits,
     branches,
     branch,
@@ -150,10 +143,10 @@ export function useSourceControl({
     diffReady,
     diffError,
     loading,
-    error,
+    error: error || loadError,
     switchingBranch,
     branchError,
-    clearBranchError: () => setBranchError(""),
+    clearBranchError,
     switchBranch,
     refresh: onRefresh,
   };

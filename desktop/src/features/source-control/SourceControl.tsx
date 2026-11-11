@@ -54,11 +54,11 @@ export function SourceControl({
 
   return (
     <section className="sc" hidden={!active} aria-label="Source control">
-      <header className="sc-head">
-        <span className="sc-icon" aria-hidden="true">
+      <header className="view-bar">
+        <span className="view-bar-icon" aria-hidden="true">
           <GitBranch2Regular size={14} />
         </span>
-        <span className="sc-title">Source control</span>
+        <span className="view-bar-title">Source control</span>
         {hasLog && (
           <BranchMenu
             active={active}
@@ -72,7 +72,7 @@ export function SourceControl({
         )}
         <button
           type="button"
-          className="ghost icon-button sc-refresh"
+          className="ghost icon-button view-bar-refresh"
           onClick={refresh}
           disabled={loading}
           aria-label="Refresh source control"

@@ -194,6 +194,7 @@ function App() {
               workspace={config.workspace}
               refreshToken={workspaceTick}
               changes={changes}
+              onRefresh={() => setWorkspaceTick((value) => value + 1)}
               onSaved={() => setSavedTick((value) => value + 1)}
             />
           </Suspense>

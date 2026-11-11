@@ -5,7 +5,6 @@ import {
   DownSmallRegular,
   FolderOpenRegular,
   FolderRegular,
-  Refresh3Regular,
   RightSmallRegular,
 } from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
@@ -25,7 +24,6 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
   const [expanded, setExpanded] = useState(new Set(["."]));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(new Set<string>());
-  const [refresh, setRefresh] = useState(0);
   const [focused, setFocused] = useState<string>();
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -69,7 +67,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
     setLoading(new Set());
     for (const path of new Set([".", ...expandedRef.current])) void load(path, request);
     return () => { generation.current++; };
-  }, [workspace, active, refreshToken, refresh]);
+  }, [workspace, active, refreshToken]);
 
   function toggle(path: string) {
     const next = new Set(expanded);
@@ -113,12 +111,6 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
 
   return (
     <nav className="files-browser" aria-label="Workspace files">
-      <div className="files-tree-header">
-        <strong>Files</strong>
-        <button type="button" className="ghost icon-button" aria-label="Refresh files" title="Refresh files" onClick={() => setRefresh((n) => n + 1)}>
-          <Refresh3Regular size={14} />
-        </button>
-      </div>
       {errors["."] && <p role="alert" className="files-error">{errors["."]}</p>}
       {loading.has(".") && <p role="status" className="files-tree-status">Loading files…</p>}
       <div role="tree" aria-label="Workspace files">
