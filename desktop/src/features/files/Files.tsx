@@ -7,7 +7,7 @@ import CodeMirror from "@uiw/react-codemirror";
 import { EditorState, type Extension } from "@codemirror/state";
 import { MarkdownText } from "../../shared/Markdown";
 import { errorText } from "../../shared/error-text";
-import { breadcrumbParts, editorText, savedText } from "./file-model";
+import { breadcrumbParts, editorText, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
 
@@ -28,11 +28,12 @@ async function language(path: string): Promise<Extension> {
   }
 }
 
-export default function Files({ ref, active, workspace, refreshToken, onSaved }: {
+export default function Files({ ref, active, workspace, refreshToken, changes, onSaved }: {
   ref?: Ref<FilesHandle>;
   active: boolean;
   workspace: string;
   refreshToken: number;
+  changes: readonly FileChange[] | null;
   onSaved: () => void;
 }) {
   const [document, setDocument] = useState<Document | null>(null);
@@ -134,6 +135,7 @@ export default function Files({ ref, active, workspace, refreshToken, onSaved }:
         workspace={workspace}
         active={active}
         refreshToken={refreshToken}
+        changes={changes}
         selected={document?.path}
         busy={busy}
         onOpen={(path) => { if (path !== document?.path) void openFile(path); }}

@@ -175,6 +175,7 @@ function App() {
               active={view === "files"}
               workspace={config.workspace}
               refreshToken={workspaceTick}
+              changes={changes}
               onSaved={() => setSavedTick((value) => value + 1)}
             />
           </Suspense>

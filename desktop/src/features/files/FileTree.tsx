@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowClockwiseIcon, CaretDownIcon, CaretRightIcon, FileTextIcon, FolderIcon, FolderOpenIcon } from "@phosphor-icons/react";
 import { errorText } from "../../shared/error-text";
-import { fileTreeRows, workspaceName, type FileEntry } from "./file-model";
+import { statusInfo } from "../source-control/git-model";
+import { changeMarkers, fileTreeRows, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
 
-export function FileTree({ workspace, active, refreshToken, selected, busy, onOpen }: {
+export function FileTree({ workspace, active, refreshToken, changes, selected, busy, onOpen }: {
   workspace: string;
   active: boolean;
   refreshToken: number;
+  changes: readonly FileChange[] | null;
   selected?: string;
   busy: boolean;
   onOpen: (path: string) => void;
@@ -23,6 +25,7 @@ export function FileTree({ workspace, active, refreshToken, selected, busy, onOp
   const generation = useRef(0);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   const root = { name: workspaceName(workspace), path: ".", directory: true };
+  const markers = useMemo(() => changeMarkers(changes ?? []), [changes]);
   const rows = [
     { entry: root, depth: 0, parent: ".", position: 1, siblings: 1 },
     ...fileTreeRows(directories, expanded).map((row) => ({ ...row, depth: row.depth + 1 })),
@@ -114,6 +117,11 @@ export function FileTree({ workspace, active, refreshToken, selected, busy, onOp
       <div role="tree" aria-label="Workspace files">
         {rows.map(({ entry, depth, position, siblings }, index) => {
           const open = entry.directory && expanded.has(entry.path);
+          const key = treeKey(entry.path);
+          const info = entry.directory ? undefined : markers.files.get(key);
+          const status = info ? statusInfo(info.status) : null;
+          const tone = info ? ` files-entry-${info.status}` : "";
+          const folderChanged = entry.directory && key !== "." && markers.folders.has(key);
           return (
             <div key={entry.path} role="none">
               <button
@@ -139,7 +147,13 @@ export function FileTree({ workspace, active, refreshToken, selected, busy, onOp
                 ))}
                 {entry.directory ? (open ? <CaretDownIcon size={12} /> : <CaretRightIcon size={12} />) : <span className="files-tree-spacer" />}
                 {entry.directory ? (open ? <FolderOpenIcon size={16} /> : <FolderIcon size={16} />) : <FileTextIcon size={16} />}
-                <span className="files-entry-label">{entry.name}</span>
+                <span className={`files-entry-label${tone}`}>{entry.name}</span>
+                {info && status && (
+                  <span className={`files-entry-marker${tone}`} title={status.title}>
+                    {status.label}
+                  </span>
+                )}
+                {folderChanged && <span className="files-entry-dot" title="Contains changes" aria-hidden="true" />}
               </button>
               {open && entry.path !== "." && loading.has(entry.path) && <p role="status" className="files-tree-status">Loading {entry.name}…</p>}
               {open && entry.path !== "." && errors[entry.path] && <p role="alert" className="files-error">{errors[entry.path]}</p>}

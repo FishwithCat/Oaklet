@@ -19,6 +19,11 @@ button.files-root { font-size: 11px; font-weight: 600; text-transform: uppercase
 .files-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); pointer-events: none; }
 .files-entry svg { flex: none; }
 .files-entry-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-entry-marker { flex: none; margin-left: auto; font-size: 11px; font-weight: 600; }
+.files-entry-untracked, .files-entry-added { color: var(--green); }
+.files-entry-modified, .files-entry-renamed, .files-entry-copied, .files-entry-typechange { color: var(--yellow); }
+.files-entry-deleted, .files-entry-conflicted { color: var(--red); }
+.files-entry-dot { flex: none; margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); }
 button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .files-document { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .files-editor { flex: 1; min-height: 0; overflow: hidden; }

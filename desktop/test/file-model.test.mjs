@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { breadcrumbParts, fileTreeRows, lineSeparator, editorText, savedText } from "../src/features/files/file-model.ts";
+import { breadcrumbParts, changeMarkers, fileTreeRows, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
 
 test("breadcrumbs start at the workspace root and split both separators", () => {
   assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
@@ -14,6 +14,19 @@ test("breadcrumbs start at the workspace root and split both separators", () => 
     "src",
     "main.ts",
   ]);
+});
+
+test("change markers index files and their ancestor folders", () => {
+  const markers = changeMarkers([
+    { path: "src/styles/theme.css", status: "modified" },
+    { path: "src\\main.ts", status: "added" },
+    { path: "README.md", status: "untracked" },
+  ]);
+  assert.deepEqual([...markers.folders].sort(), ["src", "src/styles"]);
+  assert.equal(markers.files.get(treeKey("src/main.ts")).status, "added");
+  assert.equal(markers.files.get("src/styles/theme.css").status, "modified");
+  assert.equal(markers.files.get("README.md").status, "untracked");
+  assert.equal(markers.files.size, 3);
 });
 
 test("tree reveals only expanded branches and preserves nested expansion", () => {
