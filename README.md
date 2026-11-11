@@ -8,6 +8,26 @@ A local code agent with a Tauri 2 desktop shell: React/TypeScript UI, Rust agent
 runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
+## Install
+
+Download the latest `.dmg` from
+[Releases](https://github.com/FishwithCat/Oaklet/releases/latest), open it, and
+drag Oaklet into Applications. The build is universal (Apple Silicon and Intel)
+and ad-hoc signed rather than notarized, so macOS warns on the first launch.
+Open it once, then allow it:
+
+- **macOS 15 or newer**: **System Settings → Privacy & Security → Open Anyway**.
+- **macOS 14 or earlier**: right-click Oaklet and choose **Open**.
+
+Or clear the quarantine flag from Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Oaklet.app
+```
+
+The Architecture view needs Node.js 22.22.3 or newer on `PATH`; the rest of
+Oaklet does not.
+
 ## Quick start
 
 1. Click the folder icon in the sidebar and choose a workspace. File tools stay
