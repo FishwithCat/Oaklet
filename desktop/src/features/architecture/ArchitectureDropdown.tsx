@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { CheckRegular, DownSmallRegular } from "@mingcute/react/core-regular";
 
 export function ArchitectureDropdown({
   label,
@@ -98,7 +98,7 @@ export function ArchitectureDropdown({
         onKeyDown={onTriggerKeyDown}
       >
         <span className="arch-select-label">{selected?.label ?? value}</span>
-        <CaretDownIcon size={10} className="arch-select-caret" />
+        <DownSmallRegular size={10} className="arch-select-caret" />
       </button>
       {open && (
         <div
@@ -121,7 +121,7 @@ export function ArchitectureDropdown({
               onClick={() => choose(option)}
             >
               <span>{option.label}</span>
-              {option.value === value && <CheckIcon size={11} weight="bold" />}
+              {option.value === value && <CheckRegular size={11} />}
             </button>
           ))}
         </div>

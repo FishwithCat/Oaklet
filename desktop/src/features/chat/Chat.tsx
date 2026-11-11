@@ -7,11 +7,11 @@ import {
   type Ref,
 } from "react";
 import {
-  ChatDotsIcon,
-  PlusIcon,
-  TerminalWindowIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  AddRegular,
+  CloseRegular,
+  Message4Regular,
+  TerminalBoxRegular,
+} from "@mingcute/react/core-regular";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatThread } from "./ChatThread";
 import type { Attachment } from "./attachments";
@@ -147,7 +147,7 @@ export function Chat({
     <>
       <header className="view-head" hidden={!active || !showTabs}>
         <span className="view-icon" aria-hidden="true">
-          <ChatDotsIcon size={14} />
+          <Message4Regular size={14} />
         </span>
         <div className="view-tabs" role="tablist" aria-label="Chats">
           {tabs.map((tab) => (
@@ -188,7 +188,7 @@ export function Chat({
                     : "Close chat"
                 }
               >
-                <XIcon size={11} />
+                <CloseRegular size={11} />
               </button>
             </div>
           ))}
@@ -200,7 +200,7 @@ export function Chat({
           aria-label="New chat"
           title="New chat"
         >
-          <PlusIcon size={14} />
+          <AddRegular size={14} />
         </button>
       </header>
 
@@ -248,7 +248,7 @@ export function Chat({
           }}
           title="Run the selected text in the terminal"
         >
-          <TerminalWindowIcon size={13} />
+          <TerminalBoxRegular size={13} />
           Send to Terminal
         </button>
       )}

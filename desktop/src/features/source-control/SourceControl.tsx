@@ -1,8 +1,8 @@
 import {
-  ArrowClockwiseIcon,
-  CheckCircleIcon,
-  GitBranchIcon,
-} from "@phosphor-icons/react";
+  CheckCircleRegular,
+  GitBranch2Regular,
+  Refresh3Regular,
+} from "@mingcute/react/core-regular";
 import { BranchMenu } from "./BranchMenu";
 import { Diff } from "./Diff";
 import {
@@ -56,7 +56,7 @@ export function SourceControl({
     <section className="sc" hidden={!active} aria-label="Source control">
       <header className="sc-head">
         <span className="sc-icon" aria-hidden="true">
-          <GitBranchIcon size={14} />
+          <GitBranch2Regular size={14} />
         </span>
         <span className="sc-title">Source control</span>
         {hasLog && (
@@ -78,7 +78,7 @@ export function SourceControl({
           aria-label="Refresh source control"
           title="Refresh source control"
         >
-          <ArrowClockwiseIcon size={14} className={loading ? "spin" : ""} />
+          <Refresh3Regular size={14} className={loading ? "spin" : ""} />
         </button>
       </header>
 
@@ -106,7 +106,7 @@ export function SourceControl({
 
       {error || changesError ? (
         <div className="sc-empty">
-          <GitBranchIcon size={22} />
+          <GitBranch2Regular size={22} />
           <p>{error || changesError}</p>
           <button type="button" onClick={refresh}>
             Try again
@@ -117,7 +117,7 @@ export function SourceControl({
       ) : tab === "changes" ? (
         changes.length === 0 ? (
           <div className="sc-empty">
-            <CheckCircleIcon size={22} />
+            <CheckCircleRegular size={22} />
             <p>No uncommitted changes.</p>
           </div>
         ) : (
@@ -169,7 +169,7 @@ export function SourceControl({
         )
       ) : commits.length === 0 ? (
         <div className="sc-empty">
-          <GitBranchIcon size={22} />
+          <GitBranch2Regular size={22} />
           <p>No commits yet in this repository.</p>
         </div>
       ) : (

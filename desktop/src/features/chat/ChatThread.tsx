@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { CircleNotchIcon, FileIcon } from "@phosphor-icons/react";
+import { FileRegular, LoadingRegular } from "@mingcute/react/core-regular";
 import { MarkdownText } from "../../shared/Markdown";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
@@ -68,7 +68,7 @@ export function ChatThread({
                           className="bubble-file"
                           key={`${attachment.name}-${index}`}
                         >
-                          <FileIcon size={12} aria-hidden="true" />
+                          <FileRegular size={12} aria-hidden="true" />
                           <span className="bubble-file-name">
                             {attachment.name}
                           </span>
@@ -101,7 +101,7 @@ export function ChatThread({
       })}
       {compacting && (
         <div className="compacting-status" role="status">
-          <CircleNotchIcon size={13} className="spin" aria-hidden="true" />
+          <LoadingRegular size={13} className="spin" aria-hidden="true" />
           <span className="shimmer">Compacting context…</span>
         </div>
       )}

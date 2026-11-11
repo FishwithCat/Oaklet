@@ -1,10 +1,11 @@
 import { useMemo } from "react";
 import {
-  ArrowClockwiseIcon,
-  EyeIcon,
-  SparkleIcon,
-  TreeStructureIcon,
-} from "@phosphor-icons/react";
+  EyeRegular,
+  MindMapRegular,
+  Refresh3Regular,
+  Sparkles3Regular,
+} from "@mingcute/react/core-regular";
+import { EyeFilled } from "@mingcute/react/core-filled";
 import type { LayoutedLikeC4ModelData } from "@likec4/core";
 import { LikeC4Model } from "@likec4/core/model";
 import { LikeC4ModelProvider, LikeC4View } from "@likec4/diagram";
@@ -104,7 +105,7 @@ export default function Architecture({
     >
       <header className="arch-head">
         <span className="arch-icon" aria-hidden="true">
-          <TreeStructureIcon size={14} />
+          <MindMapRegular size={14} />
         </span>
         <span className="arch-title">Architecture</span>
 
@@ -151,7 +152,7 @@ export default function Architecture({
                 : "Also scan files ignored by git"
             }
           >
-            <EyeIcon size={14} weight={includeIgnored ? "fill" : "regular"} />
+            {includeIgnored ? <EyeFilled size={14} /> : <EyeRegular size={14} />}
           </button>
           <button
             type="button"
@@ -161,7 +162,7 @@ export default function Architecture({
             aria-label="Refresh architecture"
             title="Refresh architecture"
           >
-            <ArrowClockwiseIcon size={14} className={busy ? "spin" : ""} />
+            <Refresh3Regular size={14} className={busy ? "spin" : ""} />
           </button>
           <button
             type="button"
@@ -174,7 +175,7 @@ export default function Architecture({
                 : "Ask the agent to update the selected model"
             }
           >
-            <SparkleIcon size={13} />
+            <Sparkles3Regular size={13} />
             Update with agent
           </button>
         </div>

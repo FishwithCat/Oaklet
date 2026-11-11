@@ -7,7 +7,7 @@ import {
   type SubmitEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { XIcon } from "@phosphor-icons/react";
+import { CloseRegular } from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
 import { McpSettings } from "./McpSettings";
 import {
@@ -131,7 +131,7 @@ export function SettingsPanel({
           aria-label="Close settings"
           title="Close"
         >
-          <XIcon size={16} />
+          <CloseRegular size={16} />
         </button>
 
         <div className="settings-head">

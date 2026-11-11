@@ -1,17 +1,16 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  BookOpen,
-  CaretDown,
-  CircleNotch,
-  Hourglass,
-  LightbulbFilament,
-  PencilLine,
-  PencilSimple,
-  Sparkle,
-  Terminal,
-  WarningCircle,
-  XCircle,
-} from "@phosphor-icons/react";
+  BookOpenTextRegular,
+  BulbRegular,
+  DownSmallRegular,
+  LoadingRegular,
+  Pencil2Regular,
+  PencilRegular,
+  SandglassRegular,
+  Sparkles3Regular,
+  TerminalBoxRegular,
+} from "@mingcute/react/core-regular";
+import { CloseCircleFilled, WarningFilled } from "@mingcute/react/core-filled";
 import { MarkdownText } from "../../shared/Markdown";
 import {
   isActive,
@@ -29,16 +28,16 @@ import {
 } from "./process-model";
 
 const CATEGORY_ICONS: Record<ToolCategory, ReactNode> = {
-  read: <BookOpen size={14} />,
-  write: <PencilSimple size={14} />,
-  edit: <PencilLine size={14} />,
-  command: <Terminal size={14} />,
-  tools: <Sparkle size={14} />,
+  read: <BookOpenTextRegular size={14} />,
+  write: <PencilRegular size={14} />,
+  edit: <Pencil2Regular size={14} />,
+  command: <TerminalBoxRegular size={14} />,
+  tools: <Sparkles3Regular size={14} />,
 };
 
 function categoryIcon(category: ToolCategory | "thinking"): ReactNode {
   return category === "thinking" ? (
-    <LightbulbFilament size={14} />
+    <BulbRegular size={14} />
   ) : (
     CATEGORY_ICONS[category]
   );
@@ -82,7 +81,7 @@ function DisclosureHead({
         </>
       )}
       {trailing}
-      {expandable && <CaretDown size={12} className="row-chevron" weight="bold" />}
+      {expandable && <DownSmallRegular size={12} className="row-chevron" />}
     </button>
   );
 }
@@ -93,13 +92,13 @@ function ReasoningRow({ item }: { item: ReasoningItem }) {
   return (
     <div className="process-row reasoning">
       <DisclosureHead
-        icon={<LightbulbFilament size={14} />}
+        icon={<BulbRegular size={14} />}
         title="Thinking"
         summary={summary}
         live={item.streaming}
         open={open}
         expandable={item.text.trim() !== ""}
-        trailing={item.streaming ? <CircleNotch size={12} className="spin" /> : undefined}
+        trailing={item.streaming ? <LoadingRegular size={12} className="spin" /> : undefined}
         onToggle={() => setOpen((value) => !value)}
       />
       {open && (
@@ -121,7 +120,7 @@ function Approval({
   return (
     <div className="approval">
       <p className="approval-prompt">
-        <WarningCircle size={14} weight="fill" aria-hidden />
+        <WarningFilled size={14} aria-hidden />
         {item.approvalPrompt ?? "Approve this tool call?"}
       </p>
       <pre>{item.approvalDetail ?? ""}</pre>
@@ -175,11 +174,11 @@ function ToolRow({
   }, [item.status]);
 
   const trailing = running ? (
-    <CircleNotch size={12} className="spin" />
+    <LoadingRegular size={12} className="spin" />
   ) : item.status === "awaiting" ? (
-    <Hourglass size={12} className="awaiting-icon" />
+    <SandglassRegular size={12} className="awaiting-icon" />
   ) : item.status === "error" ? (
-    <XCircle size={13} className="error-icon" weight="fill" />
+    <CloseCircleFilled size={13} className="error-icon" />
   ) : undefined;
 
   return (
@@ -252,7 +251,7 @@ export function ProcessGroup({
         <span className={`process-title${working ? " shimmer" : ""}`}>
           {processTitle(items, working)}
         </span>
-        <CaretDown size={13} className="process-chevron" weight="bold" />
+        <DownSmallRegular size={13} className="process-chevron" />
       </button>
       {expanded && (
         <div className="process-body">

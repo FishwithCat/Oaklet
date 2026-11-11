@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import {
-  ArrowClockwiseIcon,
-  SparkleIcon,
-  TreeStructureIcon,
-  WarningCircleIcon,
-} from "@phosphor-icons/react";
+  MindMapRegular,
+  Refresh3Regular,
+  Sparkles3Regular,
+  WarningRegular,
+} from "@mingcute/react/core-regular";
 import {
   diagnosticLocation,
   type ArchitectureDiagnostic,
@@ -48,7 +48,7 @@ export function ArchitectureBanners({
     <>
       {discoveryError && (
         <div className="arch-banner error" role="alert">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>Could not scan this workspace.</strong>
             <p>{discoveryError}</p>
@@ -61,7 +61,7 @@ export function ArchitectureBanners({
 
       {discovery && !discovery.runtime.ready && (
         <div className="arch-banner warning">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>LikeC4 preview needs a runtime.</strong>
             <p>{discovery.runtime.message}</p>
@@ -71,7 +71,7 @@ export function ArchitectureBanners({
 
       {selectedModel?.unsupportedConfig && (
         <div className="arch-banner warning">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>Executable LikeC4 configuration is not run.</strong>
             <p>
@@ -86,7 +86,7 @@ export function ArchitectureBanners({
 
       {currentLoad?.stale && (
         <div className="arch-banner warning">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>Showing the last valid diagram.</strong>
             <p>
@@ -100,7 +100,7 @@ export function ArchitectureBanners({
 
       {currentLoad?.error && !currentLoad.stale && (
         <div className="arch-banner error" role="alert">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>{currentLoad.error}</strong>
             <Diagnostics items={currentLoad.diagnostics} />
@@ -113,7 +113,7 @@ export function ArchitectureBanners({
         !currentLoad.error &&
         currentLoad.diagnostics.length > 0 && (
           <div className="arch-banner warning">
-            <WarningCircleIcon size={15} />
+            <WarningRegular size={15} />
             <div>
               <strong>Model diagnostics</strong>
               <Diagnostics items={currentLoad.diagnostics} />
@@ -123,7 +123,7 @@ export function ArchitectureBanners({
 
       {loadError && (
         <div className="arch-banner error" role="alert">
-          <WarningCircleIcon size={15} />
+          <WarningRegular size={15} />
           <div>
             <strong>Could not load the architecture model.</strong>
             <p>{loadError}</p>
@@ -193,7 +193,7 @@ export function ArchitectureStatus({
       <div className="arch-empty">
         {discoveryError ? (
           <>
-            <WarningCircleIcon size={26} />
+            <WarningRegular size={26} />
             <h2>Architecture is unavailable</h2>
             <p>{discoveryError}</p>
             <button type="button" onClick={refresh}>
@@ -202,7 +202,7 @@ export function ArchitectureStatus({
           </>
         ) : (
           <>
-            <ArrowClockwiseIcon size={24} className="spin" />
+            <Refresh3Regular size={24} className="spin" />
             <p>Scanning for LikeC4 models...</p>
           </>
         )}
@@ -213,7 +213,7 @@ export function ArchitectureStatus({
   if (discovery.models.length === 0) {
     return (
       <div className="arch-empty">
-        <TreeStructureIcon size={28} />
+        <MindMapRegular size={28} />
         <h2>No architecture model yet</h2>
         <p>
           Ask the configured agent to inspect this workspace and create{" "}
@@ -232,7 +232,7 @@ export function ArchitectureStatus({
                 : "Ask the agent to inspect the workspace and create the model"
             }
           >
-            <SparkleIcon size={14} />
+            <Sparkles3Regular size={14} />
             Generate architecture
           </button>
           <button type="button" className="ghost" onClick={toggleIgnored}>
@@ -250,7 +250,7 @@ export function ArchitectureStatus({
   if (!runtimeReady) {
     return (
       <div className="arch-empty">
-        <WarningCircleIcon size={26} />
+        <WarningRegular size={26} />
         <h2>LikeC4 preview is unavailable</h2>
         <p>{discovery.runtime.message}</p>
         <p className="arch-small">
@@ -269,7 +269,7 @@ export function ArchitectureStatus({
       <div className="arch-empty">
         {loadError ? (
           <>
-            <WarningCircleIcon size={26} />
+            <WarningRegular size={26} />
             <h2>Could not load the model</h2>
             <p>{loadError}</p>
             <button type="button" onClick={refresh}>
@@ -278,7 +278,7 @@ export function ArchitectureStatus({
           </>
         ) : (
           <>
-            <ArrowClockwiseIcon size={24} className="spin" />
+            <Refresh3Regular size={24} className="spin" />
             <p>Loading the architecture model...</p>
           </>
         )}
@@ -289,7 +289,7 @@ export function ArchitectureStatus({
   if (!currentLoad.model) {
     return (
       <div className="arch-empty">
-        <WarningCircleIcon size={26} />
+        <WarningRegular size={26} />
         <h2>The model could not be rendered</h2>
         <p>
           {currentLoad.error ??
@@ -302,7 +302,7 @@ export function ArchitectureStatus({
           onClick={update}
           disabled={running}
         >
-          <SparkleIcon size={14} />
+          <Sparkles3Regular size={14} />
           Update with agent
         </button>
       </div>
@@ -312,7 +312,7 @@ export function ArchitectureStatus({
   if (currentLoad.views.length === 0 || !selectedViewId) {
     return (
       <div className="arch-empty">
-        <TreeStructureIcon size={26} />
+        <MindMapRegular size={26} />
         <h2>This model has no views</h2>
         <p>
           Add a view to the LikeC4 model, or ask the agent to add context and
@@ -324,7 +324,7 @@ export function ArchitectureStatus({
           onClick={update}
           disabled={running}
         >
-          <SparkleIcon size={14} />
+          <Sparkles3Regular size={14} />
           Update with agent
         </button>
       </div>
@@ -334,7 +334,7 @@ export function ArchitectureStatus({
   if (modelError || !hasModel) {
     return (
       <div className="arch-empty">
-        <WarningCircleIcon size={26} />
+        <WarningRegular size={26} />
         <h2>Could not render the layout</h2>
         <p>{modelError || "LikeC4 returned an empty model."}</p>
         <button type="button" onClick={refresh}>

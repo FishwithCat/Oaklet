@@ -4,7 +4,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
+import { HistoryRegular } from "@mingcute/react/core-regular";
 import type { SessionSnapshot } from "./session-history";
 
 export function SessionHistory({
@@ -115,7 +115,7 @@ export function SessionHistory({
                   onMouseEnter={() => setActive(index)}
                   onClick={() => onPick(session.id)}
                 >
-                  <ClockCounterClockwiseIcon
+                  <HistoryRegular
                     className="session-row-icon"
                     size={14}
                   />

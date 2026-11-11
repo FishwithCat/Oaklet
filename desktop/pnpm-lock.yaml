@@ -39,9 +39,9 @@ importers:
       '@likec4/diagram':
         specifier: 1.60.0
         version: 1.60.0(@pandacss/dev@1.12.2(typescript@6.0.3))(@pandacss/types@1.12.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)
-      '@phosphor-icons/react':
-        specifier: ^2.1.10
-        version: 2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@mingcute/react':
+        specifier: ^3.1.0
+        version: 3.1.0(react@19.3.1)
       '@tauri-apps/api':
         specifier: ^2
         version: 2.12.4
@@ -438,6 +438,14 @@ packages:
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
 
+  '@mingcute/icons@3.1.0':
+    resolution: {integrity: sha512-9fpEAhFIDL2s0jDeO6YHi4pdzdKbXsEd1ltBEstftpcXPeFO2xRXCbywqVbC7dEv+wZoOjP5Zy89pV7khiBMIw==}
+
+  '@mingcute/react@3.1.0':
+    resolution: {integrity: sha512-6hqAz/Nfz4YffC1ohOAdITPaimCVUxhh4OtvHfsLTrvMPF206LTEnE50UP0vL3nvCZYzIR25HTTfl4RrpdxI9Q==}
+    peerDependencies:
+      react: 19.3.1
+
   '@nanostores/media-query@0.1.2':
     resolution: {integrity: sha512-Dvnls7VgLnM2Lb9SAhKCFsHEiLQCX0wyxtJKk0Vji3TWy9I4SztPl/IM9cls05f6+hjoUN8Aaq6qZ7TSmJp2Hg==}
     engines: {node: ^20.0.0 || ^22.0.0 || >= 24.0.0}
@@ -542,13 +550,6 @@ packages:
   '@pandacss/types@1.12.2':
     resolution: {integrity: sha512-aIAGUj/ok+w2uUYrtbnU2pAh/4wKUJfqBLBWUvtu6xU/7TcOE6U+GOW0FX2zIqKGl8+a03lPJvN4xh4OipEjOQ==}
     engines: {node: '>=20'}
-
-  '@phosphor-icons/react@2.1.10':
-    resolution: {integrity: sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA==}
-    engines: {node: '>=10'}
-    peerDependencies:
-      react: 19.3.1
-      react-dom: 19.3.1
 
   '@radix-ui/colors@3.0.0':
     resolution: {integrity: sha512-FUOsGBkHrYJwCSEtWRCIfQbZG7q1e6DgxCIOe1SUQzDe/7rXXeA47s8yCn6fuTNQAj1Zq4oTFi9Yjp3wzElcxg==}
@@ -2459,6 +2460,13 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.4': {}
 
+  '@mingcute/icons@3.1.0': {}
+
+  '@mingcute/react@3.1.0(react@19.3.1)':
+    dependencies:
+      '@mingcute/icons': 3.1.0
+      react: 19.3.1
+
   '@nanostores/media-query@0.1.2(nanostores@1.5.5)':
     dependencies:
       nanostores: 1.5.5
@@ -2669,11 +2677,6 @@ snapshots:
       ts-pattern: 5.9.0
 
   '@pandacss/types@1.12.2': {}
-
-  '@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
-    dependencies:
-      react: 19.3.1
-      react-dom: 19.3.1(react@19.3.1)
 
   '@radix-ui/colors@3.0.0': {}
 

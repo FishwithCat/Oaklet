@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { CaretDownIcon } from "@phosphor-icons/react";
+import { DownSmallRegular } from "@mingcute/react/core-regular";
 import { pageHunks, parseDiff } from "./git-diff";
 
 export function Diff({
@@ -42,7 +42,7 @@ export function Diff({
             <select value={fileIndex} onChange={(event) => { setFileIndex(Number(event.target.value)); setShown(200); }}>
               {files.map((file, index) => <option key={index} value={index}>{file.path}</option>)}
             </select>
-            <CaretDownIcon size={10} className="diff-file-picker-caret" aria-hidden="true" />
+            <DownSmallRegular size={10} className="diff-file-picker-caret" aria-hidden="true" />
           </span>
         </label>
       )}

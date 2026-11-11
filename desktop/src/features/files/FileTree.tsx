@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowClockwiseIcon, CaretDownIcon, CaretRightIcon, FileTextIcon, FolderIcon, FolderOpenIcon } from "@phosphor-icons/react";
+import {
+  Document2Regular,
+  DownSmallRegular,
+  FolderOpenRegular,
+  FolderRegular,
+  Refresh3Regular,
+  RightSmallRegular,
+} from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
 import { statusInfo } from "../source-control/git-model";
 import { changeMarkers, fileTreeRows, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
@@ -109,7 +116,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
       <div className="files-tree-header">
         <strong>Files</strong>
         <button type="button" className="ghost icon-button" aria-label="Refresh files" title="Refresh files" onClick={() => setRefresh((n) => n + 1)}>
-          <ArrowClockwiseIcon size={14} />
+          <Refresh3Regular size={14} />
         </button>
       </div>
       {errors["."] && <p role="alert" className="files-error">{errors["."]}</p>}
@@ -145,8 +152,8 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
                 {Array.from({ length: Math.max(0, depth - 1) }, (_, level) => (
                   <span key={level} className="files-tree-guide" aria-hidden="true" style={{ left: 30 + level * 16 }} />
                 ))}
-                {entry.directory ? (open ? <CaretDownIcon size={12} /> : <CaretRightIcon size={12} />) : <span className="files-tree-spacer" />}
-                {entry.directory ? (open ? <FolderOpenIcon size={16} /> : <FolderIcon size={16} />) : <FileTextIcon size={16} />}
+                {entry.directory ? (open ? <DownSmallRegular size={12} /> : <RightSmallRegular size={12} />) : <span className="files-tree-spacer" />}
+                {entry.directory ? (open ? <FolderOpenRegular size={16} /> : <FolderRegular size={16} />) : <Document2Regular size={16} />}
                 <span className={`files-entry-label${tone}`}>{entry.name}</span>
                 {info && status && (
                   <span className={`files-entry-marker${tone}`} title={status.title}>

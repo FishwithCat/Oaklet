@@ -1,14 +1,14 @@
 import {
-  ChatDotsIcon,
-  FolderOpenIcon,
-  FilesIcon,
-  GearIcon,
-  GitBranchIcon,
-  LeafIcon,
-  SparkleIcon,
-  TerminalWindowIcon,
-  TreeStructureIcon,
-} from "@phosphor-icons/react";
+  FolderOpenRegular,
+  FolderTreeRegular,
+  MindMapRegular,
+  GitBranch2Regular,
+  Message4Regular,
+  Settings5Regular,
+  Sparkles3Regular,
+  TerminalBoxRegular,
+} from "@mingcute/react/core-regular";
+import { LeafFilled } from "@mingcute/react/core-filled";
 
 export type AppView = "chat" | "terminal" | "git" | "architecture" | "files";
 
@@ -48,7 +48,7 @@ export function Sidebar({
         aria-label="Chat"
         title="Chat"
       >
-        <ChatDotsIcon size={18} />
+        <Message4Regular size={18} />
       </button>
       <button
         type="button"
@@ -60,7 +60,7 @@ export function Sidebar({
         aria-pressed={view === "terminal"}
         title="Terminal"
       >
-        <TerminalWindowIcon size={18} />
+        <TerminalBoxRegular size={18} />
       </button>
       <button
         type="button"
@@ -80,7 +80,7 @@ export function Sidebar({
             : "Source control"
         }
       >
-        <GitBranchIcon size={18} />
+        <GitBranch2Regular size={18} />
         {unstaged !== null && unstaged > 0 && (
           <span className="sc-badge" aria-hidden="true">
             {unstaged > 99 ? "99+" : unstaged}
@@ -97,7 +97,7 @@ export function Sidebar({
         aria-pressed={view === "architecture"}
         title="Architecture"
       >
-        <TreeStructureIcon size={18} />
+        <MindMapRegular size={18} />
       </button>
       <button
         type="button"
@@ -107,7 +107,7 @@ export function Sidebar({
         aria-pressed={view === "files"}
         title="Files"
       >
-        <FilesIcon size={18} />
+        <FolderTreeRegular size={18} />
       </button>
       <div className="sidebar-foot">
         {allowAll && (
@@ -118,7 +118,7 @@ export function Sidebar({
             aria-label="Revoke allowance for all commands"
             title="All commands in this workspace run without approval. Click to ask again."
           >
-            <LeafIcon size={16} weight="fill" />
+            <LeafFilled size={16} />
           </button>
         )}
         <button
@@ -129,7 +129,7 @@ export function Sidebar({
           aria-label="Open workspace folder"
           title={`Workspace folder: ${workspace}`}
         >
-          <FolderOpenIcon size={16} />
+          <FolderOpenRegular size={16} />
         </button>
         <button
           type="button"
@@ -141,7 +141,7 @@ export function Sidebar({
           aria-pressed={skillsOpen}
           title="Skills"
         >
-          <SparkleIcon size={16} />
+          <Sparkles3Regular size={16} />
         </button>
         <button
           type="button"
@@ -150,7 +150,7 @@ export function Sidebar({
           aria-label="Settings"
           title="Settings"
         >
-          <GearIcon size={16} />
+          <Settings5Regular size={16} />
         </button>
       </div>
     </aside>

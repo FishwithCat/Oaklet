@@ -1,5 +1,5 @@
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
-import { PlusIcon, TerminalWindowIcon, XIcon } from "@phosphor-icons/react";
+import { AddRegular, CloseRegular, TerminalBoxRegular } from "@mingcute/react/core-regular";
 import {
   newSessionId,
   TerminalPane,
@@ -72,7 +72,7 @@ export function Terminal({
     <section className="terminal" hidden={!active} aria-label="Terminal">
       <header className="view-head">
         <span className="view-icon" aria-hidden="true">
-          <TerminalWindowIcon size={14} />
+          <TerminalBoxRegular size={14} />
         </span>
         <div className="view-tabs" role="tablist" aria-label="Terminals">
           {tabs.map((tab) => (
@@ -99,7 +99,7 @@ export function Terminal({
                 aria-label={`Close ${tab.title}`}
                 title="Close terminal"
               >
-                <XIcon size={11} />
+                <CloseRegular size={11} />
               </button>
             </div>
           ))}
@@ -111,7 +111,7 @@ export function Terminal({
           aria-label="New terminal"
           title="New terminal"
         >
-          <PlusIcon size={14} />
+          <AddRegular size={14} />
         </button>
       </header>
 

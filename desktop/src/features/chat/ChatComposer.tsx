@@ -8,12 +8,12 @@ import {
   type Ref,
 } from "react";
 import {
-  FileIcon,
-  PaperPlaneRightIcon,
-  PlantIcon,
-  QuestionIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  CloseRegular,
+  FileRegular,
+  FlowerpotRegular,
+  QuestionRegular,
+} from "@mingcute/react/core-regular";
+import { SendFilled } from "@mingcute/react/core-filled";
 import { isSendEnter } from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
 import {
@@ -68,7 +68,7 @@ function ContextGauge({
           : `Context usage unavailable — ${hint}`
       }
     >
-      <PlantIcon size={18} weight="duotone" aria-hidden="true" />
+      <FlowerpotRegular size={18} aria-hidden="true" />
     </button>
   );
 }
@@ -217,7 +217,7 @@ export function ChatComposer({
                   <img src={attachment.thumbnail} alt="" />
                 ) : (
                   <span className="composer-attachment-icon" aria-hidden="true">
-                    <FileIcon size={14} />
+                    <FileRegular size={14} />
                   </span>
                 )}
                 <span className="composer-attachment-name" title={attachment.name}>
@@ -233,7 +233,7 @@ export function ChatComposer({
                   aria-label={`Remove ${attachment.name}`}
                   title="Remove attachment"
                 >
-                  <XIcon size={10} />
+                  <CloseRegular size={10} />
                 </button>
               </li>
             ))}
@@ -288,7 +288,7 @@ export function ChatComposer({
               aria-expanded={helpOpen}
               aria-controls="shortcuts-help"
             >
-              <QuestionIcon size={11} />
+              <QuestionRegular size={11} />
               Shortcuts
             </button>
             {helpOpen && (
@@ -353,7 +353,7 @@ export function ChatComposer({
             aria-label={compacting ? "Compacting context" : "Send"}
             title={compacting ? "Compacting context…" : "Send"}
           >
-            <PaperPlaneRightIcon size={16} weight="fill" />
+            <SendFilled size={16} />
           </button>
         </div>
       </form>

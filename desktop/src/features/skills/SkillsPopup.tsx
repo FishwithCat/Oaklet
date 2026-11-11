@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArrowClockwiseIcon,
-  SparkleIcon,
-  XIcon,
-} from "@phosphor-icons/react";
+  CloseRegular,
+  Refresh3Regular,
+  Sparkles3Regular,
+} from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
 import { sourceLabel, type SkillList } from "./skills";
 
@@ -52,7 +52,7 @@ export function SkillsPopup({ onClose }: { onClose: () => void }) {
       >
         <div className="skills-popover-head">
           <div className="skills-popover-title">
-            <SparkleIcon size={16} />
+            <Sparkles3Regular size={16} />
             <h2 id="skills-title">Skills</h2>
             {skills && (
               <span className="skills-count">{skills.skills.length}</span>
@@ -67,7 +67,7 @@ export function SkillsPopup({ onClose }: { onClose: () => void }) {
               aria-label="Refresh skills"
               title="Refresh skills"
             >
-              <ArrowClockwiseIcon size={14} className={loading ? "spin" : ""} />
+              <Refresh3Regular size={14} className={loading ? "spin" : ""} />
             </button>
             <button
               type="button"
@@ -76,7 +76,7 @@ export function SkillsPopup({ onClose }: { onClose: () => void }) {
               aria-label="Close skills"
               title="Close"
             >
-              <XIcon size={14} />
+              <CloseRegular size={14} />
             </button>
           </div>
         </div>

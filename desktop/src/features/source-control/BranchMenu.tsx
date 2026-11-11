@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowClockwiseIcon,
-  CaretDownIcon,
-  CheckIcon,
-} from "@phosphor-icons/react";
+  CheckRegular,
+  DownSmallRegular,
+  Refresh3Regular,
+} from "@mingcute/react/core-regular";
 
 export function BranchMenu({
   active,
@@ -82,7 +82,7 @@ export function BranchMenu({
         title="Switch branch"
       >
         <span className="sc-branch-name">{branch || "detached"}</span>
-        <CaretDownIcon size={10} className="sc-branch-caret" />
+        <DownSmallRegular size={10} className="sc-branch-caret" />
       </button>
 
       {open && (
@@ -109,9 +109,9 @@ export function BranchMenu({
               >
                 <span>{item}</span>
                 {switchingBranch === item ? (
-                  <ArrowClockwiseIcon size={12} className="spin" />
+                  <Refresh3Regular size={12} className="spin" />
                 ) : item === branch ? (
-                  <CheckIcon size={11} weight="bold" />
+                  <CheckRegular size={11} />
                 ) : null}
               </button>
             ))
