@@ -1,10 +1,11 @@
 .chat {
   flex: 1;
-  overflow-y: auto;
+  /* Always reserve the scrollbar so it can't shift the thread when it appears. */
+  overflow-y: scroll;
   overflow-x: hidden;
-  padding: 30px 18px 10px;
-  /* both-edges keeps the centered thread aligned with the composer */
-  scrollbar-gutter: stable both-edges;
+  /* Mirror the right scrollbar on the left to keep the centered thread and
+     empty state aligned with the composer. */
+  padding: 30px 18px 10px calc(18px + var(--scrollbar-size));
 }
 
 .chat[hidden] {
