@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { FileRegular, LoadingRegular } from "@mingcute/react/core-regular";
+import { FileRegular } from "@mingcute/react/core-regular";
 import { MarkdownText } from "../../shared/Markdown";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
@@ -100,9 +100,8 @@ export function ChatThread({
         );
       })}
       {compacting && (
-        <div className="compacting-status" role="status">
-          <LoadingRegular size={13} className="spin" aria-hidden="true" />
-          <span className="shimmer">Compacting context…</span>
+        <div className="notice" role="status">
+          Compacting context…
         </div>
       )}
       <div ref={endRef} />

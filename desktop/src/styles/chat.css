@@ -40,24 +40,6 @@
   padding-bottom: 8px;
 }
 
-.compacting-status {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel);
-  font-size: 12px;
-  line-height: 1;
-  color: var(--muted);
-}
-
-.compacting-status .shimmer {
-  font-weight: 550;
-}
-
 .empty {
   max-width: 680px;
   margin: auto;
