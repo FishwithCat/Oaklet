@@ -65,12 +65,19 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
+/* Every view header shares one height so switching pages never shifts content. */
+.view-head,
+.sc-head,
+.arch-head {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
 .view-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
 }
 

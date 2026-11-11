@@ -26,7 +26,6 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
-  padding: 7px 12px;
   border-bottom: 1px solid var(--border);
 }
 
