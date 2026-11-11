@@ -179,6 +179,29 @@ mod tests {
     use super::{Event, spawn_shell};
     use crate::tools::test_support::temp_root;
 
+    /// Spawns the test shell, or skips the test when the sandbox forbids PTYs.
+    ///
+    /// Restricted environments (for example the workspace sandbox) deny opening
+    /// `/dev/ptmx`, so these integration-style tests cannot run there. Any other
+    /// spawn failure is still a real test failure.
+    #[cfg(unix)]
+    fn spawn_or_skip(
+        root: &std::path::Path,
+    ) -> Option<(super::Session, std::sync::mpsc::Receiver<Event>)> {
+        match spawn_shell(root, 80, 24, Some("/bin/sh")) {
+            Ok(shell) => Some(shell),
+            Err(error)
+                if error.starts_with("Could not open a terminal:")
+                    && error.contains("PermissionDenied") =>
+            {
+                eprintln!("skipping PTY test: {error}");
+                let _ = std::fs::remove_dir_all(root);
+                None
+            }
+            Err(error) => panic!("could not start a shell: {error}"),
+        }
+    }
+
     fn wait_for(events: &std::sync::mpsc::Receiver<Event>, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut output = String::new();
@@ -234,7 +257,9 @@ mod tests {
     fn runs_a_shell_in_the_workspace() {
         let root = temp_root("pty");
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        let (mut session, events) = spawn_shell(&root, 80, 24, Some("/bin/sh")).unwrap();
+        let Some((mut session, events)) = spawn_or_skip(&root) else {
+            return;
+        };
 
         session.write(b"echo $((6*7))\r").unwrap();
         wait_for(&events, "42");
@@ -250,7 +275,9 @@ mod tests {
     #[test]
     fn ctrl_c_interrupts_the_foreground_process() {
         let root = temp_root("pty-interrupt");
-        let (mut session, events) = spawn_shell(&root, 80, 24, Some("/bin/sh")).unwrap();
+        let Some((mut session, events)) = spawn_or_skip(&root) else {
+            return;
+        };
 
         session.write(b"sleep 30\r").unwrap();
         std::thread::sleep(Duration::from_millis(200));
@@ -265,7 +292,9 @@ mod tests {
     #[test]
     fn reports_the_shell_exit() {
         let root = temp_root("pty-exit");
-        let (mut session, events) = spawn_shell(&root, 80, 24, Some("/bin/sh")).unwrap();
+        let Some((mut session, events)) = spawn_or_skip(&root) else {
+            return;
+        };
 
         session.write(b"exit\r").unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -283,7 +312,9 @@ mod tests {
     #[test]
     fn closing_the_session_stops_the_shell() {
         let root = temp_root("pty-close");
-        let (mut session, events) = spawn_shell(&root, 80, 24, Some("/bin/sh")).unwrap();
+        let Some((mut session, events)) = spawn_or_skip(&root) else {
+            return;
+        };
 
         session.write(b"sleep 30\r").unwrap();
         std::thread::sleep(Duration::from_millis(200));
