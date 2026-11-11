@@ -9,9 +9,11 @@ import type { AppConfig } from "../features/settings/config";
  * command-allowance refresh stay with App, which coordinates them on success.
  */
 export function useWorkspaceConfig({
+  beforeWorkspaceChange,
   onFirstRun,
   onWorkspaceChanged,
 }: {
+  beforeWorkspaceChange: () => Promise<boolean>;
   onFirstRun: () => void;
   onWorkspaceChanged: () => void;
 }) {
@@ -44,7 +46,8 @@ export function useWorkspaceConfig({
         multiple: false,
         defaultPath: config.workspace || undefined,
       });
-      if (typeof picked !== "string") return;
+      if (typeof picked !== "string" || picked === config.workspace) return;
+      if (!await beforeWorkspaceChange()) return;
       const saved = await invoke<AppConfig>("save_config", {
         config: { ...config, workspace: picked },
       });

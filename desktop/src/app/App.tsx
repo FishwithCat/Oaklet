@@ -7,11 +7,13 @@ import { SkillsPopup } from "../features/skills/SkillsPopup";
 import { SourceControl } from "../features/source-control/SourceControl";
 import { useGitChanges } from "../features/source-control/useGitChanges";
 import { Terminal, type TerminalHandle } from "../features/terminal/Terminal";
+import type { FilesHandle } from "../features/files/Files";
 import { agentShortcut } from "./shortcuts";
 import { Sidebar, type AppView } from "./Sidebar";
 import { useWorkspaceConfig } from "./useWorkspaceConfig";
 import "../styles/index.css";
 
+const Files = lazy(() => import("../features/files/Files"));
 const Architecture = lazy(() => import("../features/architecture/Architecture"));
 
 function App() {
@@ -19,6 +21,8 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [view, setView] = useState<AppView>("chat");
+  const [filesOpened, setFilesOpened] = useState(false);
+  const filesRef = useRef<FilesHandle>(null);
   const [architectureOpened, setArchitectureOpened] = useState(false);
   const [workspaceTick, setWorkspaceTick] = useState(0);
   const chatRef = useRef<ChatHandle>(null);
@@ -26,6 +30,7 @@ function App() {
 
   const { config, loadFailed, browsingWorkspace, chooseWorkspace, setConfig } =
     useWorkspaceConfig({
+      beforeWorkspaceChange: async () => await filesRef.current?.canLeave() ?? true,
       onFirstRun: () => setSettingsOpen(true),
       onWorkspaceChanged: () => {
         setWorkspaceTick((value) => value + 1);
@@ -54,6 +59,7 @@ function App() {
     if (next === "git" && view !== "git") {
       setWorkspaceTick((value) => value + 1);
     }
+    if (next === "files") setFilesOpened(true);
     if (next === "architecture") setArchitectureOpened(true);
     setView(next);
   }
@@ -158,6 +164,19 @@ function App() {
           refreshToken={workspaceTick}
           onRefresh={() => setWorkspaceTick((value) => value + 1)}
         />
+
+        {filesOpened && (
+          <Suspense fallback={view === "files" ? <div className="loading">Loading files...</div> : null}>
+            <Files
+              ref={filesRef}
+              key={config.workspace}
+              active={view === "files"}
+              workspace={config.workspace}
+              refreshToken={workspaceTick}
+              onSaved={() => setWorkspaceTick((value) => value + 1)}
+            />
+          </Suspense>
+        )}
 
         {architectureOpened && (
           <Suspense

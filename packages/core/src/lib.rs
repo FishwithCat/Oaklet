@@ -3,6 +3,7 @@ mod architecture;
 mod compaction;
 mod context;
 mod git;
+mod files;
 mod repeat;
 mod terminal;
 mod tools;
@@ -803,6 +804,9 @@ pub fn run() {
             command_allow_all_active,
             revoke_command_allow_all,
             skills_list,
+            files::files_list,
+            files::files_read,
+            files::files_save,
             git_log,
             git_show,
             git_switch,

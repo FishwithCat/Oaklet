@@ -2,6 +2,7 @@
 @import "./base.css";
 @import "./controls.css";
 @import "./layout.css";
+@import "./files.css";
 @import "./chat.css";
 @import "./terminal.css";
 @import "./process.css";

@@ -1,6 +1,7 @@
 import {
   ChatDotsIcon,
   FolderOpenIcon,
+  FilesIcon,
   GearIcon,
   GitBranchIcon,
   ShieldCheckIcon,
@@ -9,7 +10,7 @@ import {
   TreeStructureIcon,
 } from "@phosphor-icons/react";
 
-export type AppView = "chat" | "terminal" | "git" | "architecture";
+export type AppView = "chat" | "terminal" | "git" | "architecture" | "files";
 
 export function Sidebar({
   view,
@@ -97,6 +98,16 @@ export function Sidebar({
         title="Architecture"
       >
         <TreeStructureIcon size={18} />
+      </button>
+      <button
+        type="button"
+        className={`ghost icon-button files-toggle${view === "files" ? " active" : ""}`}
+        onClick={() => onSelectView("files")}
+        aria-label="Files"
+        aria-pressed={view === "files"}
+        title="Files"
+      >
+        <FilesIcon size={18} />
       </button>
       <div className="sidebar-foot">
         {allowAll && (
