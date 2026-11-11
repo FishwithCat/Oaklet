@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowClockwiseIcon, CaretDownIcon, CaretRightIcon, FileTextIcon, FolderIcon, FolderOpenIcon } from "@phosphor-icons/react";
 import { errorText } from "../../shared/error-text";
-import { fileTreeRows, type FileEntry } from "./file-model";
+import { fileTreeRows, workspaceName, type FileEntry } from "./file-model";
 
 export function FileTree({ workspace, active, refreshToken, selected, busy, onOpen }: {
   workspace: string;
@@ -22,7 +22,7 @@ export function FileTree({ workspace, active, refreshToken, selected, busy, onOp
   expandedRef.current = expanded;
   const generation = useRef(0);
   const buttons = useRef(new Map<string, HTMLButtonElement>());
-  const root = { name: workspace.split(/[/\\]/).filter(Boolean).pop() || workspace, path: ".", directory: true };
+  const root = { name: workspaceName(workspace), path: ".", directory: true };
   const rows = [
     { entry: root, depth: 0, parent: ".", position: 1, siblings: 1 },
     ...fileTreeRows(directories, expanded).map((row) => ({ ...row, depth: row.depth + 1 })),
@@ -139,7 +139,7 @@ export function FileTree({ workspace, active, refreshToken, selected, busy, onOp
                 ))}
                 {entry.directory ? (open ? <CaretDownIcon size={12} /> : <CaretRightIcon size={12} />) : <span className="files-tree-spacer" />}
                 {entry.directory ? (open ? <FolderOpenIcon size={16} /> : <FolderIcon size={16} />) : <FileTextIcon size={16} />}
-                <span>{entry.name}</span>
+                <span className="files-entry-label">{entry.name}</span>
               </button>
               {open && entry.path !== "." && loading.has(entry.path) && <p role="status" className="files-tree-status">Loading {entry.name}…</p>}
               {open && entry.path !== "." && errors[entry.path] && <p role="alert" className="files-error">{errors[entry.path]}</p>}

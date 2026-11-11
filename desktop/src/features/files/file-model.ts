@@ -1,5 +1,14 @@
 export type FileEntry = { name: string; path: string; directory: boolean };
 
+export function workspaceName(workspace: string): string {
+  return workspace.split(/[/\\]/).filter(Boolean).pop() || workspace;
+}
+
+/** Path segments shown in the editor breadcrumbs, starting at the workspace. */
+export function breadcrumbParts(workspace: string, path: string): string[] {
+  return [workspaceName(workspace), ...path.split(/[/\\]/).filter(Boolean)];
+}
+
 export function fileTreeRows(
   directories: Record<string, FileEntry[]>,
   expanded: ReadonlySet<string>,

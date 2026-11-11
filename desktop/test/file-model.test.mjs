@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fileTreeRows, lineSeparator, editorText, savedText } from "../src/features/files/file-model.ts";
+import { breadcrumbParts, fileTreeRows, lineSeparator, editorText, savedText } from "../src/features/files/file-model.ts";
+
+test("breadcrumbs start at the workspace root and split both separators", () => {
+  assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
+    "acorn",
+    "src",
+    "styles",
+    "theme.css",
+  ]);
+  assert.deepEqual(breadcrumbParts("C:\\work\\acorn\\", "src\\main.ts"), [
+    "acorn",
+    "src",
+    "main.ts",
+  ]);
+});
 
 test("tree reveals only expanded branches and preserves nested expansion", () => {
   const folder = (path) => ({ path, name: path.split("/").pop(), directory: true });

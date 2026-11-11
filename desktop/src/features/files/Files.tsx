@@ -1,13 +1,13 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { ArrowClockwiseIcon, CodeIcon, EyeIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, CaretRightIcon, CodeIcon, EyeIcon, FileTextIcon, XIcon } from "@phosphor-icons/react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorState, type Extension } from "@codemirror/state";
 import { MarkdownText } from "../../shared/Markdown";
 import { errorText } from "../../shared/error-text";
-import { editorText, savedText } from "./file-model";
+import { breadcrumbParts, editorText, savedText } from "./file-model";
 
 import { FileTree } from "./FileTree";
 
@@ -142,10 +142,26 @@ export default function Files({ ref, active, workspace, refreshToken, onSaved }:
         {error && <p role="alert" className="files-error">{error}</p>}
         {document ? <>
           <div className="files-toolbar">
-            <span className="files-path" title={document.path}>{document.path}{dirty ? " • Unsaved" : ""}</span>
-            <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(document.path)}><ArrowClockwiseIcon size={14} /></button>
-            {/\.(md|mdx)$/i.test(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeIcon size={14} /> : <EyeIcon size={14} />}</button>}
-            <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); dirtyRef.current = false; } }}><XIcon size={14} /></button>
+            <nav className="files-breadcrumbs" aria-label="File path" title={document.path}>
+              {breadcrumbParts(workspace, document.path).map((part, index, parts) => {
+                const last = index === parts.length - 1;
+                return (
+                  <Fragment key={`${index}:${part}`}>
+                    {index > 0 && <CaretRightIcon className="files-crumb-sep" size={10} aria-hidden="true" />}
+                    <span className={`files-crumb${last ? " files-crumb-file" : ""}`} aria-current={last ? "page" : undefined}>
+                      {last && <FileTextIcon size={12} aria-hidden="true" />}
+                      <span className="files-crumb-label">{part}</span>
+                      {last && dirty && <><span className="files-dirty" aria-hidden="true">●</span><span className="sr-only">Unsaved changes</span></>}
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </nav>
+            <div className="files-actions">
+              <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(document.path)}><ArrowClockwiseIcon size={14} /></button>
+              {/\.(md|mdx)$/i.test(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeIcon size={14} /> : <EyeIcon size={14} />}</button>}
+              <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); dirtyRef.current = false; } }}><XIcon size={14} /></button>
+            </div>
           </div>
           {preview ? <div className="files-preview"><MarkdownText text={document.content} /></div> :
             <CodeMirror key={document.path} className="files-editor" value={document.content} height="100%" extensions={extensions}
