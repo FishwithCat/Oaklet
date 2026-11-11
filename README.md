@@ -13,9 +13,10 @@ enough to read in one sitting.
 
 - Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
 - Multiple chat tabs, each titled by its first prompt and with its own
-  conversation and draft. Runs keep streaming while you switch tabs; Command+N
-  opens a new chat tab, and Command+R restores a saved session into its existing
-  tab or a new one.
+  conversation and draft. Sessions and runs live in the backend and survive a
+  restart; runs keep streaming while you switch tabs. Command+N opens a new
+  chat tab, and Command+R restores a saved session into its existing tab or a
+  new one.
 - Paste screenshots or text files into the composer to attach them to the next
   message. Images are downscaled and sent as OpenAI-style image parts, so the
   configured model must accept image input; text files are inlined up to 200 KB.
@@ -48,7 +49,8 @@ enough to read in one sitting.
 ## Layout
 
 - `desktop/` — React/TypeScript UI (Vite)
-- `packages/core/` — Rust backend (Tauri app, agent loop, tools)
+- `packages/core/` — Rust backend (Tauri app, agent loop, tools, sessions and
+  runs in SQLite)
 - `architecture-helper/` — pinned LikeC4 preview compiler and agent MCP bridge
 
 Tools live in `packages/core/src/tools/`. Each tool owns its schema,
@@ -57,9 +59,27 @@ body; the registry projects the model-facing schemas and the execution pipeline
 owns lookup, approval, deadlines, and result normalization. Adding a tool does
 not touch the agent loop or the chat UI.
 
-The Rust side owns the conversation for a turn. It streams model deltas to the
-UI over Tauri events, executes tools locally, and returns the updated message
-history when the turn ends. The UI never executes files or commands itself.
+The Rust side owns sessions and runs. A session's model history and rendered
+transcript live in a SQLite database under the app data directory, and every
+run is recorded from start to finish. Rust streams deltas over Tauri events,
+executes tools locally, writes the turn back in one transaction, and publishes
+the final session view. The UI is a render cache: it never stores conversation
+state or executes files or commands itself. Open tabs, drafts, and the active
+tab are client UI state.
+
+### Session storage
+
+Conversations live in `oaklet.db` in the app data directory (`0600` on Unix)
+instead of the webview's `localStorage`. The database holds the model-facing
+messages and the rendered transcript for every session, plus one row per run
+and its status. History is no longer capped at 20 sessions.
+
+On upgrade, history saved by older builds in `localStorage` is imported once;
+the old keys are removed only after the backend accepts them. If the app closes
+while a run is working, the next start marks that run `interrupted`, appends a
+notice to the conversation, and leaves the session available to continue.
+Restarting still clears the open tabs (they are client state), but every
+session and transcript is restored from History.
 
 ## Development
 
@@ -350,5 +370,6 @@ as `qwen2.5-coder`.
 
 ## Status
 
-Initial MVP. Open chat tabs are in memory (restarting the app clears them;
-completed sessions remain in history), and there is no syntax highlighting.
+Initial MVP. Open chat tabs and drafts are in memory (restarting the app clears
+them; every chat session remains in History), there is no multi-device server
+yet, and there is no syntax highlighting.
