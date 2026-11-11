@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="desktop/src/assets/oaklet-icon.png" width="170" alt="Oaklet logo">
+</p>
+
 # Oaklet
 
 A local code agent with a Tauri 2 desktop shell: React/TypeScript UI, Rust agent

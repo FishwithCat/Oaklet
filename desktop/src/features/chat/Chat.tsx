@@ -18,6 +18,7 @@ import { mergeDraft, shouldShowContextGauge, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo, ContextUsage } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
+import oakletIcon from "../../assets/oaklet-icon.png";
 
 const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
   working: "Working",
@@ -194,6 +195,13 @@ export function Chat({
       >
         {items.length === 0 ? (
           <div className="empty">
+            <img
+              className="empty-logo"
+              src={oakletIcon}
+              alt="Oaklet"
+              width={76}
+              height={76}
+            />
             <h1>What should we build?</h1>
           </div>
         ) : (

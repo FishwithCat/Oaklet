@@ -65,6 +65,14 @@
   text-align: center;
 }
 
+.empty-logo {
+  display: block;
+  margin: 0 auto 14px;
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+}
+
 .empty h1 {
   font-size: 29px;
   font-weight: 620;
