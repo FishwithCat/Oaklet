@@ -6,205 +6,128 @@
 
 A local code agent with a Tauri 2 desktop shell: React/TypeScript UI, Rust agent
 runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), kept small
-enough to read in one sitting.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-## What it does
+## Quick start
 
-- Chats with any OpenAI-compatible `chat/completions` API (DeepSeek by default).
-- Multiple chat tabs, each titled by its first prompt and with its own
-  conversation and draft. Sessions and runs live in the backend and survive a
-  restart; runs keep streaming while you switch tabs. Command+N opens a new
-  chat tab, and Command+R restores a saved session into its existing tab or a
-  new one.
-- Paste screenshots or text files into the composer to attach them to the next
-  message. Images are downscaled and sent as OpenAI-style image parts, so the
-  configured model must accept image input; text files are inlined up to 200 KB.
-- Streams assistant text and model reasoning, renders Markdown replies, and
-  folds thinking and tool calls into compact, expandable process rows.
-- Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
-  `likec4_mcp`, `skill` when the workspace defines skills, tools from
-  configured MCP servers, and `web_search` when an API key is set.
-- A terminal view in the sidebar backed by real PTYs: multiple tabs, interactive
-  shells, colors, job control (`Ctrl+C`), and full scrollback, starting in the
-  workspace. Select text in chat and click **Send to Terminal** to run it in the
-  active tab.
-- A source control view split into **Changes** (uncommitted files with their
-  diffs) and **Commits** (the current branch, the last 100 commits, and the diff
-  of each commit with per-file stats and line numbers). The branch pill switches
-  local branches. Its sidebar badge counts files with changes not staged for
-  commit. Diff previews are limited to 1 MiB and display one file at a time,
-  with 200 lines per page. Larger patches can be inspected in the terminal.
-- An architecture view: discovers existing LikeC4 models in the workspace and
-  renders their views. Generation and updates are ordinary, editable chat
-  requests handled by the configured agent. When a workspace already contains
-  LikeC4 sources, the agent is also asked to keep the affected model in sync
-  after code changes.
-- Asks before every shell command; the approval card shows the exact command
-  and can allow all commands in the workspace.
-- Confines file tools to the chosen workspace and refuses writes inside `.git`.
-- Stores the API key in the app config directory (`0600` on Unix), never in the
-  repository.
+1. Click the folder icon in the sidebar and choose a workspace. File tools stay
+   inside it.
+2. Open **Settings**, use the **Model** tab, enter an API key, and choose a Base
+   URL and model. DeepSeek is the default.
+3. Describe a change and send it. The agent reads and edits files, runs commands
+   after your approval, and streams the result into the chat.
 
-## Layout
+To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- `desktop/` — React/TypeScript UI (Vite)
-- `packages/core/` — Rust backend (Tauri app, agent loop, tools, sessions and
-  runs in SQLite)
-- `architecture-helper/` — pinned LikeC4 preview compiler and agent MCP bridge
+## Chat
 
-Tools live in `packages/core/src/tools/`. Each tool owns its schema,
-system-prompt guidance, pending-call summary, approval policy, timeout, and
-body; the registry projects the model-facing schemas and the execution pipeline
-owns lookup, approval, deadlines, and result normalization. Adding a tool does
-not touch the agent loop or the chat UI.
+- Multiple tabs, each titled by its first prompt and with its own conversation
+  and draft. **⌘N** opens a tab and **⌘R** restores a saved session. Sessions
+  and runs live in the backend, so they survive a restart and keep streaming
+  while you switch tabs.
+- Paste screenshots or text files into the composer. Images are downscaled and
+  sent as image parts, so the configured model must accept image input; text
+  files are inlined up to 200 KB.
+- Replies stream as Markdown. Thinking and tool calls fold into compact,
+  expandable process rows.
+- Select text in chat and click **Send to Terminal** to run it in the active
+  terminal tab.
+- **Stop** cancels the model request, a running command, or a pending approval.
+- The plant in the composer's top-left corner estimates the next request against
+  the context window and turns from green to yellow to red. Hover it for the
+  percentage and token counts; click it while idle to fold older turns into a
+  checkpoint immediately.
 
-The Rust side owns sessions and runs. A session's model history and rendered
-transcript live in a SQLite database under the app data directory, and every
-run is recorded from start to finish. Rust streams deltas over Tauri events,
-executes tools locally, writes the turn back in one transaction, and publishes
-the final session view. The UI is a render cache: it never stores conversation
-state or executes files or commands itself. Open tabs, drafts, and the active
-tab are client UI state.
+The agent has `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
+and, depending on your setup, `likec4_mcp`, `skill`, MCP server tools, and
+`web_search`.
 
-### Session storage
+## Workspace views
 
-Conversations live in `oaklet.db` in the app data directory (`0600` on Unix)
-instead of the webview's `localStorage`. The database holds the model-facing
-messages and the rendered transcript for every session, plus one row per run
-and its status. History is no longer capped at 20 sessions.
+**Terminal** is backed by real PTYs: multiple tabs, interactive shells, colors,
+job control (`Ctrl+C`), and full scrollback, starting in the workspace.
 
-On upgrade, history saved by older builds in `localStorage` is imported once;
-the old keys are removed only after the backend accepts them. If the app closes
-while a run is working, the next start marks that run `interrupted`, appends a
-notice to the conversation, and leaves the session available to continue.
-Restarting still clears the open tabs (they are client state), but every
-session and transcript is restored from History.
+**Files** browses the workspace as a tree and opens files in an editor. Markdown
+can be previewed, and **⌘S** saves.
 
-## Development
+**Source control** has **Changes** (uncommitted files with diffs) and
+**Commits** (current branch, last 100 commits, and the diff of each with
+per-file stats). The branch pill switches branches, and the sidebar badge counts
+files with unstaged changes. Diff previews are limited to 1 MiB, show one file
+at a time, and paginate at 200 lines.
 
-```sh
-cd desktop
-pnpm install
-pnpm tauri dev
+**Architecture** discovers LikeC4 models in the workspace and renders their
+views. **Generate architecture** and **Update with agent** put an editable prompt
+in the composer without discarding your draft; the normal chat flow still sends,
+approves, and can cancel it. Viewing an existing model never calls the model
+provider. The view re-reads when activated or refreshed and keeps the last valid
+diagram, marked stale, while new sources are invalid. It does not watch the
+filesystem.
+
+## Settings
+
+Open **Settings** in the sidebar. Changes apply to the next run.
+
+| Setting        | Default                                    |
+| -------------- | ------------------------------------------ |
+| API key        | none                                       |
+| Base URL       | `https://api.deepseek.com`                 |
+| Model          | `deepseek-flash`                           |
+| Context window | `262144` tokens                            |
+| Search URL     | `https://api.deepseek.com/v1/tools/search` |
+| MCP servers    | none                                       |
+| Workspace      | your home directory                        |
+
+For another OpenAI-compatible provider, set its base URL (for example
+`https://api.openai.com/v1`) and model. For a local setup with
+[Ollama](https://ollama.com), use `http://localhost:11434/v1` and a model such
+as `qwen2.5-coder`.
+
+## Skills
+
+Skills are reusable Markdown instructions the agent loads only when a task
+matches. Oaklet scans these folders (no recursion) at the start of every run; a
+higher row wins a duplicate name:
+
+| Priority | Folder                       |
+| -------- | ---------------------------- |
+| 1        | `<workspace>/.oaklet/skills` |
+| 2        | `<workspace>/.agents/skills` |
+| 3        | `~/.oaklet/skills`           |
+| 4        | `~/.agents/skills`           |
+
+A skill is either a directory containing `SKILL.md` or a flat `<name>.md`:
+
+```markdown
+---
+name: review
+description: Review a pull request for correctness, lifecycle, and test gaps.
+whenToUse: When the user asks for a code review.
+disable-model-invocation: false
+user-invocable: true
+---
+
+# Reviewing a change
+
+Read the diff first...
 ```
 
-Install the architecture compiler once before opening the Architecture view or
-building a bundle:
+`name` must be lower-case kebab-case and `description` is required. Set
+`disable-model-invocation: true` to keep the model from loading a skill;
+`user-invocable` is reserved for future `/name` invocation. The model sees a
+summary and calls `skill({"name":"review"})` to load the full body. Bodies are
+re-read on each load, so edits apply to the next call, and relative references
+resolve from the skill's own directory. Skill files are limited to 256 KiB and
+bodies to 24,000 characters.
 
-```sh
-cd architecture-helper
-pnpm install
-```
+The **Skills** icon in the sidebar lists discovered skills, their source and
+invocation flags, and any skipped files. **Refresh** rescans immediately; the
+popup is read-only.
 
-It requires a local Node.js 22.22.3 or newer runtime. Set `OAKLET_NODE` to a
-different executable, or `OAKLET_ARCHITECTURE_HELPER` to a different helper
-directory, if the defaults do not fit. When the runtime or helper is missing,
-the Architecture view explains the problem and leaves the rest of Oaklet
-working.
+## MCP servers
 
-Frontend only: `pnpm dev`. The browser has no Tauri IPC, so this is only useful
-for styling. Build frontend: `pnpm build`. Rust checks:
-
-```sh
-cd packages/core
-cargo test
-cargo clippy --all-targets
-```
-
-Helper checks:
-
-```sh
-cd architecture-helper
-pnpm test
-```
-
-Before packaging, make sure `architecture-helper/node_modules` exists; Tauri
-embeds that directory as an application resource. The packaged helper is
-resolved from the app's resource directory. Development builds fall back to the
-helper in the Oaklet checkout.
-
-## Architecture models
-
-The Architecture view scans `config.workspace` for `*.c4` and `*.likec4` files,
-honoring git and `.ignore` rules without requiring a Git repository. A JSON
-`likec4.config.json` groups its directory tree into one model root, with nested
-configurations defining separate projects. Files without an ancestor configuration
-share the workspace default model, even when spread across directories, matching
-MCP project grouping. If discovery finds independent roots, the view asks which one to
-load. **Scan ignored files** is available when a model lives in an ignored
-directory.
-
-Opening the view only reads models. If no model exists, **Generate architecture**
-offers the default location `architecture/model.c4`; otherwise **Update with
-agent** targets the selected model files. Both actions put an editable prompt in
-the existing chat composer without discarding its draft. The user still sends,
-approves commands, and can cancel through the normal chat flow.
-
-When the workspace contains `*.c4` or `*.likec4` sources, the agent's system
-prompt names a few of them and asks the agent to update the affected model after
-finishing code changes, preserving existing IDs, views, and manual descriptions.
-This applies to ordinary chat requests too, not only to **Update with agent**.
-
-Viewing an existing model never calls the model provider, so it works without an
-API key. Generation and updates use the configured provider and existing
-approval flow like any other coding request.
-
-The view re-reads on activation, on **Refresh**, and after an agent run finishes
-or fails. It does not watch the filesystem, so external edits appear on the next
-activation or refresh. Compilation is skipped when the source contents have not
-changed. If new sources are invalid, the last valid diagram for the same
-workspace and model stays visible, marked as stale, with file and line
-diagnostics.
-
-Preview compilation is data-only: Oaklet sends the selected source text to the
-pinned helper, which parses it in a virtual workspace and runs Graphviz as
-WebAssembly. It does not execute `likec4.config.js`/`.ts`, Vite plugins,
-workspace package scripts, or a workspace-supplied executable. JSON configuration
-is read as data. Models that need executable configuration are reported but may
-need adaptation for this preview.
-
-Oaklet always validates the selected sources again in the pinned loader before
-showing a new result. If a workspace already has the LikeC4 CLI installed, an
-agent can also validate with `pnpm exec likec4 validate` through the normal
-command-approval flow; Oaklet does not install it or run a workspace-provided
-compiler automatically.
-
-Limits are deliberate: 500 model files during discovery, 200 source files and
-4 MB of source per model load, 1 MB per source file, 60 seconds of compiler time,
-and 16 MB of layout output. A load that hits a limit fails with an explanation
-instead of showing a partial diagram.
-
-### LikeC4 MCP for the agent
-
-The agent's `likec4_mcp` tool connects to the pinned official `@likec4/mcp`
-server (1.60.0). Call it with `{}` to discover tool names and input schemas,
-then with `{"tool":"list-projects","arguments":{}}` to find projects. Other
-tools query elements, views, and relationships using those schemas.
-
-It uses the same Node runtime and installed `architecture-helper` dependencies
-as the preview; no global CLI, server port, or runtime package download is needed.
-Each call loads the current workspace afresh, so edits are visible on the next
-call. Calls use MCP initialization, tool discovery, and tool invocation over
-local stdio streams inside one helper process. Cancellation or the 60-second
-deadline stops that process. Missing dependencies and MCP errors become tool
-errors; ordinary chat and file tools remain usable.
-
-Unlike data-only preview compilation, the official MCP loader may execute
-workspace LikeC4 configuration and read files it references. LikeC4 MCP calls are
-automatically allowed without an approval prompt, independent of **Allow all in
-workspace** for shell commands. Use it with trusted projects. Results are returned as JSON/text;
-MCP Apps interactive widgets are not rendered in chat. Continue to use file tools
-for model edits and the Architecture view for diagrams.
-
-### MCP servers
-
-**Settings → MCP** connects Oaklet to other MCP servers. Each configured server
-can be enabled or disabled independently: a disabled server keeps its settings
-but exposes no tools to the agent. Changes apply to the next agent run; a turn
-that is already running keeps the tools it started with.
-
-The tab edits the standard `mcpServers` JSON document:
+**Settings → MCP** connects Oaklet to other MCP servers. The tab edits the
+standard `mcpServers` document:
 
 ```json
 {
@@ -226,150 +149,56 @@ The tab edits the standard `mcpServers` JSON document:
 }
 ```
 
-`type` is `stdio` or `streamableHttp` (the aliases `http` and `streamable_http`
-are also accepted). When `type` is omitted, a command selects stdio and a URL
-selects Streamable HTTP. Add `"enabled": false` to pause a server; the toggle
-list under the editor does the same without deleting its configuration.
+`type` is `stdio` or `streamableHttp` (`http` and `streamable_http` are also
+accepted). When omitted, a command selects stdio and a URL selects Streamable
+HTTP. Add `"enabled": false` to pause a server, or use the toggle list below the
+editor. Changes apply to the next run.
 
-Each discovered tool is exposed to the model as
-`mcp__<server>__<tool>`. Names are sanitized to the OpenAI function-name
-character set and shortened to 64 characters. Servers start in parallel when a
-run begins; a failed or slow server becomes a warning in the system prompt and
-does not stop the run. Tool calls have the same 60-second deadline as LikeC4
-MCP calls.
-
-MCP tools run without an approval prompt. Only enable servers and credentials you
-trust: a configured command runs with your user privileges, and an HTTP server
-can receive the headers entered in Settings. Tool results are treated as
-external data, never as instructions. Configuration, including environment
-values and headers, is stored in the app config file (`0600` on Unix).
-
-## Skills
-
-Skills are reusable Markdown instructions the agent loads only when a task
-matches. Oaklet scans these folders directly (no recursion) at the start of
-every agent run; a higher row wins a duplicate name:
-
-| Priority | Folder                       |
-| -------- | ---------------------------- |
-| 1        | `<workspace>/.oaklet/skills` |
-| 2        | `<workspace>/.agents/skills` |
-| 3        | `~/.oaklet/skills`           |
-| 4        | `~/.agents/skills`           |
-
-A skill is either a directory containing `SKILL.md` or a flat
-`<name>.md` file:
-
-```markdown
----
-name: review
-description: Review a pull request for correctness, lifecycle, and test gaps.
-whenToUse: When the user asks for a code review.
-disable-model-invocation: false
-user-invocable: true
----
-
-# Reviewing a change
-
-Read the diff first...
-```
-
-`name` must be lower-case kebab-case and `description` is required. Set
-`disable-model-invocation: true` to keep the model from loading a skill;
-`user-invocable` is reserved for future `/name` invocation. The body is
-returned inside `<skill_content>` with the skill's base directory, so relative
-references resolve next to the skill.
-
-The system prompt carries a summary of model-invocable skills. The agent calls
-`skill({"name":"review"})` to load the full body. Files are re-read on each
-load, so body edits apply to the next call; new or removed skills apply to the
-next message. Skill files are limited to 256 KiB and bodies to 24,000
-characters.
-
-The **Skills** icon in the sidebar opens a popup listing discovered skills,
-their source and invocation flags, and any files that were skipped. **Refresh**
-rescans immediately. The popup is read-only; edits and new files belong in the
-folders above.
+MCP tools run without an approval prompt. Only enable servers and credentials
+you trust: a configured command runs with your user privileges, and an HTTP
+server can receive the headers entered here. Tool output is treated as external
+data, never as instructions.
 
 ## Web search
 
-With an API key in **Settings**, the agent also gets `web_search`. It sends one
-query to the DeepSeek Search API (`https://api.deepseek.com/v1/tools/search`)
-with that key and asks for 10 results, then returns each source's title, URL,
-and summary (or snippet) with its date. The tool has a 20-second deadline and
-asks for no approval: it sends only the query, and to the provider the
-conversation already uses.
+With an API key in Settings, the agent also gets `web_search`. It sends one
+query to the DeepSeek Search API and returns up to 10 results with title, URL,
+summary or snippet, and date, within 20 seconds. It asks for no approval: it
+sends only the query, to the provider the conversation already uses.
 
-**Search URL** sets the endpoint. It defaults to the DeepSeek Search API and
-ignores the configured Base URL and Model, so search works with any model
-provider as long as the key is a DeepSeek key. The result count stays fixed at
-10, and an empty Search URL falls back to the default. Without a key the tool is
-not registered and the model never sees it, so clearing the key also disables
-web search.
+**Search URL** sets the endpoint and ignores the configured Base URL and Model,
+so search works with any model provider as long as the key is a DeepSeek key. An
+empty Search URL falls back to the default. Without a key the tool is not
+registered, so the model never sees it.
 
-## Configuration
+## Approvals and safety
 
-Open **Settings** in the app:
-
-| Setting    | Default                                    |
-| ---------- | ------------------------------------------ |
-| API key    | none                                       |
-| Base URL   | `https://api.deepseek.com`                 |
-| Model      | `deepseek-flash`                           |
-| Context window | `262144` tokens                        |
-| Search URL | `https://api.deepseek.com/v1/tools/search` |
-| MCP servers | none                                      |
-| Workspace  | your home directory                        |
-
-Oaklet keeps long tool output to its head and tail, and when a run approaches
-the context window it asks the model to replace older history with a short
-checkpoint. The system prompt and the current turn are never summarized.
-The composer shows the estimated size of the next request against the window
-as a small plant in its top-left corner that turns from green to yellow to
-red; hover it for the percentage and token counts. Click the plant while no run
-is active to replace every turn except the current one with a checkpoint
-immediately. The visible thread stays; the next request sends the shorter
-history.
-
-A run has no fixed step limit. Three cheaper controls bound the cost instead:
-every potentially slow tool call has its own timeout (`run_command` 120 seconds,
-MCP 60, `web_search` 20), repeating one identical call earns an advisory
-reminder at the third, fifth, and eighth try, and **Stop** cancels the model
-request, a running command, or a pending approval immediately.
-
-For another OpenAI-compatible provider, set its base URL (for example
-`https://api.openai.com/v1`) and model. For a fully local setup with
-[Ollama](https://ollama.com), use `http://localhost:11434/v1` and a model such
-as `qwen2.5-coder`.
-
-## Safety model
-
-- File tools resolve paths against the canonical workspace root, reject `..`
-  escapes, symlinked escapes, and `.git` writes.
-- `run_command` runs through the user's shell in the workspace and blocks on an
-  in-app approval before starting. It times out after 120 seconds and caps
-  captured output.
-- `web_search` sends the model's query text to the DeepSeek Search API. It runs
-  without an approval prompt, reads no workspace files, and is registered only
-  while an API key is configured.
-- MCP servers are user-configured programs and endpoints. Once enabled, their
-  tools run without an approval prompt and may read or change anything those
-  servers can reach. Their output is model input, not trusted instructions.
+- File tools resolve paths against the canonical workspace root and reject `..`
+  escapes, symlinked escapes, and writes inside `.git`.
+- `run_command` runs through your shell in the workspace and waits for an
+  approval card showing the exact command. It times out after 120 seconds and
+  caps captured output.
 - **Allow all in workspace** stops prompting for `run_command` in that workspace
-  for the rest of the app session. The sidebar shows an active indicator you can
-  click to revoke; the grant is in memory only and never applies to file tools
-  or another workspace. Commands can still touch files outside the workspace,
-  so only grant this in a project you trust.
-- Commands typed in the terminal view are not sent to the model and do not ask
-  for approval: the shell runs immediately in the workspace, with no timeout.
-- The agent can still run any command the user approves, including commands that
-  touch files outside the workspace. Read the approval card before allowing it.
-- Architecture preview sends only discovered model source text to the local,
-  pinned helper. It never executes workspace configuration or JavaScript, and
-  the compiler output is capped before it reaches the renderer.
+  for the rest of the app session. The sidebar indicator revokes it; the grant
+  is in memory only and never applies to file tools or another workspace.
+  Commands can still touch files outside the workspace, so grant it only in a
+  project you trust.
+- Commands typed in the terminal run immediately in the workspace, without
+  model involvement, approval, or a timeout.
+- MCP tools run without approval and can reach anything their server can. Their
+  output is model input, not trusted instructions.
+- Architecture preview parses model sources in the local, pinned helper. It does
+  not execute workspace configuration or JavaScript.
+- The agent stores the API key in the app config directory (`0600` on Unix),
+  never in the repository.
 
 ## Status
 
-Initial MVP. Open chat tabs and drafts are in memory (restarting the app clears
-them; every chat session remains in History), there is no multi-device server
-yet, and there is no syntax highlighting.
+Initial MVP. Open chat tabs and drafts are in memory (a restart clears them;
+every session remains in History), there is no multi-device server, and chat
+code blocks have no syntax highlighting.
+
+## Contributing
+
+Development setup, tests, packaging, and architecture notes are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
