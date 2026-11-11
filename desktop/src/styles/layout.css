@@ -99,15 +99,10 @@
 }
 
 button.allow-all-chip {
-  width: 32px;
-  height: 32px;
   color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 30%, transparent);
-  background: color-mix(in srgb, var(--green) 8%, transparent);
 }
 
-button.allow-all-chip:hover:not(:disabled) {
+.sidebar button.icon-button.allow-all-chip:hover:not(:disabled) {
   color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 50%, transparent);
-  background: color-mix(in srgb, var(--green) 14%, transparent);
+  background: transparent;
 }

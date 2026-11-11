@@ -4,7 +4,7 @@ import {
   FilesIcon,
   GearIcon,
   GitBranchIcon,
-  ShieldCheckIcon,
+  LeafIcon,
   SparkleIcon,
   TerminalWindowIcon,
   TreeStructureIcon,
@@ -118,7 +118,7 @@ export function Sidebar({
             aria-label="Revoke allowance for all commands"
             title="All commands in this workspace run without approval. Click to ask again."
           >
-            <ShieldCheckIcon size={16} />
+            <LeafIcon size={16} weight="fill" />
           </button>
         )}
         <button
