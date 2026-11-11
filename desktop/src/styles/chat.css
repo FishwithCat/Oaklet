@@ -97,10 +97,49 @@
   border-radius: 14px 14px 4px 14px;
   padding: 10px 14px;
   max-width: 78%;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
   font-size: 13.5px;
+}
+
+.bubble-text {
+  white-space: pre-wrap;
+}
+
+.bubble-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bubble-attachments + .bubble-text {
+  margin-top: 7px;
+}
+
+.bubble-image {
+  display: block;
+  max-width: 260px;
+  max-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-muted-border-strong);
+}
+
+.bubble-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  padding: 3px 8px;
+  border: 1px solid var(--panel-muted-border-strong);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.bubble-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .msg.assistant .bubble {
@@ -341,6 +380,94 @@
 
 .composer.has-context textarea {
   padding-left: 26px;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0 2px;
+  list-style: none;
+}
+
+/* The context gauge is absolutely positioned in the composer's left column;
+   keep chips from sliding underneath it. */
+.composer.has-context .composer-attachments,
+.composer.has-context .composer-error {
+  padding-left: 26px;
+}
+
+.composer-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 4px 5px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  font-size: 12px;
+}
+
+.composer-attachment img,
+.composer-attachment-icon {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 5px;
+}
+
+.composer-attachment img {
+  object-fit: cover;
+  display: block;
+}
+
+.composer-attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-muted-strong);
+  color: var(--muted);
+}
+
+.composer-attachment-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-size {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.composer-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.composer-error {
+  padding: 0 2px;
+  color: var(--red);
+  font-size: 11.5px;
 }
 
 .composer-footer {

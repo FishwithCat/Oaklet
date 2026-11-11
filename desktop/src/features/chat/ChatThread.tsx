@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, FileIcon } from "@phosphor-icons/react";
 import { MarkdownText } from "../../shared/Markdown";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
@@ -51,7 +51,34 @@ export function ChatThread({
         if (item.kind === "user") {
           return (
             <div className="msg user" key={`user-${block.index}`}>
-              <div className="bubble">{item.text}</div>
+              <div className="bubble">
+                {item.attachments && item.attachments.length > 0 && (
+                  <div className="bubble-attachments">
+                    {item.attachments.map((attachment, index) =>
+                      attachment.kind === "image" ? (
+                        <img
+                          key={`${attachment.name}-${index}`}
+                          className="bubble-image"
+                          src={attachment.thumbnail}
+                          alt={attachment.name}
+                          title={attachment.name}
+                        />
+                      ) : (
+                        <span
+                          className="bubble-file"
+                          key={`${attachment.name}-${index}`}
+                        >
+                          <FileIcon size={12} aria-hidden="true" />
+                          <span className="bubble-file-name">
+                            {attachment.name}
+                          </span>
+                        </span>
+                      ),
+                    )}
+                  </div>
+                )}
+                {item.text && <div className="bubble-text">{item.text}</div>}
+              </div>
             </div>
           );
         }

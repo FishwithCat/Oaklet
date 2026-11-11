@@ -1,7 +1,8 @@
 import type { ProcessItem } from "./process-model";
+import type { SentAttachment } from "./attachments";
 
 export type Item =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: SentAttachment[] }
   | { kind: "assistant"; text: string; streaming: boolean }
   | ProcessItem
   | { kind: "notice"; text: string; tone: "error" | "muted" };

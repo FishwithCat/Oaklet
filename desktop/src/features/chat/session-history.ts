@@ -20,7 +20,8 @@ function storageKey(workspace: string): string {
 export function sessionTitle(items: Item[]): string {
   const first = items.find((item) => item.kind === "user");
   if (!first || first.kind !== "user") return "";
-  const text = first.text.replace(/\s+/g, " ").trim();
+  const fallback = first.attachments?.map((attachment) => attachment.name).join(", ");
+  const text = (first.text || fallback || "").replace(/\s+/g, " ").trim();
   return text.length > 60 ? `${text.slice(0, 59)}…` : text;
 }
 

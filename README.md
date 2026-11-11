@@ -16,6 +16,9 @@ enough to read in one sitting.
   conversation and draft. Runs keep streaming while you switch tabs; Command+N
   opens a new chat tab, and Command+R restores a saved session into its existing
   tab or a new one.
+- Paste screenshots or text files into the composer to attach them to the next
+  message. Images are downscaled and sent as OpenAI-style image parts, so the
+  configured model must accept image input; text files are inlined up to 200 KB.
 - Streams assistant text and model reasoning, renders Markdown replies, and
   folds thinking and tool calls into compact, expandable process rows.
 - Tools: `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,

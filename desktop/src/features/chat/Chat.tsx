@@ -14,6 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatThread } from "./ChatThread";
+import type { Attachment } from "./attachments";
 import { mergeDraft, shouldShowContextGauge, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo, ContextUsage } from "./session-model";
@@ -61,17 +62,19 @@ export function Chat({
   compacting: boolean;
   activeRunId: string | null;
   context: ContextUsage | null;
-  onSend: (text: string) => boolean;
+  onSend: (text: string, attachments: Attachment[]) => boolean;
   onCompact: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
 }) {
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const chatRef = useRef<HTMLElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
   const stickToBottomRef = useRef(true);
   const draftsRef = useRef(new Map<string, string>());
+  const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
   const { selectionAction, selectionButtonRef, clearSelection } =
     useSelectionAction({ active, containerRef: chatRef });
@@ -80,6 +83,7 @@ export function Chat({
     if (lastTabIdRef.current === activeTabId) return;
     lastTabIdRef.current = activeTabId;
     setInput(draftsRef.current.get(activeTabId) ?? "");
+    setAttachments(attachmentsRef.current.get(activeTabId) ?? []);
     clearSelection();
     stickToBottomRef.current = true;
     endRef.current?.scrollIntoView({ block: "end" });
@@ -117,9 +121,22 @@ export function Chat({
     setInput(value);
   }
 
-  function submit(): boolean {
-    if (!onSend(input)) return false;
+  function updateAttachments(next: Attachment[]) {
+    attachmentsRef.current.set(activeTabId, next);
+    setAttachments(next);
+  }
+
+  function addAttachments(added: Attachment[]) {
+    updateAttachments([
+      ...(attachmentsRef.current.get(activeTabId) ?? []),
+      ...added,
+    ]);
+  }
+
+  function submit(attachments: Attachment[]): boolean {
+    if (!onSend(input, attachments)) return false;
     updateDraft("");
+    updateAttachments([]);
     stickToBottomRef.current = true;
     return true;
   }
@@ -245,7 +262,14 @@ export function Chat({
           compacting={compacting}
           context={context}
           showContextGauge={shouldShowContextGauge(context, items.length > 0)}
+          attachments={attachments}
           onChange={updateDraft}
+          onAddAttachments={addAttachments}
+          onRemoveAttachment={(index) =>
+            updateAttachments(
+              attachments.filter((_, position) => position !== index),
+            )
+          }
           onSubmit={submit}
           onCompact={onCompact}
         />

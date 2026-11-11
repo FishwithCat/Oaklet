@@ -26,6 +26,20 @@ test("session title uses the first user message on one line", () => {
   assert.equal(sessionTitle([{ kind: "user", text: "x".repeat(80) }]).length, 60);
 });
 
+test("session title falls back to attached file names", () => {
+  const items = [
+    {
+      kind: "user",
+      text: "",
+      attachments: [
+        { kind: "file", name: "error.log", bytes: 42 },
+        { kind: "file", name: "notes.md", bytes: 80 },
+      ],
+    },
+  ];
+  assert.equal(sessionTitle(items), "error.log, notes.md");
+});
+
 test("mergeSessions dedupes by id, sorts newest first, and caps the list", () => {
   const merged = mergeSessions(
     snapshot("b", 3),

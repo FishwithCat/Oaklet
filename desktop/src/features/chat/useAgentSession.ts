@@ -5,6 +5,11 @@ import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
 import { formatTokens, isBlankTab, type Item } from "./chat-model";
 import {
+  sentAttachments,
+  userContent,
+  type Attachment,
+} from "./attachments";
+import {
   loadSessions,
   saveSession,
   sessionTitle,
@@ -341,18 +346,25 @@ export function useAgentSession({
     );
   }
 
-  function send(text: string): boolean {
+  function send(text: string, attachments: Attachment[] = []): boolean {
     const trimmed = text.trim();
-    if (!trimmed || !enabled) return false;
+    if ((!trimmed && attachments.length === 0) || !enabled) return false;
 
     const tab = tabsRef.current.find((candidate) => candidate.id === activeTabId);
     if (!tab || tab.running || compactingRef.current) return false;
 
     const nextMessages = [
       ...tab.messages,
-      { role: "user", content: trimmed },
+      { role: "user", content: userContent(trimmed, attachments) },
     ];
-    const userItem: Item = { kind: "user", text: trimmed };
+    const userItem: Item =
+      attachments.length > 0
+        ? {
+            kind: "user",
+            text: trimmed,
+            attachments: sentAttachments(attachments),
+          }
+        : { kind: "user", text: trimmed };
     const title = sessionTitle([...tab.items, userItem]);
     runWorkspaceRef.current = workspaceRef.current;
     pendingSendsRef.current.add(tab.id);

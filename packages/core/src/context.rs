@@ -14,6 +14,11 @@ const MESSAGE_OVERHEAD: usize = 4;
 /// Framing cost of one multimodal content part.
 const PART_OVERHEAD: usize = 4;
 
+/// Rough cost of one attached image. Providers price a downscaled image near a
+/// thousand tokens; pricing its base64 data URL as prose would overstate a
+/// screenshot by orders of magnitude and trigger compaction right after paste.
+const IMAGE_TOKENS: usize = 1_100;
+
 /// ASCII prose packs about four characters per token.
 const ASCII_CHARS_PER_TOKEN: usize = 4;
 
@@ -44,9 +49,12 @@ pub(crate) fn estimate_message(message: &Value) -> usize {
         Some(Value::Array(parts)) => {
             for part in parts {
                 tokens += PART_OVERHEAD;
-                tokens += match part.get("text").and_then(Value::as_str) {
-                    Some(text) => estimate_text(text),
-                    None => estimate_text(&part.to_string()),
+                tokens += match part.get("type").and_then(Value::as_str) {
+                    Some("image_url" | "input_image") => IMAGE_TOKENS,
+                    _ => match part.get("text").and_then(Value::as_str) {
+                        Some(text) => estimate_text(text),
+                        None => estimate_text(&part.to_string()),
+                    },
                 };
             }
         }
@@ -160,6 +168,31 @@ mod tests {
             }]
         }));
         assert!(tool_call > plain);
+    }
+
+    #[test]
+    fn prices_an_image_part_below_its_data_url_size() {
+        let message = json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "what does this error say?" },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:image/png;base64,{}", "A".repeat(400_000))
+                    }
+                }
+            ]
+        });
+        let tokens = estimate_message(&message);
+        assert!(
+            tokens > IMAGE_TOKENS,
+            "{tokens} should include the text part"
+        );
+        assert!(
+            tokens < 2_000,
+            "{tokens} should not price the base64 payload"
+        );
     }
 
     #[test]

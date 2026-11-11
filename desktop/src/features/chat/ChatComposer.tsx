@@ -4,14 +4,23 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ClipboardEvent,
   type Ref,
 } from "react";
 import {
+  FileIcon,
   PaperPlaneRightIcon,
   PlantIcon,
   QuestionIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { isSendEnter } from "../../app/shortcuts";
+import { errorText } from "../../shared/error-text";
+import {
+  formatBytes,
+  readAttachment,
+  type Attachment,
+} from "./attachments";
 import { contextTier, formatContextUsage } from "./chat-model";
 import type { ContextUsage } from "./session-model";
 
@@ -72,7 +81,10 @@ export function ChatComposer({
   compacting,
   context,
   showContextGauge,
+  attachments,
   onChange,
+  onAddAttachments,
+  onRemoveAttachment,
   onSubmit,
   onCompact,
 }: {
@@ -83,11 +95,16 @@ export function ChatComposer({
   compacting: boolean;
   context: ContextUsage | null;
   showContextGauge: boolean;
+  attachments: Attachment[];
   onChange: (value: string) => void;
-  onSubmit: () => boolean;
+  onAddAttachments: (attachments: Attachment[]) => void;
+  onRemoveAttachment: (index: number) => void;
+  onSubmit: (attachments: Attachment[]) => boolean;
   onCompact: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [reading, setReading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
@@ -117,6 +134,7 @@ export function ChatComposer({
 
   useLayoutEffect(() => {
     setHelpOpen(false);
+    setAttachmentError("");
   }, [activeTabId]);
 
   useLayoutEffect(() => {
@@ -134,9 +152,40 @@ export function ChatComposer({
     element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
   }
 
+  async function pasteFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
+    // Safari exposes pasted files through `items`; Chromium fills `files`.
+    const fromItems = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    const files =
+      fromItems.length > 0 ? fromItems : Array.from(event.clipboardData.files);
+    // Plain text falls through to the browser's default paste.
+    if (files.length === 0) return;
+    event.preventDefault();
+    setAttachmentError("");
+    setReading(true);
+    try {
+      const added: Attachment[] = [];
+      for (const file of files) {
+        try {
+          added.push(await readAttachment(file));
+        } catch (error) {
+          setAttachmentError(errorText(error));
+        }
+      }
+      if (added.length > 0) {
+        onAddAttachments(added);
+      }
+    } finally {
+      setReading(false);
+    }
+  }
+
   function submit() {
-    if (compacting) return;
-    if (!onSubmit()) return;
+    if (compacting || reading) return;
+    if (!onSubmit(attachments)) return;
+    setAttachmentError("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }
 
@@ -157,6 +206,44 @@ export function ChatComposer({
             onCompact={onCompact}
           />
         )}
+        {attachments.length > 0 && (
+          <ul className="composer-attachments" aria-label="Attachments">
+            {attachments.map((attachment, index) => (
+              <li
+                className={`composer-attachment ${attachment.kind}`}
+                key={`${attachment.name}-${index}`}
+              >
+                {attachment.kind === "image" ? (
+                  <img src={attachment.thumbnail} alt="" />
+                ) : (
+                  <span className="composer-attachment-icon" aria-hidden="true">
+                    <FileIcon size={14} />
+                  </span>
+                )}
+                <span className="composer-attachment-name" title={attachment.name}>
+                  {attachment.name}
+                </span>
+                <span className="composer-attachment-size">
+                  {formatBytes(attachment.bytes)}
+                </span>
+                <button
+                  type="button"
+                  className="composer-attachment-remove"
+                  onClick={() => onRemoveAttachment(index)}
+                  aria-label={`Remove ${attachment.name}`}
+                  title="Remove attachment"
+                >
+                  <XIcon size={10} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {attachmentError && (
+          <div className="composer-error" role="alert">
+            {attachmentError}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
@@ -166,6 +253,7 @@ export function ChatComposer({
             onChange(event.target.value);
             resizeComposer();
           }}
+          onPaste={pasteFiles}
           onCompositionStart={() => {
             composingRef.current = true;
           }}
@@ -243,6 +331,12 @@ export function ChatComposer({
                     </dt>
                     <dd>New line</dd>
                   </div>
+                  <div className="shortcut">
+                    <dt>
+                      <kbd>⌘ V</kbd>
+                    </dt>
+                    <dd>Paste image or file</dd>
+                  </div>
                 </dl>
               </div>
             )}
@@ -250,7 +344,12 @@ export function ChatComposer({
           <button
             type="submit"
             className="primary icon-button"
-            disabled={running || compacting || !value.trim()}
+            disabled={
+              running ||
+              compacting ||
+              reading ||
+              (!value.trim() && attachments.length === 0)
+            }
             aria-label={compacting ? "Compacting context" : "Send"}
             title={compacting ? "Compacting context…" : "Send"}
           >
