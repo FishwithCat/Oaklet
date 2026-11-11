@@ -20,6 +20,7 @@ import {
   type SessionView,
   type StreamDelta,
 } from "./session-model.ts";
+import { importLegacySessions } from "./session-import.ts";
 import { subscribeAgentEvents } from "./agent-events.ts";
 
 type OpenTab = { id: string; number: number };
@@ -137,6 +138,16 @@ export function useAgentSession({
     if (switched) reset();
 
     void (async () => {
+      try {
+        await importLegacySessions(
+          window.localStorage,
+          workspace,
+          (entries) => invoke<number>("session_import", { entries }),
+        );
+      } catch (error) {
+        console.error(`Could not import old sessions: ${errorText(error)}`);
+      }
+
       try {
         const list = await invoke<SessionSummary[]>("session_list", { workspace });
         if (workspaceRef.current !== workspace) return;
