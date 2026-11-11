@@ -73,7 +73,31 @@ pnpm test
 Before packaging, make sure `architecture-helper/node_modules` exists; Tauri
 embeds that directory as an application resource. The packaged helper is
 resolved from the app's resource directory, while development builds fall back
-to the helper in the Oaklet checkout.
+to the helper in the Oaklet checkout. A universal macOS bundle must include both
+`@esbuild/darwin-arm64` and `@esbuild/darwin-x64`; the release workflow installs
+both before packaging.
+
+### Releasing (macOS, GitHub Actions)
+
+`.github/workflows/macos-release.yml` builds a universal (Apple Silicon + Intel)
+`.dmg` and `.app`:
+
+- **Run workflow** in the Actions tab to download the build as a workflow
+  artifact.
+- Push a `v*` tag (matching the `version` in `packages/core/tauri.conf.json`)
+  to also publish a GitHub Release.
+
+The build is **ad-hoc signed**, which needs no Apple Developer account. macOS
+still blocks the first launch, so the release notes tell users to drag Oaklet
+into `/Applications`, try to open it once, then allow it under **System
+Settings → Privacy & Security → Open Anyway** (macOS 15+) or run
+`xattr -dr com.apple.quarantine /Applications/Oaklet.app`.
+
+If a Developer ID certificate ever becomes available, add the
+`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` repository secrets; the
+workflow then signs and notarizes instead of falling back to ad-hoc. See
+<https://v2.tauri.app/distribute/sign/macos/>.
 
 ## Tool architecture
 

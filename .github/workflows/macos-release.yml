@@ -1,0 +1,124 @@
+name: macOS release
+
+# Builds a universal (Apple Silicon + Intel) Oaklet.app and .dmg.
+# Manual runs upload the bundles as a workflow artifact; pushing a v* tag also
+# publishes a GitHub Release.
+#
+# Signing and notarization are optional. Add these repository secrets to enable
+# them (see CONTRIBUTING.md, "Releasing"):
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+# Without them the build is ad-hoc signed: it runs, but Gatekeeper asks the
+# user to allow it on first launch.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Universal build: Tauri compiles both slices, so either macOS runner works.
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from the packageManager field in package.json.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            desktop/pnpm-lock.yaml
+            architecture-helper/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+          key: universal
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir desktop install --frozen-lockfile
+          # esbuild ships one native binary per architecture. Install both
+          # macOS slices so the bundled Architecture helper also runs on Intel
+          # Macs inside the universal app.
+          printf 'packages: []\nsupportedArchitectures:\n  os: [darwin]\n  cpu: [x64, arm64]\n' \
+            > architecture-helper/pnpm-workspace.yaml
+          pnpm --dir architecture-helper install --frozen-lockfile
+
+      - name: Build app and dmg
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "${APPLE_CERTIFICATE:-}" ]; then
+            echo "::notice::No Developer ID certificate; ad-hoc signing. Gatekeeper asks on first launch."
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+              APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+            export APPLE_SIGNING_IDENTITY="-"
+          fi
+          cd desktop
+          pnpm tauri build --ci --target universal-apple-darwin --bundles app,dmg
+
+      - name: Verify the signature
+        run: |
+          app="packages/core/target/universal-apple-darwin/release/bundle/macos/Oaklet.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -E "Identifier=|TeamIdentifier=|Signature=" || true
+
+      - name: Zip the app bundle
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            packages/core/target/universal-apple-darwin/release/bundle/macos/Oaklet.app \
+            Oaklet.app.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Oaklet-macos-universal
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            packages/core/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            Oaklet.app.zip
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            packages/core/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            Oaklet.app.zip
+          generate_release_notes: true
+          body: |
+            ## Install (macOS)
+
+            This build is ad-hoc signed, not notarized, so macOS blocks the first
+            launch. Download the `.dmg`, drag Oaklet into Applications, then:
+
+            1. Try to open Oaklet once.
+            2. macOS 15+: System Settings → Privacy & Security → **Open Anyway**.
+               macOS 14 and earlier: right-click Oaklet → **Open**.
+            3. Any version, from Terminal:
+               `xattr -dr com.apple.quarantine /Applications/Oaklet.app`
