@@ -27,7 +27,7 @@ button.files-root { font-size: 11px; font-weight: 600; text-transform: uppercase
 button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
 .files-document { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .files-editor { flex: 1; min-height: 0; overflow: hidden; }
-.files-editor .cm-scroller { overflow: auto; font-family: var(--mono); font-size: 13px; }
+.files-editor .cm-scroller { overflow: auto; font-family: var(--mono); font-size: 11px; }
 .files-editor .cm-editor { height: 100%; background: var(--bg); color: var(--text); }
 .files-editor .cm-editor.cm-focused { outline: none; }
 .files-editor .cm-editor .cm-gutters { background: var(--bg); color: var(--muted); }
