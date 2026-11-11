@@ -42,4 +42,3 @@ button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { 
 .files-tree-spacer { flex: none; width: 12px; }
 .files-tree-status { color: var(--muted); margin: 4px 0; padding: 4px; font-size: 12px; }
 .files-entry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-.files-entry[aria-disabled="true"] { opacity: 0.6; }

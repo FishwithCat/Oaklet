@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ChangeInfo } from "./git-model";
 
+type LoadedChanges = { workspace: string; changes: ChangeInfo[] };
+
 /**
  * The single source of uncommitted changes. App calls this once so the sidebar
  * badge and the source-control view always agree.
@@ -16,17 +18,19 @@ export function useGitChanges({
   workspace: string;
   refreshToken: number;
 }) {
-  const [changes, setChanges] = useState<ChangeInfo[] | null>(null);
+  const [loaded, setLoaded] = useState<LoadedChanges | null>(null);
   const [changesError, setChangesError] = useState("");
+  // Keep the previous result while a refresh is in flight so the badge does not
+  // unmount between polls; a different workspace still reads as unknown.
+  const changes = loaded?.workspace === workspace ? loaded.changes : null;
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    setChanges(null);
     setChangesError("");
     invoke<ChangeInfo[]>("git_changes")
       .then((next) => {
-        if (!cancelled) setChanges(next);
+        if (!cancelled) setLoaded({ workspace, changes: next });
       })
       .catch((error) => {
         if (!cancelled) setChangesError(errorText(error));

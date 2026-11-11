@@ -25,6 +25,8 @@ function App() {
   const filesRef = useRef<FilesHandle>(null);
   const [architectureOpened, setArchitectureOpened] = useState(false);
   const [workspaceTick, setWorkspaceTick] = useState(0);
+  // Saving edits changes git status, not the file tree.
+  const [savedTick, setSavedTick] = useState(0);
   const chatRef = useRef<ChatHandle>(null);
   const terminalRef = useRef<TerminalHandle>(null);
 
@@ -47,7 +49,7 @@ function App() {
   const { changes, changesError, unstaged } = useGitChanges({
     enabled: config !== null,
     workspace: config?.workspace ?? "",
-    refreshToken: workspaceTick,
+    refreshToken: workspaceTick + savedTick,
   });
 
   function newChat() {
@@ -173,7 +175,7 @@ function App() {
               active={view === "files"}
               workspace={config.workspace}
               refreshToken={workspaceTick}
-              onSaved={() => setWorkspaceTick((value) => value + 1)}
+              onSaved={() => setSavedTick((value) => value + 1)}
             />
           </Suspense>
         )}
