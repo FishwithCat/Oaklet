@@ -5,6 +5,8 @@ mod context;
 mod git;
 mod files;
 mod repeat;
+#[allow(dead_code)]
+mod store;
 mod terminal;
 mod tools;
 
