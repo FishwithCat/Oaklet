@@ -27,6 +27,7 @@ function getTerminalTheme() {
     cursor: style.getPropertyValue("--accent").trim(),
     cursorAccent: style.getPropertyValue("--bg").trim(),
     selectionBackground: style.getPropertyValue("--terminal-selection").trim(),
+    overviewRulerBorder: "rgba(0, 0, 0, 0)",
     black: style.getPropertyValue("--terminal-black").trim(),
     red: style.getPropertyValue("--terminal-red").trim(),
     green: style.getPropertyValue("--terminal-green").trim(),
@@ -103,6 +104,8 @@ export function TerminalPane({
       fontSize: 12,
       lineHeight: 1.45,
       scrollback: 5000,
+      // xterm sizes its custom scrollbar from this width (14px by default).
+      overviewRuler: { width: 8 },
       theme: getTerminalTheme(),
     });
     const fit = new FitAddon();
