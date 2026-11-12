@@ -16,6 +16,7 @@
 //! smaller retained tail, and drops the oldest turn when that is still too
 //! large.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -161,45 +162,56 @@ pub async fn force(
     cancel: &Cancel,
 ) -> Result<Option<Compacted>, String> {
     let target = force_retain_at(config.context_window);
-    let mut next = trim_tool_outputs(messages);
-    let mut replaced = Vec::new();
+    let (mut next, mut replaced) = trim_tool_outputs(messages);
+    let mut origins: Vec<Option<usize>> = (0..messages.len()).map(Some).collect();
 
     if estimate_tokens(&next) > target
         && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
     {
         let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
             <= trigger_at(config.context_window);
+        let merged = cut < next.len() && role(&next[cut]) == Some("user");
         next = if prefix_fits {
             let compacted =
                 compact_at(client, config, &next, cut, Some(tools), cancel, true).await?;
-            replaced.extend(compacted.replaced);
             compacted.messages
         } else {
             note_fallback("summary prefix would not fit; dropped old history");
-            replaced.extend_from_slice(&next[1..cut]);
             assemble(&next, cut, DROPPED)
         };
+        // Trim/summarize/drop rewrite or remove messages; collect their original
+        // indices so the archive always holds the untrimmed text.
+        replaced.extend(1..cut);
+        origins = reassemble_origins(&origins, cut, merged);
     }
 
     while estimate_tokens(&next) > target {
         let Some((dropped, removed)) = drop_oldest_turn(&next) else {
             break;
         };
+        replaced.extend(origins.drain(removed).flatten());
         next = dropped;
-        replaced.extend(removed);
     }
 
-    Ok((next != messages).then_some(Compacted {
+    if next == messages {
+        return Ok(None);
+    }
+    Ok(Some(Compacted {
         messages: next,
-        replaced,
+        replaced: replaced
+            .into_iter()
+            .map(|index| messages[index].clone())
+            .collect(),
     }))
 }
 
 /// L0: shrink tool results in place without touching the conversational order.
-fn trim_tool_outputs(messages: &[Value]) -> Vec<Value> {
-    messages
+fn trim_tool_outputs(messages: &[Value]) -> (Vec<Value>, BTreeSet<usize>) {
+    let mut replaced = BTreeSet::new();
+    let next = messages
         .iter()
-        .map(|message| {
+        .enumerate()
+        .map(|(index, message)| {
             if role(message) != Some("tool") {
                 return message.clone();
             }
@@ -211,9 +223,11 @@ fn trim_tool_outputs(messages: &[Value]) -> Vec<Value> {
             }
             let mut trimmed = message.clone();
             trimmed["content"] = json!(trim_head_and_tail(text));
+            replaced.insert(index);
             trimmed
         })
-        .collect()
+        .collect();
+    (next, replaced)
 }
 
 fn trim_head_and_tail(text: &str) -> String {
@@ -230,9 +244,24 @@ fn trim_head_and_tail(text: &str) -> String {
     trimmed
 }
 
+/// Keep the per-message original index alongside an assembled history. The
+/// checkpoint and system head have no original; a retained turn does.
+fn reassemble_origins(origins: &[Option<usize>], cut: usize, merged: bool) -> Vec<Option<usize>> {
+    let mut next = Vec::with_capacity(origins.len() - cut + 2);
+    next.push(origins[0]);
+    if merged {
+        next.push(origins[cut]);
+        next.extend_from_slice(&origins[cut + 1..]);
+    } else {
+        next.push(None);
+        next.extend_from_slice(&origins[cut..]);
+    }
+    next
+}
+
 /// Drop the oldest complete turn while keeping the summary checkpoint and the
 /// current request. Returns `None` when only the current turn remains.
-fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
+fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<usize>)> {
     let latest = latest_user(messages);
     if latest < 2 {
         return None;
@@ -264,7 +293,7 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
     let mut next = Vec::with_capacity(messages.len() - (end - start));
     next.extend_from_slice(&messages[..start]);
     next.extend_from_slice(&messages[end..]);
-    Some((next, messages[start..end].to_vec()))
+    Some((next, start..end))
 }
 
 fn is_checkpoint(message: &Value) -> bool {
@@ -700,12 +729,13 @@ mod tests {
         let original = "x".repeat(20_000);
         let messages = vec![system(), user("go"), tool("call_1", &original)];
 
-        let trimmed = trim_tool_outputs(&messages);
+        let (trimmed, replaced) = trim_tool_outputs(&messages);
         let text = trimmed[2]["content"].as_str().unwrap();
 
         assert!(text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
         assert!(text.contains(FORCE_TOOL_OUTPUT_MARKER));
         assert!(text.starts_with('x') && text.ends_with('x'));
+        assert_eq!(replaced.into_iter().collect::<Vec<_>>(), vec![2]);
         assert_eq!(messages[2]["content"].as_str().unwrap(), original);
     }
 
@@ -721,9 +751,10 @@ mod tests {
         ];
 
         let (next, removed) = drop_oldest_turn(&messages).unwrap();
+        let removed = &messages[removed];
 
         assert_eq!(next.len(), 4);
-        assert_eq!(removed, vec![user("old request"), assistant("old answer")]);
+        assert_eq!(removed, &[user("old request"), assistant("old answer")]);
         assert!(
             next[1]["content"]
                 .as_str()
@@ -1057,14 +1088,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_archives_the_untrimmed_tool_output_before_summarizing() {
+        use crate::tools::CancelHandle;
+
+        let (base_url, _seen, server) = summary_server();
+        let original = format!(
+            "{}\nUNIQUE ERROR: disk full\n{}",
+            "h".repeat(4_000),
+            "t".repeat(4_000)
+        );
+        let mut messages = vec![
+            system(),
+            user("old request"),
+            assistant("reading"),
+            tool("call_1", &original),
+        ];
+        for step in 0..30 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        messages.push(user("current request"));
+
+        let config = AppConfig {
+            base_url,
+            context_window: 32_768,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("forced compaction should apply");
+
+        server.join().unwrap();
+        assert!(
+            compacted
+                .replaced
+                .iter()
+                .any(|message| { message["content"].as_str() == Some(original.as_str()) })
+        );
+    }
+
+    #[tokio::test]
     async fn force_skips_the_summary_when_trimming_tool_output_is_enough() {
         use crate::tools::CancelHandle;
 
+        let original = format!(
+            "HEAD\n{}\nUNIQUE ERROR: disk full\n{}",
+            "x".repeat(4_000),
+            "y".repeat(4_000)
+        );
         let messages = vec![
             system(),
             user("old request"),
             assistant("reading"),
-            tool("call_1", &"x".repeat(100_000)),
+            tool("call_1", &original),
             user("current request"),
         ];
         let config = AppConfig {
@@ -1086,7 +1170,17 @@ mod tests {
         .expect("trimmable tool output should count as progress");
         let next = compacted.messages;
 
-        assert!(compacted.replaced.is_empty());
+        assert_eq!(compacted.replaced.len(), 1);
+        assert_eq!(
+            compacted.replaced[0]["content"], original,
+            "the untrimmed tool result is archived for history_read"
+        );
+        assert!(
+            compacted.replaced[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("UNIQUE ERROR: disk full")
+        );
         assert!(
             next.iter()
                 .any(|message| message["content"] == "old request")
