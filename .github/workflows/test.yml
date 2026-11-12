@@ -61,7 +61,8 @@ jobs:
       - run: pnpm test
 
   rust:
-    runs-on: macos-14
+    # macos-14 was retired by GitHub Actions on 2026-11-02.
+    runs-on: macos-15
     timeout-minutes: 30
     defaults:
       run:

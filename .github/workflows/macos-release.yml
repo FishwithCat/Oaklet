@@ -27,7 +27,8 @@ concurrency:
 jobs:
   build:
     # Universal build: Tauri compiles both slices, so either macOS runner works.
-    runs-on: macos-14
+    # macos-14 was retired by GitHub Actions on 2026-11-02.
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
