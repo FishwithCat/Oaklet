@@ -10,6 +10,11 @@
 //! so it is a genuine prefix of the conversation and can hit the provider's
 //! warm cache. Flattening the range into a fresh prompt would re-bill every
 //! token and can even exceed the size of the history it replaces.
+//!
+//! When the provider rejects a request for size anyway, [`force`] makes a
+//! second, more aggressive pass: it trims old tool output, summarizes with a
+//! smaller retained tail, and drops the oldest turn when that is still too
+//! large.
 
 use std::time::Duration;
 
@@ -25,6 +30,20 @@ const OUTPUT_RESERVE: usize = 32_768;
 
 /// Below this, a summary would cost more than the history it replaces.
 const MIN_REPLACED: usize = 4_000;
+
+/// Tool output kept during overflow recovery. The normal pipeline already
+/// caps one result at 12k characters, but a long run can accumulate enough of
+/// them to overflow anyway.
+const FORCE_TOOL_OUTPUT_CHARS: usize = 2_000;
+const FORCE_TOOL_OUTPUT_HEAD_CHARS: usize = 1_400;
+const FORCE_TOOL_OUTPUT_TAIL_CHARS: usize = 400;
+const FORCE_TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output trimmed for context recovery; \
+     re-read the file or re-run the command if the middle matters ...]\n\n";
+
+/// Overflow recovery keeps only a small recent tail. The summary carries the
+/// rest, and the current request is never cut. Normal compaction retains about
+/// a sixth of the window; a provider rejection means that budget was too big.
+const FORCE_RETAIN_TOKENS: usize = 2_000;
 
 const SUMMARY_MAX_TOKENS: usize = 4_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -85,6 +104,16 @@ pub fn retain_at(window: usize) -> usize {
     (window / 6).max(2_000).min(window / 2)
 }
 
+/// Retain used when the provider has already rejected the prompt for size.
+///
+/// Normal compaction can leave a tail that is still too large when the real
+/// window is smaller than the configured one. Keep only a small tail so the
+/// retry has real room instead of a token shave.
+fn force_retain_at(window: usize) -> usize {
+    let retain = retain_at(window);
+    (retain / 2).clamp(1_000, FORCE_RETAIN_TOKENS).min(retain)
+}
+
 /// Summarize the oldest part of `messages`, or keep them when that is not
 /// useful.
 ///
@@ -105,6 +134,141 @@ pub async fn compact(
     Ok(Some(
         compact_at(client, config, messages, cut, Some(tools), cancel, true).await?,
     ))
+}
+
+/// Aggressively compact after a provider reports that the prompt is over its
+/// context window.
+///
+/// Normal compaction waits for the local estimate and keeps a comfortable
+/// recent tail. A provider rejection means that estimate was too optimistic, so
+/// this pass uses a smaller retain and works in layers: first it trims oversized
+/// tool output (L0), then it summarizes the older turns (L1). If replaying the
+/// summary prefix would itself overflow, that range is replaced by the drop
+/// notice without a model call. Finally, the oldest retained turn is dropped
+/// when the result is still too large; the system prompt and the current request
+/// are never dropped.
+pub async fn force(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    messages: &[Value],
+    tools: &ToolRegistry,
+    cancel: &Cancel,
+) -> Result<Option<Vec<Value>>, String> {
+    let target = force_retain_at(config.context_window);
+    let mut next = trim_tool_outputs(messages);
+
+    if estimate_tokens(&next) > target
+        && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
+    {
+        let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
+            <= trigger_at(config.context_window);
+        next = if prefix_fits {
+            compact_at(client, config, &next, cut, Some(tools), cancel, true).await?
+        } else {
+            note_fallback("summary prefix would not fit; dropped old history");
+            assemble(&next, cut, DROPPED)
+        };
+    }
+
+    while estimate_tokens(&next) > target {
+        let Some(dropped) = drop_oldest_turn(&next) else {
+            break;
+        };
+        next = dropped;
+    }
+
+    Ok((next != messages).then_some(next))
+}
+
+/// L0: shrink tool results in place without touching the conversational order.
+fn trim_tool_outputs(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            if role(message) != Some("tool") {
+                return message.clone();
+            }
+            let Some(text) = message.get("content").and_then(Value::as_str) else {
+                return message.clone();
+            };
+            if text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS {
+                return message.clone();
+            }
+            let mut trimmed = message.clone();
+            trimmed["content"] = json!(trim_head_and_tail(text));
+            trimmed
+        })
+        .collect()
+}
+
+fn trim_head_and_tail(text: &str) -> String {
+    let total = text.chars().count();
+    let budget = FORCE_TOOL_OUTPUT_CHARS.saturating_sub(FORCE_TOOL_OUTPUT_MARKER.chars().count());
+    let head = FORCE_TOOL_OUTPUT_HEAD_CHARS.min(total).min(budget);
+    let tail = FORCE_TOOL_OUTPUT_TAIL_CHARS
+        .min(total - head)
+        .min(budget - head);
+    let mut trimmed = String::with_capacity(FORCE_TOOL_OUTPUT_CHARS);
+    trimmed.extend(text.chars().take(head));
+    trimmed.push_str(FORCE_TOOL_OUTPUT_MARKER);
+    trimmed.extend(text.chars().skip(total - tail));
+    trimmed
+}
+
+/// Drop the oldest complete turn while keeping the summary checkpoint and the
+/// current request. Returns `None` when only the current turn remains.
+fn drop_oldest_turn(messages: &[Value]) -> Option<Vec<Value>> {
+    let latest = latest_user(messages);
+    if latest < 2 {
+        return None;
+    }
+
+    let mut start = 1;
+    while start < latest && role(&messages[start]) != Some("user") {
+        start += 1;
+    }
+    // A checkpoint at the head is the compacted history itself; sacrifice the
+    // oldest turn after it instead of the summary.
+    if start < latest && is_checkpoint(&messages[start]) {
+        start += 1;
+        while start < latest && role(&messages[start]) != Some("user") {
+            start += 1;
+        }
+    }
+    if start >= latest {
+        return None;
+    }
+
+    let end = (start + 1..latest)
+        .find(|&index| role(&messages[index]) == Some("user"))
+        .unwrap_or(latest);
+    if end <= start {
+        return None;
+    }
+
+    let mut next = Vec::with_capacity(messages.len() - (end - start));
+    next.extend_from_slice(&messages[..start]);
+    next.extend_from_slice(&messages[end..]);
+    Some(next)
+}
+
+fn is_checkpoint(message: &Value) -> bool {
+    if role(message) != Some("user") {
+        return false;
+    }
+    match message.get("content") {
+        Some(Value::String(text)) => is_protected_text(text),
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(is_protected_text)
+        }),
+        _ => false,
+    }
+}
+
+fn is_protected_text(text: &str) -> bool {
+    text.contains("<compacted-summary>") || text.contains(DROPPED)
 }
 
 /// Summarize `messages[1..cut]` and replace that range with one checkpoint.
@@ -502,6 +666,79 @@ mod tests {
     }
 
     #[test]
+    fn forced_compaction_keeps_a_smaller_tail_than_normal_compaction() {
+        assert!(force_retain_at(262_144) < retain_at(262_144));
+        assert!(force_retain_at(8_192) < retain_at(8_192));
+    }
+
+    #[test]
+    fn trims_oversized_tool_output_for_recovery() {
+        let original = "x".repeat(20_000);
+        let messages = vec![system(), user("go"), tool("call_1", &original)];
+
+        let trimmed = trim_tool_outputs(&messages);
+        let text = trimmed[2]["content"].as_str().unwrap();
+
+        assert!(text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
+        assert!(text.contains(FORCE_TOOL_OUTPUT_MARKER));
+        assert!(text.starts_with('x') && text.ends_with('x'));
+        assert_eq!(messages[2]["content"].as_str().unwrap(), original);
+    }
+
+    #[test]
+    fn drops_the_oldest_turn_but_keeps_the_checkpoint_and_current_request() {
+        let messages = vec![
+            system(),
+            user("<compacted-summary>\nold work\n</compacted-summary>"),
+            user("old request"),
+            assistant("old answer"),
+            user("current request"),
+            assistant("current answer"),
+        ];
+
+        let next = drop_oldest_turn(&messages).unwrap();
+
+        assert_eq!(next.len(), 4);
+        assert!(
+            next[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<compacted-summary>")
+        );
+        assert!(
+            !next
+                .iter()
+                .any(|message| message["content"] == "old request")
+        );
+        assert!(
+            next.iter()
+                .any(|message| message["content"] == "current request")
+        );
+    }
+
+    #[test]
+    fn keeps_the_dropped_notice_while_shedding_old_turns() {
+        let messages = vec![
+            system(),
+            user(DROPPED),
+            user("old request"),
+            assistant("old answer"),
+            user("current request"),
+        ];
+
+        let next = drop_oldest_turn(&messages).unwrap();
+
+        assert_eq!(next.len(), 3);
+        assert!(next[1]["content"].as_str().unwrap().contains(DROPPED));
+        assert!(
+            !next
+                .iter()
+                .any(|message| message["content"] == "old request")
+        );
+        assert_eq!(next.last().unwrap()["content"], "current request");
+    }
+
+    #[test]
     fn never_starts_the_tail_with_an_orphan_tool_message() {
         let mut messages = vec![system()];
         for step in 0..12 {
@@ -725,6 +962,126 @@ mod tests {
             message["content"]
                 .as_str()
                 .is_some_and(|text| text.contains("request 0"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn force_summarizes_with_a_smaller_tail() {
+        use crate::tools::CancelHandle;
+
+        let (base_url, seen, server) = summary_server();
+        let mut messages = vec![system()];
+        for step in 0..30 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        let last = messages.last().unwrap().clone();
+
+        let config = AppConfig {
+            base_url,
+            context_window: 32_768,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("forced compaction should apply");
+
+        server.join().unwrap();
+        assert!(estimate_tokens(&next) < estimate_tokens(&messages));
+        assert_eq!(next.last().unwrap(), &last);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let body: Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(body["tool_choice"], "none");
+        assert!(body.get("tools").is_some());
+    }
+
+    #[tokio::test]
+    async fn force_skips_the_summary_when_trimming_tool_output_is_enough() {
+        use crate::tools::CancelHandle;
+
+        let messages = vec![
+            system(),
+            user("old request"),
+            assistant("reading"),
+            tool("call_1", &"x".repeat(100_000)),
+            user("current request"),
+        ];
+        let config = AppConfig {
+            base_url: "http://127.0.0.1:1".into(),
+            context_window: 32_768,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("trimmable tool output should count as progress");
+
+        assert!(
+            next.iter()
+                .any(|message| message["content"] == "old request")
+        );
+        assert_eq!(next.last().unwrap()["content"], "current request");
+        assert!(next.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains(FORCE_TOOL_OUTPUT_MARKER))
+        }));
+    }
+
+    #[tokio::test]
+    async fn force_drops_old_history_when_the_summary_prefix_would_overflow() {
+        use crate::tools::CancelHandle;
+
+        let mut messages = vec![system()];
+        for step in 0..40 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        let last = messages.last().unwrap().clone();
+
+        // The prefix is far beyond this window, so force must not spend a
+        // summary request that is guaranteed to be rejected.
+        let config = AppConfig {
+            base_url: "http://127.0.0.1:1".into(),
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("forced compaction should apply");
+
+        assert!(estimate_tokens(&next) < estimate_tokens(&messages));
+        assert_eq!(next.last().unwrap(), &last);
+        assert!(next.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("dropped so the run could stay"))
         }));
     }
 

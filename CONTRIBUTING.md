@@ -142,7 +142,11 @@ prompt and the current turn are never summarized. The
 composer shows the estimated size of the next request against the window as a
 small plant; clicking it while idle folds every turn except the current one into
 a checkpoint immediately. The visible thread stays, while the next request sends
-the shorter history.
+the shorter history. If the provider still rejects a prompt for context length,
+the run trims old tool output, compacts with a smaller retained tail, drops the
+oldest turn when even that is too large, and retries the request once. The same
+check runs before the first request of a run, so switching to a model with a
+smaller window compacts the saved history before it is sent.
 
 A run has no fixed step limit. Three cheaper controls bound the cost: every
 potentially slow tool call has its own timeout (`run_command` 120 seconds, MCP
