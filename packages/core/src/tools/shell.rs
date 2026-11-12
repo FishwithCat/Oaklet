@@ -19,7 +19,7 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in the workspace. The user must approve each command. Returns combined stdout and stderr."
+        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. The user must approve each command. Returns combined stdout and stderr."
     }
 
     fn parameters(&self) -> Value {
@@ -34,7 +34,7 @@ impl Tool for RunCommand {
     }
 
     fn guidance(&self) -> &'static str {
-        "run_command executes in the workspace. The user must approve every command, so keep commands focused."
+        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. The user must approve every command, so keep commands focused."
     }
 
     fn summary(&self, args: &Value) -> String {

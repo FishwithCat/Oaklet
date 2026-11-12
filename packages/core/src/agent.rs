@@ -549,7 +549,7 @@ fn tool_message(id: &str, content: String) -> Value {
 fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[String]) -> String {
     let mut rules: Vec<String> = vec![
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
-        "Paths are relative to the workspace; absolute paths inside it also work.".into(),
+        "Paths are relative to the workspace; absolute paths inside it also work. Shell commands start in the workspace root, so never prefix them with cd <workspace>.".into(),
     ];
     rules.extend(tools.guidance().into_iter().map(str::to_string));
     rules.extend(
@@ -713,6 +713,7 @@ mod tests {
     fn system_prompt_includes_registered_tool_guidance() {
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
         assert!(prompt.contains("The user must approve every command"));
+        assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
     }
