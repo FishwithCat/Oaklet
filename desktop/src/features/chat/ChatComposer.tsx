@@ -124,13 +124,16 @@ export function ChatComposer({
       }
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setHelpOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setHelpOpen(false);
+      }
     }
     window.addEventListener("mousedown", onMouseDown);
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     return () => {
       window.removeEventListener("mousedown", onMouseDown);
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
     };
   }, [helpOpen]);
 

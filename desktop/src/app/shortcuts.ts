@@ -1,6 +1,13 @@
 type KeyEvent = Pick<
   KeyboardEvent,
-  "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "repeat"
+  | "key"
+  | "metaKey"
+  | "ctrlKey"
+  | "altKey"
+  | "shiftKey"
+  | "repeat"
+  | "isComposing"
+  | "defaultPrevented"
 >;
 
 export type AgentShortcut =
@@ -48,5 +55,15 @@ export function agentShortcut(
   if (event.metaKey && !event.ctrlKey && key === "n") return "new-session";
   if (event.metaKey && !event.ctrlKey && key === "r") return "history";
   if (event.ctrlKey && !event.metaKey && key === "c" && running) return "stop";
+  // Escape stops like Ctrl+C, unless it is cancelling IME input or a popover
+  // (e.g. find) already consumed it.
+  if (
+    key === "escape" &&
+    running &&
+    !event.isComposing &&
+    !event.defaultPrevented
+  ) {
+    return "stop";
+  }
   return null;
 }

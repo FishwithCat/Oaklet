@@ -70,6 +70,27 @@ test("Control+C stops a running session without hijacking the terminal or copy",
   );
 });
 
+test("Escape stops a running session just like Control+C", () => {
+  assert.equal(agentShortcut(press({ key: "Escape" }), "chat", true), "stop");
+  assert.equal(agentShortcut(press({ key: "Escape" }), "chat", false), null);
+  assert.equal(
+    agentShortcut(press({ key: "Escape" }), "terminal", true),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "Escape", isComposing: true }), "chat", true),
+    null,
+  );
+  assert.equal(
+    agentShortcut(
+      press({ key: "Escape", defaultPrevented: true }),
+      "chat",
+      true,
+    ),
+    null,
+  );
+});
+
 test("Enter sends only when no IME composition is active", () => {
   const enter = press({ key: "Enter" });
 
