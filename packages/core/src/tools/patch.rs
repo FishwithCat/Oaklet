@@ -3,7 +3,7 @@
 //! One patch can add, update, delete, or move several files. Every operation is
 //! parsed and checked against an in-memory simulation before anything is
 //! written; once committing starts, operations run in order and stop at the
-//! first failure without rollback.
+//! first failure or cancellation without rollback.
 //!
 //! The syntax and matcher follow deepseek-harness `fs-patch`, which adapts the
 //! OpenAI Codex parser and `seek_sequence` behavior (Apache-2.0).
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::fs::MAX_FILE_BYTES;
-use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{Cancel, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const BEGIN: &str = "*** Begin Patch";
 const END: &str = "*** End Patch";
@@ -785,10 +785,13 @@ fn mismatch_message(display: &str, failure: &HunkFailure) -> String {
     )
 }
 
-fn preflight(plan: &[ResolvedPatch]) -> Result<(), ToolError> {
+fn preflight(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<(), ToolError> {
     let mut check = Preflight::new();
     let mut refusals = Vec::new();
     for operation in plan {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
         if let Err(message) = check.check(operation) {
             refusals.push(format!(
                 "- operation {} ({}): {message}",
@@ -872,28 +875,34 @@ fn execute_one(operation: &ResolvedPatch) -> Result<(), String> {
     }
 }
 
-fn commit(plan: &[ResolvedPatch]) -> Result<String, ToolError> {
+fn commit(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<String, ToolError> {
+    commit_operations(plan, cancel, execute_one)
+}
+
+fn commit_operations(
+    plan: &[ResolvedPatch],
+    cancel: &Cancel,
+    mut execute: impl FnMut(&ResolvedPatch) -> Result<(), String>,
+) -> Result<String, ToolError> {
     let mut completed: Vec<&ResolvedPatch> = Vec::new();
-    let mut failure: Option<(usize, String)> = None;
-    for operation in plan {
-        match execute_one(operation) {
+    for (index, operation) in plan.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return if completed.is_empty() {
+                Err(ToolError::Cancelled)
+            } else {
+                Err(ToolError::Failed(cancelled_output(plan, &completed, index)))
+            };
+        }
+        match execute(operation) {
             Ok(()) => completed.push(operation),
             Err(message) => {
-                failure = Some((operation.index, message));
-                break;
+                return Err(ToolError::Failed(stopped_output(
+                    plan, &completed, index, &message,
+                )));
             }
         }
     }
-
-    let Some((failed_index, message)) = failure else {
-        return Ok(success_output(plan));
-    };
-    let output = stopped_output(plan, &completed, failed_index, &message);
-    if completed.is_empty() {
-        Err(ToolError::Failed(output))
-    } else {
-        Ok(output)
-    }
+    Ok(success_output(plan))
 }
 
 fn success_output(plan: &[ResolvedPatch]) -> String {
@@ -901,8 +910,13 @@ fn success_output(plan: &[ResolvedPatch]) -> String {
         return "Success. No operations in patch.".into();
     }
     let mut lines = vec!["Success. Updated the following files:".to_string()];
+    push_completed(&mut lines, &plan.iter().collect::<Vec<_>>());
+    lines.join("\n")
+}
+
+fn push_completed(lines: &mut Vec<String>, completed: &[&ResolvedPatch]) {
     for group in [Kind::Add, Kind::Update, Kind::Delete] {
-        for operation in plan {
+        for operation in completed {
             let current = if operation.kind == Kind::Move {
                 Kind::Update
             } else {
@@ -913,7 +927,6 @@ fn success_output(plan: &[ResolvedPatch]) -> String {
             }
         }
     }
-    lines.join("\n")
 }
 
 fn stopped_output(
@@ -929,18 +942,7 @@ fn stopped_output(
     )];
     if !completed.is_empty() {
         lines.push("Completed:".into());
-        for group in [Kind::Add, Kind::Update, Kind::Delete] {
-            for operation in completed {
-                let current = if operation.kind == Kind::Move {
-                    Kind::Update
-                } else {
-                    operation.kind
-                };
-                if current == group {
-                    lines.push(operation.completed_line());
-                }
-            }
-        }
+        push_completed(&mut lines, completed);
     }
     lines.push("Failed:".into());
     let failed = &plan[failed_index];
@@ -949,17 +951,39 @@ fn stopped_output(
         failed.index + 1,
         failed.describe()
     ));
-    let skipped = &plan[failed_index + 1..];
-    if !skipped.is_empty() {
-        lines.push("Not executed:".into());
-        for operation in skipped {
-            lines.push(format!(
-                "- operation {} ({})",
-                operation.index + 1,
-                operation.describe_short()
-            ));
-        }
+    push_skipped(&mut lines, &plan[failed_index + 1..]);
+    lines.join("\n")
+}
+
+fn push_skipped(lines: &mut Vec<String>, skipped: &[ResolvedPatch]) {
+    if skipped.is_empty() {
+        return;
     }
+    lines.push("Not executed:".into());
+    for operation in skipped {
+        lines.push(format!(
+            "- operation {} ({})",
+            operation.index + 1,
+            operation.describe_short()
+        ));
+    }
+}
+
+fn cancelled_output(
+    plan: &[ResolvedPatch],
+    completed: &[&ResolvedPatch],
+    next_index: usize,
+) -> String {
+    let mut lines = vec![format!(
+        "Patch cancelled after {} of {} operations.",
+        completed.len(),
+        plan.len()
+    )];
+    if !completed.is_empty() {
+        lines.push("Completed:".into());
+        push_completed(&mut lines, completed);
+    }
+    push_skipped(&mut lines, &plan[next_index..]);
     lines.join("\n")
 }
 
@@ -1029,19 +1053,26 @@ fn apply_patch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
             "input must contain a patch.".into(),
         ));
     }
+    if ctx.cancel.is_cancelled() {
+        return Err(ToolError::Cancelled);
+    }
     let operations = parse_patch(&args.input).map_err(|(line, reason)| {
         ToolError::InvalidArguments(format!("Invalid patch at line {line}: {reason}"))
     })?;
     let plan = plan(ctx, operations)?;
-    preflight(&plan)?;
-    commit(&plan)
+    preflight(&plan, &ctx.cancel)?;
+    commit(&plan, &ctx.cancel)
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{PatchOperation, apply_hunks, apply_patch, parse_patch};
+    use super::{
+        PatchOperation, apply_hunks, apply_patch, commit, commit_operations, execute_one,
+        parse_patch, plan, preflight,
+    };
+    use crate::tools::ToolError;
     use crate::tools::test_support::context;
 
     fn run(ctx: &crate::tools::ToolContext, input: &str) -> Result<String, String> {
@@ -1244,6 +1275,87 @@ mod tests {
         assert!(error.contains("Patch rejected before any change (1 problems)"));
         assert!(error.contains("b.txt"));
         assert_eq!(text(root.join("a.txt")), "actual\n");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_stopped_patch_is_a_failure_even_after_writing_earlier_operations() {
+        let (ctx, root, _handle) = context("patch-partial");
+        let operations = parse_patch(
+            "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch",
+        )
+        .unwrap();
+        let planned = plan(&ctx, operations).unwrap();
+        preflight(&planned, &ctx.cancel).unwrap();
+        // The preflight passed, so the only remaining failure is a commit-time
+        // race. Simulate one by creating the second target before commit.
+        std::fs::write(root.join("second.txt"), "raced\n").unwrap();
+
+        let error = commit(&planned, &ctx.cancel).unwrap_err().to_string();
+        assert!(error.starts_with("Patch stopped after 1 of 2 operations."));
+        assert!(error.contains("Completed:\nA first.txt"));
+        assert!(error.contains("Failed:\n- operation 2 (add second.txt"));
+        assert_eq!(text(root.join("first.txt")), "first\n");
+        assert_eq!(text(root.join("second.txt")), "raced\n");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn cancellation_before_commit_writes_nothing() {
+        let (ctx, root, handle) = context("patch-cancel-before");
+        let operations = parse_patch(
+            "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch",
+        )
+        .unwrap();
+        let planned = plan(&ctx, operations).unwrap();
+        handle.cancel();
+
+        assert!(matches!(
+            preflight(&planned, &ctx.cancel),
+            Err(ToolError::Cancelled)
+        ));
+        assert!(matches!(
+            commit(&planned, &ctx.cancel),
+            Err(ToolError::Cancelled)
+        ));
+        let error = run(
+            &ctx,
+            "*** Begin Patch\n*** Add File: first.txt\n+first\n*** End Patch",
+        )
+        .unwrap_err();
+        assert_eq!(error, "Cancelled.");
+        assert!(!root.join("first.txt").exists());
+        assert!(!root.join("second.txt").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn cancellation_stops_before_the_next_operation() {
+        let (ctx, root, handle) = context("patch-cancel-between");
+        let operations = parse_patch(
+            "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch",
+        )
+        .unwrap();
+        let planned = plan(&ctx, operations).unwrap();
+        preflight(&planned, &ctx.cancel).unwrap();
+
+        let mut first = true;
+        let error = commit_operations(&planned, &ctx.cancel, |operation| {
+            let result = execute_one(operation);
+            if first {
+                first = false;
+                handle.cancel();
+            }
+            result
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.starts_with("Patch cancelled after 1 of 2 operations."));
+        assert!(error.contains("Completed:\nA first.txt"));
+        assert!(error.contains("Not executed:\n- operation 2 (add second.txt)"));
+        assert_eq!(text(root.join("first.txt")), "first\n");
+        assert!(!root.join("second.txt").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
