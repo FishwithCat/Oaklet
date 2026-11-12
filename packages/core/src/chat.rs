@@ -408,6 +408,7 @@ pub async fn session_send(
         run_id: run_id.clone(),
         view: view.clone(),
         finished: Arc::new(AtomicBool::new(false)),
+        archived: Arc::new(Mutex::new(Vec::new())),
     };
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
@@ -495,16 +496,17 @@ async fn compact_session(
     let next =
         compaction::compact_messages(&reqwest::Client::new(), &config, &session.messages, &cancel)
             .await?;
-    let Some(messages) = next else {
+    let Some(compacted) = next else {
         return Ok((session, before, before, false));
     };
+    let messages = compacted.messages;
 
     let after = context::estimate_tokens(&messages);
     let notice = json!({
         "kind": "notice",
         "tone": Tone::Muted,
         "text": format!(
-            "Compacted context: {} → {} tokens.",
+            "Compacted context: {} → {} tokens. Earlier messages stay archived for history_read.",
             format_tokens(before),
             format_tokens(after)
         ),
@@ -515,6 +517,7 @@ async fn compact_session(
         store.apply_compaction(
             &id,
             &messages,
+            &compacted.replaced,
             &notice,
             ContextUsage {
                 used: after,
@@ -941,6 +944,9 @@ pub struct RunContext {
     run_id: String,
     view: Arc<Mutex<SessionView>>,
     finished: Arc<AtomicBool>,
+    /// Originals replaced by automatic compaction during this run, persisted
+    /// with the final history.
+    archived: Arc<Mutex<Vec<Value>>>,
 }
 
 impl RunContext {
@@ -954,6 +960,31 @@ impl RunContext {
 
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn store(&self) -> crate::store::Store {
+        self.state.chat.store.clone()
+    }
+
+    pub fn archived(&self) -> Arc<Mutex<Vec<Value>>> {
+        self.archived.clone()
+    }
+
+    /// Remember one compaction's originals. `finish` writes them in the same
+    /// transaction as the compacted history.
+    pub fn record_archived(&self, messages: &[Value]) {
+        if messages.is_empty() {
+            return;
+        }
+        let mut archived = self
+            .archived
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        archived.extend_from_slice(messages);
     }
 
     fn emit<T: Serialize + Clone>(&self, event: &str, payload: T) {
@@ -1192,6 +1223,12 @@ impl RunContext {
             finished_at: store::now_ms(),
             messages,
             items: final_view.items.clone(),
+            archived: std::mem::take(
+                &mut *self
+                    .archived
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ),
             context: final_view.context,
             error: error.clone(),
         };

@@ -148,6 +148,13 @@ oldest turn when even that is too large, and retries the request once. The same
 check runs before the first request of a run, so switching to a model with a
 smaller window compacts the saved history before it is sent.
 
+Compaction does not discard the originals. `apply_compaction` and a run's final
+write archive every replaced message in `session_history` in the same
+transaction that writes the shorter history. Once a chat has archived history,
+the agent also gets a `history_read(offset, limit)` tool that pages those
+originals back as a transcript, so an aggressive summary can hide an exact
+command or error without making it unrecoverable.
+
 A run has no fixed step limit. Three cheaper controls bound the cost: every
 potentially slow tool call has its own timeout (`run_command` 120 seconds, MCP
 60, `web_search` 20), repeating one identical call earns an advisory reminder at

@@ -217,7 +217,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             return;
         }
     };
-    let tools = ToolRegistry::with_host_tools(ctx.app(), &config).await;
+    let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config).await;
+    ensure_history_tool(&mut tools, &ctx);
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
@@ -251,17 +252,30 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // This also runs before the first request of a run, so a saved history
         // that no longer fits the configured window after a model switch is
         // compacted before it is sent.
-        if !retry_directly
-            && let Err(err) =
-                compact_before_request(&client, &config, &tools, &cancel, &mut messages, &mut meter)
-                    .await
-        {
-            if cancel.is_cancelled() {
-                ctx.finish_stopped(messages[1..].to_vec()).await;
-            } else {
-                ctx.finish_error(messages[1..].to_vec(), err).await;
+        if !retry_directly {
+            let mut replaced = Vec::new();
+            let outcome = compact_before_request(
+                &client,
+                &config,
+                &tools,
+                &cancel,
+                &mut messages,
+                &mut meter,
+                &mut replaced,
+            )
+            .await;
+            if !replaced.is_empty() {
+                ctx.record_archived(&replaced);
+                ensure_history_tool(&mut tools, &ctx);
             }
-            return;
+            if let Err(err) = outcome {
+                if cancel.is_cancelled() {
+                    ctx.finish_stopped(messages[1..].to_vec()).await;
+                } else {
+                    ctx.finish_error(messages[1..].to_vec(), err).await;
+                }
+                return;
+            }
         }
         retry_directly = false;
 
@@ -280,9 +294,14 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 Err(err) if err.is_context_overflow() && !overflow_retried => {
                     overflow_retried = true;
                     match compaction::force(&client, &config, &messages, &tools, &cancel).await {
-                        Ok(Some(next)) => {
-                            note_compaction(estimate_tokens(&messages), estimate_tokens(&next));
-                            messages = next;
+                        Ok(Some(compacted)) => {
+                            note_compaction(
+                                estimate_tokens(&messages),
+                                estimate_tokens(&compacted.messages),
+                            );
+                            ctx.record_archived(&compacted.replaced);
+                            ensure_history_tool(&mut tools, &ctx);
+                            messages = compacted.messages;
                             // The retry is a different, smaller request. Price
                             // it before the next usage anchor is recorded.
                             let _ = meter.prepare(&messages);
@@ -432,6 +451,7 @@ async fn compact_before_request(
     cancel: &Cancel,
     messages: &mut Vec<Value>,
     meter: &mut Meter,
+    archived: &mut Vec<Value>,
 ) -> Result<(), String> {
     let trigger = compaction::trigger_at(config.context_window);
     let pressure = meter.prepare(messages);
@@ -439,9 +459,10 @@ async fn compact_before_request(
         return Ok(());
     }
 
-    if let Some(next) = compaction::compact(client, config, messages, tools, cancel).await? {
-        note_compaction(pressure, estimate_tokens(&next));
-        *messages = next;
+    if let Some(compacted) = compaction::compact(client, config, messages, tools, cancel).await? {
+        note_compaction(pressure, estimate_tokens(&compacted.messages));
+        archived.extend(compacted.replaced);
+        *messages = compacted.messages;
         // Reprice the history that is actually sent, so the next usage anchor
         // is not measured against the old size.
         let _ = meter.prepare(messages);
@@ -451,14 +472,33 @@ async fn compact_before_request(
     // nothing old enough to replace. If the request is still over the trigger,
     // make one forced pass with a much smaller retain before sending it.
     if meter.pressure(messages) > trigger
-        && let Some(next) = compaction::force(client, config, messages, tools, cancel).await?
+        && let Some(compacted) = compaction::force(client, config, messages, tools, cancel).await?
     {
-        note_compaction(estimate_tokens(messages), estimate_tokens(&next));
-        *messages = next;
+        note_compaction(
+            estimate_tokens(messages),
+            estimate_tokens(&compacted.messages),
+        );
+        archived.extend(compacted.replaced);
+        *messages = compacted.messages;
         let _ = meter.prepare(messages);
     }
 
     Ok(())
+}
+
+/// Add `history_read` only once this chat has archived originals to read.
+fn ensure_history_tool(tools: &mut ToolRegistry, ctx: &RunContext) {
+    if tools.get("history_read").is_some() {
+        return;
+    }
+    let tool = crate::tools::history::HistoryRead::new(
+        ctx.store(),
+        ctx.session_id().to_string(),
+        ctx.archived(),
+    );
+    if tool.has_entries() {
+        tools.push(Box::new(tool));
+    }
 }
 
 async fn stream_step(
@@ -916,6 +956,7 @@ mod tests {
             ..AppConfig::default()
         };
         let mut meter = Meter::default();
+        let mut archived = Vec::new();
         let (_handle, cancel) = CancelHandle::new();
 
         compact_before_request(
@@ -925,10 +966,16 @@ mod tests {
             &cancel,
             &mut messages,
             &mut meter,
+            &mut archived,
         )
         .await
         .unwrap();
 
+        assert!(archived.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("request 0"))
+        }));
         let after = estimate_tokens(&messages);
         assert!(after < before);
         assert!(after <= compaction::trigger_at(config.context_window));

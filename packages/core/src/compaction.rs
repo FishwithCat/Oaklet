@@ -48,10 +48,16 @@ const FORCE_RETAIN_TOKENS: usize = 2_000;
 const SUMMARY_MAX_TOKENS: usize = 4_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// A compacted history plus the original messages it replaced.
+pub struct Compacted {
+    pub messages: Vec<Value>,
+    pub replaced: Vec<Value>,
+}
+
 /// Shown instead of a model summary when summarization fails.
 const DROPPED: &str = "The earlier part of this conversation was dropped so the run could stay \
-within the context window. Treat it as unavailable: re-read files and re-run checks instead of \
-assuming what happened before.";
+within the context window. The original messages are archived: use history_read when you need an \
+exact earlier command, error, or file content instead of assuming what happened before.";
 
 const COMPACTION_INSTRUCTION: &str = "\
 Condense the conversation above into a checkpoint that the same coding agent will read to continue \
@@ -126,7 +132,7 @@ pub async fn compact(
     messages: &[Value],
     tools: &ToolRegistry,
     cancel: &Cancel,
-) -> Result<Option<Vec<Value>>, String> {
+) -> Result<Option<Compacted>, String> {
     let Some(cut) = select_cut(messages, retain_at(config.context_window), MIN_REPLACED) else {
         return Ok(None);
     };
@@ -153,9 +159,10 @@ pub async fn force(
     messages: &[Value],
     tools: &ToolRegistry,
     cancel: &Cancel,
-) -> Result<Option<Vec<Value>>, String> {
+) -> Result<Option<Compacted>, String> {
     let target = force_retain_at(config.context_window);
     let mut next = trim_tool_outputs(messages);
+    let mut replaced = Vec::new();
 
     if estimate_tokens(&next) > target
         && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
@@ -163,21 +170,29 @@ pub async fn force(
         let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
             <= trigger_at(config.context_window);
         next = if prefix_fits {
-            compact_at(client, config, &next, cut, Some(tools), cancel, true).await?
+            let compacted =
+                compact_at(client, config, &next, cut, Some(tools), cancel, true).await?;
+            replaced.extend(compacted.replaced);
+            compacted.messages
         } else {
             note_fallback("summary prefix would not fit; dropped old history");
+            replaced.extend_from_slice(&next[1..cut]);
             assemble(&next, cut, DROPPED)
         };
     }
 
     while estimate_tokens(&next) > target {
-        let Some(dropped) = drop_oldest_turn(&next) else {
+        let Some((dropped, removed)) = drop_oldest_turn(&next) else {
             break;
         };
         next = dropped;
+        replaced.extend(removed);
     }
 
-    Ok((next != messages).then_some(next))
+    Ok((next != messages).then_some(Compacted {
+        messages: next,
+        replaced,
+    }))
 }
 
 /// L0: shrink tool results in place without touching the conversational order.
@@ -217,7 +232,7 @@ fn trim_head_and_tail(text: &str) -> String {
 
 /// Drop the oldest complete turn while keeping the summary checkpoint and the
 /// current request. Returns `None` when only the current turn remains.
-fn drop_oldest_turn(messages: &[Value]) -> Option<Vec<Value>> {
+fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
     let latest = latest_user(messages);
     if latest < 2 {
         return None;
@@ -249,7 +264,7 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<Vec<Value>> {
     let mut next = Vec::with_capacity(messages.len() - (end - start));
     next.extend_from_slice(&messages[..start]);
     next.extend_from_slice(&messages[end..]);
-    Some(next)
+    Some((next, messages[start..end].to_vec()))
 }
 
 fn is_checkpoint(message: &Value) -> bool {
@@ -284,19 +299,20 @@ async fn compact_at(
     tools: Option<&ToolRegistry>,
     cancel: &Cancel,
     drop_on_failure: bool,
-) -> Result<Vec<Value>, String> {
-    let replaced = estimate_tokens(&messages[1..cut]);
+) -> Result<Compacted, String> {
+    let replaced = messages[1..cut].to_vec();
+    let replaced_tokens = estimate_tokens(&replaced);
 
     let summary = match summarize(client, config, &messages[..cut], tools, cancel).await {
-        Ok(summary) if estimate_text(&summary) < replaced => summary,
+        Ok(summary) if estimate_text(&summary) < replaced_tokens => summary,
         Ok(summary) => {
             note_fallback(&format!(
-                "summary was {} tokens for {replaced} replaced",
+                "summary was {} tokens for {replaced_tokens} replaced",
                 estimate_text(&summary)
             ));
             if !drop_on_failure {
                 return Err(format!(
-                    "The summary was not smaller than the history it replaced ({replaced} tokens); nothing was compacted."
+                    "The summary was not smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
                 ));
             }
             DROPPED.to_string()
@@ -313,7 +329,10 @@ async fn compact_at(
         }
     };
 
-    Ok(assemble(messages, cut, &summary))
+    Ok(Compacted {
+        messages: assemble(messages, cut, &summary),
+        replaced,
+    })
 }
 
 /// Compact a conversation the UI owns, which starts at its first user message.
@@ -328,7 +347,7 @@ pub async fn compact_messages(
     config: &AppConfig,
     messages: &[Value],
     cancel: &Cancel,
-) -> Result<Option<Vec<Value>>, String> {
+) -> Result<Option<Compacted>, String> {
     let mut history = Vec::with_capacity(messages.len() + 1);
     history.push(json!({ "role": "system", "content": "" }));
     history.extend_from_slice(messages);
@@ -340,8 +359,11 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let next = compact_at(client, config, &history, cut, None, cancel, false).await?;
-    Ok(Some(next[1..].to_vec()))
+    let compacted = compact_at(client, config, &history, cut, None, cancel, false).await?;
+    Ok(Some(Compacted {
+        messages: compacted.messages[1..].to_vec(),
+        replaced: compacted.replaced,
+    }))
 }
 
 /// Cut immediately before the latest user turn.
@@ -415,7 +437,9 @@ fn select_cut(messages: &[Value], retain: usize, min_replaced: usize) -> Option<
 /// which avoids two consecutive user turns that some providers reject.
 fn assemble(messages: &[Value], cut: usize, summary: &str) -> Vec<Value> {
     let block = format!(
-        "<compacted-summary>\n{}\n</compacted-summary>",
+        "<compacted-summary>\n{}\n</compacted-summary>\n\n\
+         Earlier messages replaced by this checkpoint are archived; call history_read if you need \
+         their exact commands, errors, or file contents.",
         summary.trim()
     );
     let mut next = Vec::with_capacity(messages.len() - cut + 2);
@@ -696,9 +720,10 @@ mod tests {
             assistant("current answer"),
         ];
 
-        let next = drop_oldest_turn(&messages).unwrap();
+        let (next, removed) = drop_oldest_turn(&messages).unwrap();
 
         assert_eq!(next.len(), 4);
+        assert_eq!(removed, vec![user("old request"), assistant("old answer")]);
         assert!(
             next[1]["content"]
                 .as_str()
@@ -726,9 +751,10 @@ mod tests {
             user("current request"),
         ];
 
-        let next = drop_oldest_turn(&messages).unwrap();
+        let (next, removed) = drop_oldest_turn(&messages).unwrap();
 
         assert_eq!(next.len(), 3);
+        assert_eq!(removed.len(), 2);
         assert!(next[1]["content"].as_str().unwrap().contains(DROPPED));
         assert!(
             !next
@@ -923,12 +949,24 @@ mod tests {
         let client = reqwest::Client::new();
         let tools = ToolRegistry::new();
 
-        let next = compact(&client, &config, &messages, &tools, &cancel)
+        let compacted = compact(&client, &config, &messages, &tools, &cancel)
             .await
             .unwrap()
             .expect("compaction should apply");
+        let next = compacted.messages;
 
         server.join().unwrap();
+        assert!(compacted.replaced.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("request 0"))
+        }));
+        assert!(
+            compacted
+                .replaced
+                .iter()
+                .all(|message| message["role"] != "system")
+        );
         assert!(next.len() < messages.len());
         assert_eq!(next[0]["role"], "system");
         assert!(next.iter().any(|message| {
@@ -983,7 +1021,7 @@ mod tests {
             ..AppConfig::default()
         };
         let (_handle, cancel) = CancelHandle::new();
-        let next = force(
+        let compacted = force(
             &reqwest::Client::new(),
             &config,
             &messages,
@@ -993,8 +1031,21 @@ mod tests {
         .await
         .unwrap()
         .expect("forced compaction should apply");
+        let next = compacted.messages;
 
         server.join().unwrap();
+        assert!(!compacted.replaced.is_empty());
+        assert!(compacted.replaced.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("request 0 "))
+        }));
+        assert!(
+            compacted
+                .replaced
+                .iter()
+                .all(|message| message["role"] != "system")
+        );
         assert!(estimate_tokens(&next) < estimate_tokens(&messages));
         assert_eq!(next.last().unwrap(), &last);
 
@@ -1023,7 +1074,7 @@ mod tests {
         };
         let (_handle, cancel) = CancelHandle::new();
 
-        let next = force(
+        let compacted = force(
             &reqwest::Client::new(),
             &config,
             &messages,
@@ -1033,7 +1084,9 @@ mod tests {
         .await
         .unwrap()
         .expect("trimmable tool output should count as progress");
+        let next = compacted.messages;
 
+        assert!(compacted.replaced.is_empty());
         assert!(
             next.iter()
                 .any(|message| message["content"] == "old request")
@@ -1065,7 +1118,7 @@ mod tests {
             ..AppConfig::default()
         };
         let (_handle, cancel) = CancelHandle::new();
-        let next = force(
+        let compacted = force(
             &reqwest::Client::new(),
             &config,
             &messages,
@@ -1075,7 +1128,9 @@ mod tests {
         .await
         .unwrap()
         .expect("forced compaction should apply");
+        let next = compacted.messages;
 
+        assert!(!compacted.replaced.is_empty());
         assert!(estimate_tokens(&next) < estimate_tokens(&messages));
         assert_eq!(next.last().unwrap(), &last);
         assert!(next.iter().any(|message| {
@@ -1145,12 +1200,25 @@ mod tests {
         };
         let (_handle, cancel) = CancelHandle::new();
 
-        let next = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+        let compacted = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
             .await
             .unwrap()
             .expect("compaction should apply");
+        let next = compacted.messages;
 
         server.join().unwrap();
+        assert!(!compacted.replaced.is_empty());
+        assert!(
+            compacted
+                .replaced
+                .iter()
+                .all(|message| message["role"] != "system")
+        );
+        assert!(compacted.replaced.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("request 0 "))
+        }));
         assert_eq!(next.len(), 2);
         assert!(next.iter().all(|message| message["role"] != "system"));
         let current = next[0]["content"].as_str().unwrap();
@@ -1190,12 +1258,19 @@ mod tests {
         };
         let (_handle, cancel) = CancelHandle::new();
 
-        let next = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+        let compacted = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
             .await
             .unwrap()
             .expect("compaction should apply");
+        let next = compacted.messages;
 
         server.join().unwrap();
+        assert!(
+            !compacted
+                .replaced
+                .iter()
+                .any(|message| message["content"] == "LATEST REQUEST")
+        );
         assert_eq!(next.len(), 4);
         assert!(
             next[0]["content"]

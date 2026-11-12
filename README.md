@@ -58,11 +58,12 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - The plant in the composer's top-left corner estimates the next request against
   the context window and turns from green to yellow to red. Hover it for the
   percentage and token counts; click it while idle to fold older turns into a
-  checkpoint immediately.
+  checkpoint immediately. Replaced messages are archived, so a compacted chat
+  can page through the originals with `history_read` instead of losing them.
 
 The agent has `read_file`, `write_file`, `edit_file`, `apply_patch`, `list_dir`,
 `run_command`, and, depending on your setup, `likec4_mcp`, `skill`, MCP server
-tools, and `web_search`.
+tools, `web_search`, and, after compaction, `history_read`.
 
 ## Workspace views
 

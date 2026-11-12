@@ -17,6 +17,7 @@ use tokio::sync::watch;
 use crate::spill;
 
 mod fs;
+pub(crate) mod history;
 mod likec4;
 mod mcp;
 mod patch;
@@ -288,6 +289,10 @@ impl ToolRegistry {
             .iter()
             .find(|tool| tool.name() == name)
             .map(Box::as_ref)
+    }
+
+    pub fn push(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(tool);
     }
 
     #[cfg(test)]

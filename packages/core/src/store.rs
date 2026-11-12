@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SESSION_COLUMNS: &str = "id, workspace, title, turns, created_at, updated_at, \
      context_used, context_window, messages, items";
@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS runs (
   error       TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_history (
+  session_id  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  message     TEXT NOT NULL,
+  archived_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
 ";
 
 /// Token gauge persisted with a session.
@@ -91,6 +99,10 @@ pub struct RunEnd {
     pub finished_at: i64,
     pub messages: Vec<Value>,
     pub items: Vec<Value>,
+    /// Original messages replaced by compaction during this run. They are
+    /// archived in the same transaction that writes `messages`, so a failure
+    /// leaves both the old history and the archive untouched.
+    pub archived: Vec<Value>,
     pub context: Option<ContextUsage>,
     pub error: Option<String>,
 }
@@ -125,6 +137,43 @@ fn decode(raw: &str, what: &str) -> Result<Vec<Value>, String> {
 
 fn encode(value: &[Value]) -> Result<String, String> {
     serde_json::to_string(value).map_err(|error| format!("Could not encode session data: {error}"))
+}
+
+/// Append replaced messages to the per-session archive. `seq` continues the
+/// archive, so later compactions cannot overwrite earlier originals.
+fn append_history(
+    conn: &Connection,
+    session_id: &str,
+    messages: &[Value],
+    now: i64,
+) -> Result<usize, String> {
+    if messages.is_empty() {
+        return Ok(0);
+    }
+
+    let mut seq: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM session_history WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not read the archived history: {error}"))?;
+
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO session_history (session_id, seq, message, archived_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .map_err(|error| format!("Could not prepare the history archive: {error}"))?;
+    for message in messages {
+        seq += 1;
+        let raw = serde_json::to_string(message)
+            .map_err(|error| format!("Could not encode archived history: {error}"))?;
+        insert
+            .execute(params![session_id, seq, raw, now])
+            .map_err(|error| format!("Could not archive the replaced history: {error}"))?;
+    }
+    Ok(messages.len())
 }
 
 type SessionRow = (
@@ -231,6 +280,58 @@ impl Store {
         Self::get_with(&conn, id)
     }
 
+    /// Number of original messages archived after compaction.
+    pub fn history_count(&self, session_id: &str) -> Result<usize, String> {
+        let conn = self.connection()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_history WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not read the archived history: {error}"))?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// One 1-based page of archived originals, plus the archive size.
+    pub fn read_history(
+        &self,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<(i64, Value)>, usize), String> {
+        let conn = self.connection()?;
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_history WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not read the archived history: {error}"))?;
+        let mut statement = conn
+            .prepare(
+                "SELECT seq, message FROM session_history WHERE session_id = ?1 \
+                 ORDER BY seq LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|error| format!("Could not read the archived history: {error}"))?;
+        let rows = statement
+            .query_map(
+                params![session_id, limit.max(1) as i64, offset.max(1) as i64 - 1],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|error| format!("Could not read the archived history: {error}"))?;
+
+        let mut page = Vec::new();
+        for row in rows {
+            let (seq, raw) =
+                row.map_err(|error| format!("Could not read the archived history: {error}"))?;
+            let message = serde_json::from_str(&raw)
+                .map_err(|_| "An archived message could not be read.".to_string())?;
+            page.push((seq, message));
+        }
+        Ok((page, total.max(0) as usize))
+    }
+
     pub fn create_session(&self, id: &str, workspace: &str, now: i64) -> Result<Session, String> {
         let conn = self.connection()?;
         conn.execute(
@@ -316,19 +417,24 @@ impl Store {
         let tx = conn
             .transaction()
             .map_err(|error| format!("Could not finish the run: {error}"))?;
-        tx.execute(
-            "UPDATE sessions SET messages = ?2, items = ?3, context_used = ?4, \
-             context_window = ?5, updated_at = ?6 WHERE id = ?1",
-            params![
-                end.session_id,
-                encode(&end.messages)?,
-                encode(&end.items)?,
-                end.context.map(|context| context.used as i64),
-                end.context.map(|context| context.window as i64),
-                end.finished_at
-            ],
-        )
-        .map_err(|error| format!("Could not save the session: {error}"))?;
+        let changed = tx
+            .execute(
+                "UPDATE sessions SET messages = ?2, items = ?3, context_used = ?4, \
+                 context_window = ?5, updated_at = ?6 WHERE id = ?1",
+                params![
+                    end.session_id,
+                    encode(&end.messages)?,
+                    encode(&end.items)?,
+                    end.context.map(|context| context.used as i64),
+                    end.context.map(|context| context.window as i64),
+                    end.finished_at
+                ],
+            )
+            .map_err(|error| format!("Could not save the session: {error}"))?;
+        if changed == 0 {
+            return Err("This session no longer exists.".into());
+        }
+        append_history(&tx, &end.session_id, &end.archived, end.finished_at)?;
         tx.execute(
             "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
             params![end.run_id, end.status, end.finished_at, end.error],
@@ -346,6 +452,7 @@ impl Store {
         &self,
         session_id: &str,
         messages: &[Value],
+        replaced: &[Value],
         notice: &Value,
         context: ContextUsage,
         now: i64,
@@ -358,6 +465,7 @@ impl Store {
             .ok_or_else(|| "This session no longer exists.".to_string())?;
         let mut items = current.items;
         items.push(notice.clone());
+        append_history(&tx, session_id, replaced, now)?;
         tx.execute(
             "UPDATE sessions SET messages = ?2, items = ?3, context_used = ?4, \
              context_window = ?5, updated_at = ?6 WHERE id = ?1",
@@ -490,7 +598,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             "This Oaklet data was created by a newer version. Update Oaklet to open it.".into(),
         );
     }
-    if version == 0 {
+    if version < SCHEMA_VERSION {
         let tx = conn
             .unchecked_transaction()
             .map_err(|error| format!("Could not prepare the session database: {error}"))?;
@@ -549,6 +657,50 @@ mod tests {
         }
         let reopened = Store::open(&path).unwrap();
         assert!(reopened.get_session("s1").unwrap().is_some());
+        let version: i64 = reopened
+            .connection()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn adds_the_history_archive_to_a_version_one_database() {
+        let root = crate::tools::test_support::temp_root("store-migrate-v1");
+        let path = root.join("oaklet.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY,
+                   workspace TEXT NOT NULL,
+                   title TEXT NOT NULL DEFAULT '',
+                   turns INTEGER NOT NULL DEFAULT 0,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL,
+                   context_used INTEGER,
+                   context_window INTEGER,
+                   messages TEXT NOT NULL DEFAULT '[]',
+                   items TEXT NOT NULL DEFAULT '[]'
+                 );
+                 INSERT INTO sessions (id, workspace, created_at, updated_at)
+                 VALUES ('old', '/tmp/a', 1, 1);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert!(store.get_session("old").unwrap().is_some());
+        assert_eq!(store.history_count("old").unwrap(), 0);
+        let version: i64 = store
+            .connection()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -622,6 +774,7 @@ mod tests {
                     json!({ "kind": "user", "text": "hello" }),
                     json!({ "kind": "assistant", "runId": "r1", "text": "hi", "streaming": false }),
                 ],
+                archived: vec![json!({ "role": "user", "content": "older" })],
                 context: Some(ContextUsage {
                     used: 12,
                     window: 100,
@@ -640,6 +793,10 @@ mod tests {
             })
         );
         assert_eq!(saved.updated_at, 9);
+        assert_eq!(store.history_count("s1").unwrap(), 1);
+        let (history, total) = store.read_history("s1", 1, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(history[0].1["content"], "older");
 
         let conn = store.connection().unwrap();
         let status: (String, Option<i64>) = conn
@@ -752,6 +909,10 @@ mod tests {
             .apply_compaction(
                 "s1",
                 &[json!({ "role": "user", "content": "summary" })],
+                &[
+                    json!({ "role": "user", "content": "old request" }),
+                    json!({ "role": "assistant", "content": "old answer" }),
+                ],
                 &json!({ "kind": "notice", "text": "compacted", "tone": "muted" }),
                 ContextUsage {
                     used: 5,
@@ -770,6 +931,10 @@ mod tests {
                 window: 100
             })
         );
+        let (history, total) = store.read_history("s1", 1, 10).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(history[0].1["content"], "old request");
+        assert_eq!(history[1].1["content"], "old answer");
         assert!(now_ms() > 0);
     }
 }
