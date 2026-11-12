@@ -158,6 +158,14 @@ oldest turn when even that is too large, and retries the request once. The same
 check runs before the first request of a run, so switching to a model with a
 smaller window compacts the saved history before it is sent.
 
+If an automatic summary fails or does not shrink the history, Oaklet uses a
+mechanical checkpoint with user requirements, assistant text, tool signatures,
+and short results. Older checkpoints and long tool bodies are omitted; text is
+capped at 4,000 characters per message and for the whole digest, keeping the
+goal at the head and recent progress at the tail when the digest is too long.
+Only when this checkpoint still cannot shrink history does it fall back to a drop notice.
+Manual compaction keeps the original history and reports summary failures.
+
 Compaction does not discard the originals. `apply_compaction` and a run's final
 write archive every replaced message in `session_history` in the same
 transaction that writes the shorter history. Once a chat has archived history,

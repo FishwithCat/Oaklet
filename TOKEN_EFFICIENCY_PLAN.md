@@ -1,6 +1,6 @@
 # Token 效率改造：从 DSH 借鉴上下文纪律
 
-Status: P0 L0 implemented · 2026-11-12 · scope: `packages/core`
+Status: P0 implemented · 2026-11-12 · scope: `packages/core`
 
 本文是 Oaklet 从 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 借鉴
 token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而是搬三条已经被验证的成本曲线：
@@ -10,7 +10,7 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 3. **压缩后原文可召回**：敢删，是因为删掉的东西还能读回来。
 
 > 基线说明：本文基于 2026-11-12 的 HEAD `73b55ae`。下表中的“已落地”项都已经在仓库里，
-> 开始前先看 `git log` / `git status`，不要重复实现；正常压力 L0 已实现。
+> 开始前先看 `git log` / `git status`，不要重复实现。两项 P0 已实现；具体提交见 git log。
 
 ## 1. 已落地（不要重复做）
 
@@ -24,6 +24,7 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 | 压缩归档 + `history_read` | `store.rs::session_history`；`tools/history.rs` | 已提交（`73b55ae`） |
 | 溢出时 L0 裁剪 | `compaction.rs::trim_tool_outputs` / `force` | 已提交（`73b55ae`） |
 | 正常压力下先尝试 L0 | `compaction.rs::compact` | 已实现 |
+| 机械摘要兜底 | `compaction.rs::mechanical_digest` / `fallback_summary` | 已实现 |
 
 几个已经成立的设计约束，后续改动不要破坏：
 
@@ -37,7 +38,6 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 
 | 优先级 | 改造 | 主要落点 | 效果 | 工作量 |
 | --- | --- | --- | --- | --- |
-| P0 | 摘要失败时用机械摘要兜底 | `compaction.rs::compact_at` | 失败不再丢光历史 | 1 天 |
 | P1 | completion / cache token 遥测 | `agent.rs`、`context.rs`、`store.rs`、UI | 能验证是否真的省了钱 | 0.5–1 天 |
 | P2 | MCP 工具顺序稳定 / 按需加载 | `mcp.rs`、`tools/mod.rs` | MCP 多时省固定 schema 税 | 0.5–3 天 |
 | P2 | `force` 裁剪保留 spill 指针 | `compaction.rs::trim_tool_outputs` | 不丢 spill 路径 | 0.5 天 |
@@ -93,23 +93,25 @@ let compacted = compact_at(messages, ...)?;
 
 ### 3.2 P0：机械摘要兜底
 
-现在摘要失败或摘要不比原文短时，会退到常量 `DROPPED`，模型只看到一句“前面的对话被丢掉了”。
-`history_read` 已经能找回原文，但模型不知道发生了什么，容易重复劳动。
+已实现：自动摘要失败、为空或不比原文短时，先生成确定性机械摘要。
+只有机械 checkpoint（计入包装）仍不能缩短历史时，才使用常量 `DROPPED`。
 
-借鉴 CliffCompaction 的规则，做一个确定性的 `mechanical_digest(messages[1..cut])`：
+`mechanical_digest(messages[1..cut])` 的规则：
 
 - 用户消息原文保留（每条设 sanity cap，比如 4k 字符）。
 - assistant 文本保留（可 cap）。
 - tool call 只留一行签名：`name(args 截断)`。
 - tool 结果 ≤500 字符保留；超长换成 `[result omitted; use history_read for the original]`。
-- 跳过上一版 `<compacted-summary>`（Cliff 的“绝不对 summary 再 summary”）。
+- 跳过上一版 `<compacted-summary>`，同时保留与 checkpoint 合并在同条消息中的真实请求。
+- 整份 digest 也限制为 4k 字符；超限保留头部目标和尾部近期进展，附 `history_read` 提示，
+  防止大量短对话的机械摘要仍然超窗。
 - 如果 digest 不比被替换内容小，才退回 `DROPPED`。
 
 使用位置：
 
 - `compact_at` 的摘要错误 / 摘要不缩小分支（`drop_on_failure == true` 时）。
-- `force` 里 prefix 放不下、当前直接 `assemble(..., DROPPED)` 的分支。
-- 可选配置 `mechanical_fallback`，默认开启。
+- `force` 里 prefix 放不下的分支。
+- 自动兜底始终开启，不新增配置项；手工压缩失败时仍报错并保留原历史。
 
 验收：
 
@@ -205,7 +207,7 @@ spill 路径一起切掉。虽然原文已归档、`history_read` 能找回，�
 按仓库的 Conventional Commits 约定，每项独立可回滚：
 
 1. `feat(core): trim retained tool output before summarizing under pressure`（已实现）
-2. `feat(core): fall back to a mechanical digest when summarization fails`
+2. `feat(core): fall back to a mechanical digest when summarization fails`（已实现）
 3. `feat(core): record completion and cache token usage per run`
 4. `perf(core): keep MCP tool schema order stable`
 5. `fix(core): preserve spill pointers when trimming for overflow`

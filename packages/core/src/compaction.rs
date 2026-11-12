@@ -54,6 +54,11 @@ const FORCE_RETAIN_TOKENS: usize = 2_000;
 
 const SUMMARY_MAX_TOKENS: usize = 4_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
+/// Bound both each text message and the whole fallback, so many short turns cannot overflow it.
+const DIGEST_TEXT_CHARS: usize = 4_000;
+const DIGEST_TOOL_CHARS: usize = 500;
+const ARCHIVE_NOTICE: &str = "Earlier messages replaced by this checkpoint are archived; call \
+history_read if you need their exact commands, errors, or file contents.";
 
 /// A compacted history plus the original messages it replaced.
 pub struct Compacted {
@@ -61,7 +66,7 @@ pub struct Compacted {
     pub replaced: Vec<Value>,
 }
 
-/// Shown instead of a model summary when summarization fails.
+/// Last resort when neither a model summary nor a mechanical digest shrinks history.
 const DROPPED: &str = "The earlier part of this conversation was dropped so the run could stay \
 within the context window. The original messages are archived: use history_read when you need an \
 exact earlier command, error, or file content instead of assuming what happened before.";
@@ -130,8 +135,7 @@ fn force_retain_at(window: usize) -> usize {
 /// Try tool-output trimming first, then summarize the untouched history if needed.
 ///
 /// Returns `Ok(None)` when there is nothing worth compacting. Only a cancelled
-/// run returns an error; a failed summary falls back to dropping the old
-/// history so the request still fits.
+/// run returns an error; a failed summary falls back to a mechanical digest.
 pub async fn compact(
     client: &reqwest::Client,
     config: &AppConfig,
@@ -176,8 +180,8 @@ pub async fn compact(
 /// recent tail. A provider rejection means that estimate was too optimistic, so
 /// this pass uses a smaller retain and works in layers: first it trims oversized
 /// tool output (L0), then it summarizes the older turns (L1). If replaying the
-/// summary prefix would itself overflow, that range is replaced by the drop
-/// notice without a model call. Finally, the oldest retained turn is dropped
+/// summary prefix would itself overflow, that range gets a mechanical checkpoint
+/// without a model call. Finally, the oldest retained turn is dropped
 /// when the result is still too large; the system prompt and the current request
 /// are never dropped.
 pub async fn force(
@@ -207,8 +211,8 @@ pub async fn force(
                 compact_at(client, config, &next, cut, Some(tools), cancel, true).await?;
             compacted.messages
         } else {
-            note_fallback("summary prefix would not fit; dropped old history");
-            assemble(&next, cut, DROPPED)
+            note_fallback("summary prefix would not fit");
+            assemble(&next, cut, &fallback_summary(&next, cut))
         };
         // Trim/summarize/drop rewrite or remove messages; collect their original
         // indices so the archive always holds the untrimmed text.
@@ -390,7 +394,7 @@ async fn compact_at(
                     "The summary was not smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
                 ));
             }
-            DROPPED.to_string()
+            fallback_summary(messages, cut)
         }
         Err(err) => {
             if cancel.is_cancelled() {
@@ -400,7 +404,7 @@ async fn compact_at(
             if !drop_on_failure {
                 return Err(err);
             }
-            DROPPED.to_string()
+            fallback_summary(messages, cut)
         }
     };
 
@@ -408,6 +412,107 @@ async fn compact_at(
         messages: assemble(messages, cut, &summary),
         replaced,
     })
+}
+
+/// Deterministic fallback; include the checkpoint framing in the shrink check.
+fn fallback_summary(messages: &[Value], cut: usize) -> String {
+    let digest = mechanical_digest(&messages[1..cut]);
+    if !digest.is_empty()
+        && estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages)
+    {
+        digest
+    } else {
+        DROPPED.to_string()
+    }
+}
+
+fn mechanical_digest(messages: &[Value]) -> String {
+    let mut entries = Vec::new();
+    for message in messages {
+        let content = match message.get("content") {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        match role(message) {
+            Some("user" | "assistant") => {
+                let text = if role(message) == Some("user") {
+                    without_checkpoints(&content)
+                } else {
+                    content
+                };
+                if !text.trim().is_empty() {
+                    entries.push(format!(
+                        "{}: {}",
+                        role(message).unwrap(),
+                        cap(text, DIGEST_TEXT_CHARS)
+                    ));
+                }
+                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let name = call
+                            .pointer("/function/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("?");
+                        let args = call
+                            .pointer("/function/arguments")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        entries.push(format!(
+                            "tool call: {name}({})",
+                            cap(args.to_string(), DIGEST_TOOL_CHARS).replace(['\r', '\n'], " ")
+                        ));
+                    }
+                }
+            }
+            Some("tool") => entries.push(format!(
+                "tool result: {}",
+                if content.chars().count() <= DIGEST_TOOL_CHARS {
+                    content
+                } else {
+                    "[result omitted; use history_read for the original]".into()
+                }
+            )),
+            _ => {}
+        }
+    }
+    let digest = entries.join("\n\n");
+    if digest.chars().count() <= DIGEST_TEXT_CHARS {
+        return digest;
+    }
+    // Keep the goal at the head and recent progress at the tail when the fallback itself is long.
+    let preview = crate::spill::preview(
+        &digest,
+        usize::MAX,
+        0,
+        DIGEST_TEXT_CHARS * 3 / 5,
+        DIGEST_TEXT_CHARS / 4,
+    );
+    format!(
+        "{}\n\n[... digest middle omitted; use history_read for the original ...]\n\n{}",
+        preview.head, preview.tail
+    )
+}
+
+/// A checkpoint can share a user message with the actual request; retain that request.
+fn without_checkpoints(mut text: &str) -> String {
+    let mut plain = String::new();
+    while let Some((before, rest)) = text.split_once("<compacted-summary>") {
+        let Some((_, after)) = rest.split_once("</compacted-summary>") else {
+            break;
+        };
+        plain.push_str(before);
+        text = after;
+        if let Some(after_notice) = text.trim_start().strip_prefix(ARCHIVE_NOTICE) {
+            text = after_notice;
+        }
+    }
+    plain.push_str(text);
+    plain.trim().to_string()
 }
 
 /// Compact a conversation the UI owns, which starts at its first user message.
@@ -512,9 +617,7 @@ fn select_cut(messages: &[Value], retain: usize, min_replaced: usize) -> Option<
 /// which avoids two consecutive user turns that some providers reject.
 fn assemble(messages: &[Value], cut: usize, summary: &str) -> Vec<Value> {
     let block = format!(
-        "<compacted-summary>\n{}\n</compacted-summary>\n\n\
-         Earlier messages replaced by this checkpoint are archived; call history_read if you need \
-         their exact commands, errors, or file contents.",
+        "<compacted-summary>\n{}\n</compacted-summary>\n\n{ARCHIVE_NOTICE}",
         summary.trim()
     );
     let mut next = Vec::with_capacity(messages.len() - cut + 2);
@@ -661,7 +764,7 @@ fn tool_params_rejected(status: reqwest::StatusCode, detail: &str) -> bool {
 
 fn note_fallback(reason: &str) {
     if cfg!(debug_assertions) {
-        eprintln!("[oaklet] summary failed ({reason}); dropped old history instead");
+        eprintln!("[oaklet] summary failed ({reason}); trying a mechanical checkpoint");
     }
 }
 
@@ -728,8 +831,12 @@ mod tests {
     }
 
     fn summary_server_with(
-        responses: Vec<(u16, &'static str)>,
+        responses: Vec<(u16, &str)>,
     ) -> (String, Arc<StdMutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let responses: Vec<_> = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_string()))
+            .collect();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let seen = Arc::new(StdMutex::new(Vec::new()));
@@ -938,6 +1045,156 @@ mod tests {
 
         assert_eq!(spill_pointer(&forced), Some(path));
         assert!(forced.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
+    }
+
+    #[tokio::test]
+    async fn automatic_summary_failures_keep_a_recallable_mechanical_checkpoint() {
+        use crate::store::{ContextUsage, Store};
+        use crate::tools::history::HistoryRead;
+        use crate::tools::test_support::context;
+        use crate::tools::{CancelHandle, Tool};
+
+        let oversized =
+            json!({"choices": [{"message": {"content": "z".repeat(100_000)}}]}).to_string();
+        for (status, payload) in [
+            (200, r#"{"choices":[{"message":{"content":""}}]}"#),
+            (200, oversized.as_str()),
+            (500, r#"{"error":{"message":"unavailable"}}"#),
+        ] {
+            let (base_url, _seen, server) = summary_server_with(vec![(status, payload)]);
+            let config = AppConfig {
+                base_url,
+                context_window: 32_768,
+                ..AppConfig::default()
+            };
+            let mut messages = tool_history(3);
+            messages[7]["content"] = json!("error: disk full");
+            let cut = messages.len() - 1;
+            let (_handle, cancel) = CancelHandle::new();
+            let compacted = compact_at(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                cut,
+                Some(&ToolRegistry::new()),
+                &cancel,
+                true,
+            )
+            .await
+            .unwrap();
+            server.join().unwrap();
+
+            let checkpoint = compacted.messages[1]["content"].as_str().unwrap();
+            assert!(checkpoint.contains("Fix the build; preserve public APIs."));
+            assert!(checkpoint.contains("The failure is located; the fix is still pending."));
+            assert!(checkpoint.contains("read_file({\"path\":\"build.log\"})"));
+            assert!(checkpoint.contains("error: disk full"));
+            assert!(!checkpoint.contains("UNIQUE ERROR"));
+            assert!(!checkpoint.contains(DROPPED));
+            assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+            assert_eq!(compacted.replaced, messages[1..cut]);
+
+            let store = Store::in_memory().unwrap();
+            store.create_session("s1", "/tmp", 1).unwrap();
+            store
+                .apply_compaction(
+                    "s1",
+                    &compacted.messages[1..],
+                    &compacted.replaced,
+                    &json!({"kind": "notice"}),
+                    ContextUsage {
+                        used: estimate_tokens(&compacted.messages),
+                        window: config.context_window,
+                    },
+                    2,
+                )
+                .unwrap();
+            let history = HistoryRead::new(store, "s1".into(), Arc::new(StdMutex::new(Vec::new())));
+            let (ctx, root, _handle) = context("digest-recall");
+            let original = history
+                .execute(&ctx, json!({"offset": 3, "limit": 1}))
+                .await
+                .unwrap();
+            assert!(original.contains("UNIQUE ERROR: disk full"));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn mechanical_digest_skips_old_checkpoints_but_keeps_merged_requests() {
+        let merged = assemble(
+            &[
+                system(),
+                user("old"),
+                assistant("done"),
+                json!({"role": "user", "content": [{"type": "text", "text": "REAL USER REQUIREMENT"}]}),
+            ],
+            3,
+            "OBSOLETE SUMMARY",
+        );
+        let mut messages = merged[1..].to_vec();
+        messages.push(json!({
+            "role": "assistant", "content": format!("{}TEXT BEYOND CAP", "a".repeat(4_000)),
+            "tool_calls": [{"function": {"name": "read_file", "arguments": format!("{}\nARGS BEYOND CAP", "x".repeat(500))}}]
+        }));
+        let digest = mechanical_digest(&messages);
+
+        assert!(digest.contains("REAL USER REQUIREMENT"));
+        assert!(!digest.contains("OBSOLETE SUMMARY"));
+        assert!(!digest.contains(ARCHIVE_NOTICE));
+        assert!(!digest.contains("TEXT BEYOND CAP"));
+        assert!(!digest.contains("ARGS BEYOND CAP"));
+        assert!(digest.chars().count() <= DIGEST_TEXT_CHARS);
+        assert!(
+            digest
+                .lines()
+                .any(|line| line.starts_with("tool call: read_file(") && line.ends_with(')'))
+        );
+        assert_eq!(
+            mechanical_digest(&[user("<compacted-summary>old</compacted-summary>")]),
+            ""
+        );
+    }
+
+    #[test]
+    fn mechanical_fallback_drops_only_when_the_checkpoint_would_not_shrink() {
+        let messages = vec![system(), user("hi"), assistant("hello"), user("continue")];
+        assert_eq!(fallback_summary(&messages, 3), DROPPED);
+    }
+
+    #[tokio::test]
+    async fn force_uses_a_digest_when_the_summary_prefix_does_not_fit() {
+        use crate::tools::CancelHandle;
+
+        let messages = tool_history(20);
+        let config = AppConfig {
+            base_url: "invalid://no-summary".into(),
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let checkpoint = compacted.messages[1]["content"].as_str().unwrap();
+
+        assert!(checkpoint.contains("Fix the build; preserve public APIs."));
+        assert!(checkpoint.contains("read_file("));
+        assert!(!checkpoint.contains(DROPPED));
+        assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+        assert!(
+            compacted
+                .replaced
+                .iter()
+                .any(|message| message == &messages[3])
+        );
     }
 
     #[test]
@@ -1443,7 +1700,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn force_drops_old_history_when_the_summary_prefix_would_overflow() {
+    async fn force_keeps_a_bounded_digest_when_the_summary_prefix_would_overflow() {
         use crate::tools::CancelHandle;
 
         let mut messages = vec![system()];
@@ -1479,8 +1736,9 @@ mod tests {
         assert!(next.iter().any(|message| {
             message["content"]
                 .as_str()
-                .is_some_and(|text| text.contains("dropped so the run could stay"))
+                .is_some_and(|text| text.contains("user: request 0"))
         }));
+        assert!(estimate_tokens(&next) <= trigger_at(config.context_window));
     }
 
     #[tokio::test]

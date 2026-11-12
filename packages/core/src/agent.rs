@@ -366,8 +366,7 @@ mod tests {
         }
         let before = estimate_tokens(&messages);
         let config = AppConfig {
-            // The summary request fails, so the preflight must fall back to
-            // dropping the old range just as a provider-limited run would.
+            // The summary request fails, so preflight must use a bounded digest.
             base_url: "http://127.0.0.1:1".into(),
             context_window: 8_192,
             ..AppConfig::default()
@@ -399,7 +398,7 @@ mod tests {
         assert!(messages.iter().any(|message| {
             message["content"]
                 .as_str()
-                .is_some_and(|text| text.contains("dropped so the run could stay"))
+                .is_some_and(|text| text.contains("user: request 0"))
         }));
     }
 
