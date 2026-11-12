@@ -18,6 +18,7 @@ test("streaming reasoning previews the latest completed paragraph", () => {
 test("labels MCP tools with their server and tool names", () => {
   assert.equal(toolTitle("mcp__github__search_issues"), "github · search_issues");
   assert.equal(toolTitle("read_file"), "Read file");
+  assert.equal(toolTitle("apply_patch"), "Apply patch");
   assert.equal(toolTitle("skill"), "Load skill");
 });
 

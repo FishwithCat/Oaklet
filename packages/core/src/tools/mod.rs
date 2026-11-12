@@ -17,6 +17,7 @@ use tokio::sync::watch;
 mod fs;
 mod likec4;
 mod mcp;
+mod patch;
 mod shell;
 pub(crate) mod skill;
 pub(crate) mod web;
@@ -238,6 +239,7 @@ impl ToolRegistry {
                 Box::new(fs::ReadFile),
                 Box::new(fs::WriteFile),
                 Box::new(fs::EditFile),
+                Box::new(patch::ApplyPatch),
                 Box::new(fs::ListDir),
                 Box::new(shell::RunCommand),
             ],
@@ -574,6 +576,7 @@ mod tests {
                 "read_file",
                 "write_file",
                 "edit_file",
+                "apply_patch",
                 "list_dir",
                 "run_command"
             ]

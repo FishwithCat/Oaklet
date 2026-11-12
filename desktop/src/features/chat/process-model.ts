@@ -35,6 +35,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   list_dir: "read",
   write_file: "write",
   edit_file: "edit",
+  apply_patch: "edit",
   run_command: "command",
 };
 
@@ -51,6 +52,7 @@ const TOOL_TITLES: Record<string, string> = {
   list_dir: "List folder",
   write_file: "Write file",
   edit_file: "Edit file",
+  apply_patch: "Apply patch",
   run_command: "Run command",
   skill: "Load skill",
   likec4_mcp: "LikeC4 MCP",

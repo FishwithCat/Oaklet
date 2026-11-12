@@ -60,9 +60,9 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   percentage and token counts; click it while idle to fold older turns into a
   checkpoint immediately.
 
-The agent has `read_file`, `write_file`, `edit_file`, `list_dir`, `run_command`,
-and, depending on your setup, `likec4_mcp`, `skill`, MCP server tools, and
-`web_search`.
+The agent has `read_file`, `write_file`, `edit_file`, `apply_patch`, `list_dir`,
+`run_command`, and, depending on your setup, `likec4_mcp`, `skill`, MCP server
+tools, and `web_search`.
 
 ## Workspace views
 

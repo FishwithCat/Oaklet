@@ -6,7 +6,7 @@ use super::{Tool, ToolContext, ToolError, parse_args};
 
 const DEFAULT_READ_LINES: usize = 400;
 const MAX_LIST_ENTRIES: usize = 500;
-const MAX_FILE_BYTES: u64 = 2_000_000;
+pub(super) const MAX_FILE_BYTES: u64 = 2_000_000;
 
 fn path_arg(args: &Value) -> String {
     args.get("path")
