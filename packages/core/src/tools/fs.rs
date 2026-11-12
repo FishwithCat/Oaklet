@@ -1,3 +1,7 @@
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -7,6 +11,89 @@ use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 const DEFAULT_READ_LINES: usize = 400;
 const MAX_LIST_ENTRIES: usize = 500;
 pub(super) const MAX_FILE_BYTES: u64 = 2_000_000;
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Replace or create a text file through a same-directory staging file.
+///
+/// The destination is untouched until the staging file is fully written and
+/// synced, then published with one rename (replace) or hard link (create), so
+/// a failed write cannot truncate the previous contents. POSIX rename supplies
+/// the replacement; Windows support would need `ReplaceFileW`.
+pub(super) fn write_atomic(path: &Path, content: &str, create: bool) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create parent directory: {error}"))?;
+    }
+    let existing = std::fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file());
+    if existing
+        .as_ref()
+        .is_some_and(|metadata| metadata.permissions().readonly())
+    {
+        return Err("file is read-only".into());
+    }
+    let (temp, mut file) = create_staging_file(path, existing.is_some())?;
+    let staged = (|| {
+        file.write_all(content.as_bytes())?;
+        if let Some(metadata) = &existing {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.sync_all()?;
+        Ok::<(), std::io::Error>(())
+    })();
+    drop(file);
+    if let Err(error) = staged {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("cannot write temporary file: {error}"));
+    }
+    let published = if create {
+        std::fs::hard_link(&temp, path).map(|()| {
+            let _ = std::fs::remove_file(&temp);
+        })
+    } else {
+        std::fs::rename(&temp, path)
+    };
+    if let Err(error) = published {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!(
+            "cannot {} file: {error}",
+            if create { "create" } else { "replace" },
+        ));
+    }
+    Ok(())
+}
+
+fn create_staging_file(path: &Path, replacing: bool) -> Result<(PathBuf, std::fs::File), String> {
+    #[cfg(not(unix))]
+    let _ = replacing;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    // Keep the staging name well below NAME_MAX even for long source names.
+    let stem: String = name.chars().take(32).collect();
+    for _ in 0..100 {
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(".{stem}.{}.{counter}.tmp", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Existing modes are restored after the write; new files keep the
+            // process umask so replacement does not silently change permissions.
+            options.mode(if replacing { 0o600 } else { 0o666 });
+        }
+        match options.open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create temporary file: {error}")),
+        }
+    }
+    Err("cannot create a unique temporary file".into())
+}
 
 fn path_arg(args: &Value) -> String {
     args.get("path")
@@ -169,11 +256,8 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
     if path.is_dir() {
         return Err(ToolError::Failed("That path is a directory.".into()));
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Cannot create parent directory: {error}"))?;
-    }
-    std::fs::write(&path, &args.content).map_err(|error| format!("Cannot write file: {error}"))?;
+    write_atomic(&path, &args.content, false)
+        .map_err(|error| format!("Cannot write file: {error}"))?;
     Ok(format!(
         "Wrote {} bytes to {}",
         args.content.len(),
@@ -274,7 +358,7 @@ fn edit_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
     } else {
         text.replacen(args.old_string.as_str(), &args.new_string, 1)
     };
-    std::fs::write(&path, updated).map_err(|error| format!("Cannot write file: {error}"))?;
+    write_atomic(&path, &updated, false).map_err(|error| format!("Cannot write file: {error}"))?;
     Ok(format!(
         "Replaced {} occurrence(s) in {}",
         if args.replace_all { count } else { 1 },
@@ -373,7 +457,7 @@ fn list_dir(workspace: &Workspace, args: Value) -> Result<String, ToolError> {
 mod tests {
     use serde_json::json;
 
-    use super::{edit_file, list_dir, read_file, write_file};
+    use super::{edit_file, list_dir, read_file, write_atomic, write_file};
     use crate::tools::test_support::context;
 
     #[test]
@@ -467,6 +551,64 @@ mod tests {
         std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
         let args = json!({ "path": ".git/hooks/pre-commit", "content": "#!/bin/sh" });
         assert!(write_file(&ctx, args).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn atomic_write_replaces_content_and_preserves_mode() {
+        let (_ctx, root, _handle) = context("atomic-replace");
+        let path = root.join("notes.txt");
+        write_atomic(&path, "old\n", false).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+
+        write_atomic(&path, "new\n", false).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o640);
+        }
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn atomic_write_create_refuses_existing_and_cleans_up_failed_publish() {
+        let (_ctx, root, _handle) = context("atomic-create");
+        let created = root.join("created.txt");
+        write_atomic(&created, "created\n", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&created).unwrap(), "created\n");
+
+        assert!(write_atomic(&created, "replacement\n", true).is_err());
+        assert_eq!(std::fs::read_to_string(&created).unwrap(), "created\n");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+
+        let directory = root.join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(write_atomic(&directory, "not a file\n", false).is_err());
+        assert!(directory.is_dir());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_refuses_a_read_only_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_ctx, root, _handle) = context("atomic-read-only");
+        let path = root.join("notes.txt");
+        std::fs::write(&path, "keep\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        assert!(write_atomic(&path, "lost\n", false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
         std::fs::remove_dir_all(&root).ok();
     }
 }

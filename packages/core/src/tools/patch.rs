@@ -9,14 +9,13 @@
 //! OpenAI Codex parser and `seek_sequence` behavior (Apache-2.0).
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::fs::MAX_FILE_BYTES;
+use super::fs::{MAX_FILE_BYTES, write_atomic};
 use super::{Cancel, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const BEGIN: &str = "*** Begin Patch";
@@ -811,24 +810,6 @@ fn preflight(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<(), ToolError> {
     }
 }
 
-fn write_text(path: &Path, content: &str, create: bool) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create parent directory: {error}"))?;
-    }
-    if create {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|error| error.to_string())?;
-        file.write_all(content.as_bytes())
-            .map_err(|error| error.to_string())
-    } else {
-        std::fs::write(path, content).map_err(|error| error.to_string())
-    }
-}
-
 fn updated_text(operation: &ResolvedPatch, hunks: &[PatchHunk]) -> Result<String, String> {
     let text = std::fs::read_to_string(&operation.source)
         .map_err(|error| format!("cannot read \"{}\": {error}", operation.source_display))?;
@@ -845,7 +826,7 @@ fn updated_text(operation: &ResolvedPatch, hunks: &[PatchHunk]) -> Result<String
 
 fn execute_one(operation: &ResolvedPatch) -> Result<(), String> {
     match &operation.operation {
-        PatchOperation::Add { content, .. } => write_text(&operation.source, content, true)
+        PatchOperation::Add { content, .. } => write_atomic(&operation.source, content, true)
             .map_err(|error| format!("cannot write \"{}\": {error}", operation.source_display)),
         PatchOperation::Update {
             hunks,
@@ -856,7 +837,7 @@ fn execute_one(operation: &ResolvedPatch) -> Result<(), String> {
             let Some((destination, destination_display)) = &operation.destination else {
                 return Err("Move destination is missing.".into());
             };
-            write_text(destination, &after, true)
+            write_atomic(destination, &after, true)
                 .map_err(|error| format!("cannot write \"{destination_display}\": {error}"))?;
             std::fs::remove_file(&operation.source).map_err(|error| {
                 format!(
@@ -867,7 +848,7 @@ fn execute_one(operation: &ResolvedPatch) -> Result<(), String> {
         }
         PatchOperation::Update { hunks, .. } => {
             let after = updated_text(operation, hunks)?;
-            std::fs::write(&operation.source, after)
+            write_atomic(&operation.source, &after, false)
                 .map_err(|error| format!("cannot write \"{}\": {error}", operation.source_display))
         }
         PatchOperation::Delete { .. } => std::fs::remove_file(&operation.source)
