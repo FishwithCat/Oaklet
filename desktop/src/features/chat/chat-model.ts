@@ -88,6 +88,25 @@ export function isBlankTab(tab: {
   return !tab.running && tab.items.length === 0;
 }
 
+/** Sub-pixel slack for "the thread is scrolled all the way down". */
+const BOTTOM_SLACK = 2;
+
+/**
+ * Whether a scroll container sits at its true bottom. The tolerance is tiny on
+ * purpose: a wide band re-attaches after the next streamed chunk and fights an
+ * upward scroll instead of letting go.
+ */
+export function isAtBottom(element: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}): boolean {
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    BOTTOM_SLACK
+  );
+}
+
 export type Block =
   | { kind: "process"; start: number; items: ProcessItem[] }
   | { kind: "single"; index: number; item: Item };

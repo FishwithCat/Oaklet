@@ -1,10 +1,10 @@
 import {
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
   type Ref,
+  type WheelEvent,
 } from "react";
 import {
   AddRegular,
@@ -16,7 +16,12 @@ import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
 import type { Attachment } from "./attachments";
-import { mergeDraft, shouldShowContextGauge, type Item } from "./chat-model";
+import {
+  isAtBottom,
+  mergeDraft,
+  shouldShowContextGauge,
+  type Item,
+} from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import type { ChatTabInfo, ContextUsage } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
@@ -92,7 +97,8 @@ export function Chat({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [activeTabId]);
 
-  useEffect(() => {
+  // Pin before paint so a streamed chunk never flashes at the old position.
+  useLayoutEffect(() => {
     if (stickToBottomRef.current) {
       endRef.current?.scrollIntoView({ block: "end" });
     }
@@ -114,9 +120,18 @@ export function Chat({
   function onScroll() {
     const element = chatRef.current;
     if (!element) return;
-    stickToBottomRef.current =
-      element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    stickToBottomRef.current = isAtBottom(element);
     if (selectionAction) clearSelection();
+  }
+
+  function onWheel(event: WheelEvent<HTMLElement>) {
+    const element = chatRef.current;
+    // The wheel is the only synchronous signal that the user is scrolling up.
+    // Waiting for onScroll loses the race against the per-chunk pin, which
+    // snaps the thread back before the scroll event can detach it.
+    if (event.deltaY < 0 && element && element.scrollTop > 0) {
+      stickToBottomRef.current = false;
+    }
   }
 
   function updateDraft(value: string) {
@@ -262,6 +277,7 @@ export function Chat({
         hidden={!active}
         ref={chatRef}
         onScroll={onScroll}
+        onWheel={onWheel}
       >
         {items.length === 0 ? (
           empty

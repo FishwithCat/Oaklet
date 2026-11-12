@@ -6,6 +6,7 @@ import {
   formatContextUsage,
   formatTokens,
   formatWorkdir,
+  isAtBottom,
   isBlankTab,
   mergeDraft,
   shouldShowContextGauge,
@@ -165,4 +166,16 @@ test("the context plant stays visible for restored sessions without usage", () =
     shouldShowContextGauge({ used: 1600, window: 262144 }, false),
     true,
   );
+});
+
+test("the thread only counts as stuck at the true bottom", () => {
+  const viewport = (scrollHeight) => ({
+    scrollHeight,
+    scrollTop: 800,
+    clientHeight: 200,
+  });
+  assert.equal(isAtBottom(viewport(1000)), true);
+  assert.equal(isAtBottom(viewport(1002)), true);
+  // A few pixels up must detach; an 80px band let the next chunk snap back.
+  assert.equal(isAtBottom(viewport(1005)), false);
 });
