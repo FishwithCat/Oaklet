@@ -38,16 +38,32 @@ const TOOL_OUTPUT_TAIL_CHARS: usize = 1_500;
 const TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output middle pruned ...]\n\n";
 /// Reading a spill file must not spill again, or each page would be another file.
 const TOOL_SPILL_SKIP: &str = "read_file";
-/// Fixed text around the path in a spill marker.
-const SPILL_POINTER_PREFIX: &str = "saved to: ";
-const SPILL_POINTER_SUFFIX: &str = ". Use read_file";
+/// The complete marker written when a tool output was spilled. Matching all of
+/// it keeps ordinary log text that mentions `saved to:` from being mistaken for
+/// a spill pointer.
+const SPILL_MARKER_HEAD: &str = "[... tool output middle pruned; full output (";
+const SPILL_MARKER_POINTER: &str = ") saved to: ";
+const SPILL_MARKER_TAIL: &str = ". Use read_file with offset and limit to page through it.]";
+/// The spill writer's workspace-relative paths are far shorter than this.
+const SPILL_POINTER_MAX_CHARS: usize = 512;
 
-/// Extract the spill path from an already-pruned tool output, if present.
+/// Extract the path from a complete, Oaklet-generated spill marker.
 pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
-    let start = text.find(SPILL_POINTER_PREFIX)? + SPILL_POINTER_PREFIX.len();
-    let rest = &text[start..];
-    let end = rest.find(SPILL_POINTER_SUFFIX)?;
-    Some(&rest[..end])
+    for (start, _) in text.match_indices(SPILL_MARKER_HEAD) {
+        let rest = &text[start + SPILL_MARKER_HEAD.len()..];
+        let Some((_, after_pointer)) = rest.split_once(SPILL_MARKER_POINTER) else {
+            continue;
+        };
+        let Some((path, _)) = after_pointer.split_once(SPILL_MARKER_TAIL) else {
+            continue;
+        };
+        if (path.starts_with(".oaklet/spill/") || path.starts_with(".oaklet\\spill\\"))
+            && path.chars().count() <= SPILL_POINTER_MAX_CHARS
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// One capability exposed to the model.
@@ -187,7 +203,7 @@ impl ToolContext {
             .flatten();
         let marker = match &spilled {
             Some(spilled) => format!(
-                "\n\n[... tool output middle pruned; full output ({} lines, {} bytes) saved to: {}. Use read_file with offset and limit to page through it.]\n\n",
+                "\n\n{SPILL_MARKER_HEAD}{} lines, {} bytes{SPILL_MARKER_POINTER}{}{SPILL_MARKER_TAIL}\n\n",
                 spilled.lines,
                 spilled.bytes,
                 spilled.relative.display()
@@ -479,9 +495,10 @@ mod tests {
 
     use super::test_support::context;
     use super::{
-        ApprovalDecision, ApprovalRequest, Approver, CancelHandle, TOOL_OUTPUT_HEAD_CHARS,
-        TOOL_OUTPUT_MARKER, TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext,
-        ToolError, ToolRegistry, cap, prune_tool_output,
+        ApprovalDecision, ApprovalRequest, Approver, CancelHandle, SPILL_MARKER_HEAD,
+        SPILL_MARKER_POINTER, SPILL_MARKER_TAIL, TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER,
+        TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError,
+        ToolRegistry, cap, prune_tool_output, spill_pointer,
     };
 
     struct Allow;
@@ -735,6 +752,21 @@ mod tests {
         assert!(!outcome.output.contains("saved to:"));
         assert!(outcome.output.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn spill_pointer_ignores_saved_to_text_before_the_marker() {
+        let path = ".oaklet/spill/run-1/out.txt";
+        let text = format!(
+            "artifact saved to: build/report.html\n\n{SPILL_MARKER_HEAD}900 lines, 20000 bytes{SPILL_MARKER_POINTER}{path}{SPILL_MARKER_TAIL}"
+        );
+
+        assert_eq!(spill_pointer(&text), Some(path));
+
+        let not_a_spill = format!(
+            "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}build/report.html{SPILL_MARKER_TAIL}"
+        );
+        assert_eq!(spill_pointer(&not_a_spill), None);
     }
 
     #[test]
