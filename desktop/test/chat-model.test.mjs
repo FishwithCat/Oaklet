@@ -11,6 +11,7 @@ import {
   mergeDraft,
   shouldShowContextGauge,
   settleStreaming,
+  stickAfterScroll,
   toBlocks,
 } from "../src/features/chat/chat-model.ts";
 
@@ -178,4 +179,24 @@ test("the thread only counts as stuck at the true bottom", () => {
   assert.equal(isAtBottom(viewport(1002)), true);
   // A few pixels up must detach; an 80px band let the next chunk snap back.
   assert.equal(isAtBottom(viewport(1005)), false);
+});
+
+test("a pin that stops at the padding edge reads as detached", () => {
+  // .chat keeps 10px of bottom padding and .thread another 8px. scrollIntoView
+  // cannot cover them, so the pin used to stop 18px short and detach itself.
+  const element = { scrollHeight: 1000, scrollTop: 782, clientHeight: 200 };
+  assert.equal(isAtBottom(element), false);
+  assert.equal(isAtBottom({ ...element, scrollTop: 800 }), true);
+});
+
+test("only an upward move away from the bottom detaches the thread", () => {
+  // The pin and streamed growth fire scroll events without moving up.
+  assert.equal(stickAfterScroll(true, true, 800, 800), true);
+  assert.equal(stickAfterScroll(true, false, 820, 820), true);
+  assert.equal(stickAfterScroll(true, false, 760, 800), false);
+  // Coming back down re-attaches only once the true bottom is reached.
+  assert.equal(stickAfterScroll(false, false, 780, 760), false);
+  assert.equal(stickAfterScroll(false, true, 800, 780), true);
+  // Content shrinking clamps the offset down but lands on the bottom.
+  assert.equal(stickAfterScroll(true, true, 600, 800), true);
 });

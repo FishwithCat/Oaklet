@@ -20,6 +20,7 @@ import {
   isAtBottom,
   mergeDraft,
   shouldShowContextGauge,
+  stickAfterScroll,
   type Item,
 } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
@@ -76,9 +77,9 @@ export function Chat({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const chatRef = useRef<HTMLElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
   const stickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const draftsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
@@ -87,6 +88,16 @@ export function Chat({
   const { selectionAction, selectionButtonRef, clearSelection } =
     useSelectionAction({ active: active && !welcome, containerRef: chatRef });
 
+  function pinToBottom() {
+    const element = chatRef.current;
+    if (!element) return;
+    // Write the offset directly: scrollIntoView aligns to the padding box, so
+    // the container's bottom padding stays out of reach and the pin's own
+    // scroll event reads as "not at the bottom".
+    element.scrollTop = element.scrollHeight;
+    lastScrollTopRef.current = element.scrollTop;
+  }
+
   useLayoutEffect(() => {
     if (lastTabIdRef.current === activeTabId) return;
     lastTabIdRef.current = activeTabId;
@@ -94,13 +105,13 @@ export function Chat({
     setAttachments(attachmentsRef.current.get(activeTabId) ?? []);
     clearSelection();
     stickToBottomRef.current = true;
-    endRef.current?.scrollIntoView({ block: "end" });
+    pinToBottom();
   }, [activeTabId]);
 
   // Pin before paint so a streamed chunk never flashes at the old position.
   useLayoutEffect(() => {
     if (stickToBottomRef.current) {
-      endRef.current?.scrollIntoView({ block: "end" });
+      pinToBottom();
     }
   }, [items, compacting]);
 
@@ -120,7 +131,14 @@ export function Chat({
   function onScroll() {
     const element = chatRef.current;
     if (!element) return;
-    stickToBottomRef.current = isAtBottom(element);
+    const top = element.scrollTop;
+    stickToBottomRef.current = stickAfterScroll(
+      stickToBottomRef.current,
+      isAtBottom(element),
+      top,
+      lastScrollTopRef.current,
+    );
+    lastScrollTopRef.current = top;
     if (selectionAction) clearSelection();
   }
 
@@ -288,7 +306,6 @@ export function Chat({
             compacting={compacting}
             activeRunId={activeRunId}
             onApproval={onApproval}
-            endRef={endRef}
           />
         )}
       </main>

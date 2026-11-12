@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 import { FileRegular } from "@mingcute/react/core-regular";
 import { MarkdownText } from "../../shared/Markdown";
 import { ProcessGroup } from "./Process";
@@ -11,14 +10,12 @@ export function ChatThread({
   compacting,
   activeRunId,
   onApproval,
-  endRef,
 }: {
   items: Item[];
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
-  endRef: RefObject<HTMLDivElement | null>;
 }) {
   const blocks = toBlocks(items);
   let lastProcessBlock = -1;
@@ -104,7 +101,7 @@ export function ChatThread({
           Compacting context…
         </div>
       )}
-      <div ref={endRef} />
+      <div />
     </div>
   );
 }

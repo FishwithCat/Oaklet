@@ -107,6 +107,22 @@ export function isAtBottom(element: {
   );
 }
 
+/**
+ * Whether the thread should keep following after a scroll event. Only moving
+ * up and away from the bottom detaches it: the pin, streamed growth, and
+ * shrinking content all fire scroll events, and treating those as "the user
+ * scrolled away" is what stopped the follow after a stop.
+ */
+export function stickAfterScroll(
+  stick: boolean,
+  atBottom: boolean,
+  top: number,
+  previousTop: number,
+): boolean {
+  if (atBottom) return true;
+  return top < previousTop - 1 ? false : stick;
+}
+
 export type Block =
   | { kind: "process"; start: number; items: ProcessItem[] }
   | { kind: "single"; index: number; item: Item };
