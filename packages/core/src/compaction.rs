@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use crate::AppConfig;
 use crate::context::{estimate_message, estimate_text, estimate_tokens};
 use crate::repeat::is_reminder;
-use crate::tools::{Cancel, ToolRegistry, cap};
+use crate::tools::{Cancel, ToolRegistry, cap, spill_pointer};
 
 /// Room kept for the response and for the next round of tool output.
 const OUTPUT_RESERVE: usize = 32_768;
@@ -232,14 +232,21 @@ fn trim_tool_outputs(messages: &[Value]) -> (Vec<Value>, BTreeSet<usize>) {
 
 fn trim_head_and_tail(text: &str) -> String {
     let total = text.chars().count();
-    let budget = FORCE_TOOL_OUTPUT_CHARS.saturating_sub(FORCE_TOOL_OUTPUT_MARKER.chars().count());
+    let marker = match spill_pointer(text) {
+        Some(path) => format!(
+            "\n\n[... tool output trimmed for context recovery; full output saved to: {path}. \
+             Use read_file with offset and limit to page through it.]\n\n"
+        ),
+        None => FORCE_TOOL_OUTPUT_MARKER.to_string(),
+    };
+    let budget = FORCE_TOOL_OUTPUT_CHARS.saturating_sub(marker.chars().count());
     let head = FORCE_TOOL_OUTPUT_HEAD_CHARS.min(total).min(budget);
     let tail = FORCE_TOOL_OUTPUT_TAIL_CHARS
         .min(total - head)
         .min(budget - head);
     let mut trimmed = String::with_capacity(FORCE_TOOL_OUTPUT_CHARS);
     trimmed.extend(text.chars().take(head));
-    trimmed.push_str(FORCE_TOOL_OUTPUT_MARKER);
+    trimmed.push_str(&marker);
     trimmed.extend(text.chars().skip(total - tail));
     trimmed
 }
@@ -737,6 +744,21 @@ mod tests {
         assert!(text.starts_with('x') && text.ends_with('x'));
         assert_eq!(replaced.into_iter().collect::<Vec<_>>(), vec![2]);
         assert_eq!(messages[2]["content"].as_str().unwrap(), original);
+    }
+
+    #[test]
+    fn keeps_an_existing_spill_pointer_when_trimming_again() {
+        let path = ".oaklet/spill/run-1/run_command-call_1.txt";
+        let original = format!(
+            "{}\n\n[... tool output middle pruned; full output (900 lines, 20000 bytes) saved to: {path}. Use read_file with offset and limit to page through it.]\n\n{}",
+            "h".repeat(4_000),
+            "t".repeat(4_000)
+        );
+
+        let trimmed = trim_head_and_tail(&original);
+
+        assert!(trimmed.contains(path));
+        assert!(trimmed.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
     }
 
     #[test]

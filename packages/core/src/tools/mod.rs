@@ -38,6 +38,17 @@ const TOOL_OUTPUT_TAIL_CHARS: usize = 1_500;
 const TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output middle pruned ...]\n\n";
 /// Reading a spill file must not spill again, or each page would be another file.
 const TOOL_SPILL_SKIP: &str = "read_file";
+/// Fixed text around the path in a spill marker.
+const SPILL_POINTER_PREFIX: &str = "saved to: ";
+const SPILL_POINTER_SUFFIX: &str = ". Use read_file";
+
+/// Extract the spill path from an already-pruned tool output, if present.
+pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
+    let start = text.find(SPILL_POINTER_PREFIX)? + SPILL_POINTER_PREFIX.len();
+    let rest = &text[start..];
+    let end = rest.find(SPILL_POINTER_SUFFIX)?;
+    Some(&rest[..end])
+}
 
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
