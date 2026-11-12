@@ -32,11 +32,18 @@ export type ToolCategory = "read" | "write" | "edit" | "command" | "tools";
 
 const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   read_file: "read",
+  read_image: "read",
   list_dir: "read",
+  glob: "read",
+  grep: "read",
   write_file: "write",
   edit_file: "edit",
   apply_patch: "edit",
   run_command: "command",
+  job_list: "read",
+  job_output: "read",
+  job_kill: "command",
+  web_fetch: "tools",
 };
 
 const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> = {
@@ -49,11 +56,18 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "Read file",
+  read_image: "Read image",
   list_dir: "List folder",
+  glob: "Find files",
+  grep: "Search contents",
   write_file: "Write file",
   edit_file: "Edit file",
   apply_patch: "Apply patch",
   run_command: "Run command",
+  job_list: "List jobs",
+  job_output: "Job output",
+  job_kill: "Stop job",
+  web_fetch: "Fetch page",
   skill: "Load skill",
   likec4_mcp: "LikeC4 MCP",
 };

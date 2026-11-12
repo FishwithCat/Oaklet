@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
-use super::{ApprovalRequest, Tool, ToolContext, ToolError, parse_args};
+use super::{ApprovalRequest, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: u64 = 1_000_000;
@@ -19,14 +19,15 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. The user must approve each command. Returns combined stdout and stderr."
+        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately. Returns combined stdout and stderr."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "Shell command to run." }
+                "command": { "type": "string", "description": "Shell command to run." },
+                "run_in_background": { "type": "boolean", "description": "Run in the background and return a job id immediately. Collect output with job_output and stop it with job_kill." }
             },
             "required": ["command"],
             "additionalProperties": false
@@ -34,7 +35,7 @@ impl Tool for RunCommand {
     }
 
     fn guidance(&self) -> &'static str {
-        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. The user must approve every command, so keep commands focused."
+        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. Commands may need approval depending on Settings, so keep them focused. Long-running commands should use run_in_background."
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -66,8 +67,8 @@ impl Tool for RunCommand {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { run_command(ctx, args).await })
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move { run_command(ctx, args).await.map(ToolOutput::text) })
     }
 }
 
@@ -75,6 +76,8 @@ impl Tool for RunCommand {
 #[serde(deny_unknown_fields)]
 struct RunCommandArgs {
     command: String,
+    #[serde(default)]
+    run_in_background: bool,
 }
 
 async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
@@ -84,16 +87,20 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
             "command must not be empty.".into(),
         ));
     }
+    if ctx.cancel.is_cancelled() {
+        return Err(ToolError::Cancelled);
+    }
+    if args.run_in_background {
+        let id = ctx
+            .jobs
+            .start(ctx.workspace.root(), &args.command)
+            .map_err(ToolError::Failed)?;
+        return Ok(format!(
+            "Started background job {id}. Use job_output with job_id \"{id}\" to read its output, and job_kill to stop it."
+        ));
+    }
 
-    let mut process = if cfg!(windows) {
-        let mut process = tokio::process::Command::new("cmd");
-        process.args(["/C", &args.command]);
-        process
-    } else {
-        let mut process = tokio::process::Command::new("sh");
-        process.args(["-c", &args.command]);
-        process
-    };
+    let mut process = shell_command(&args.command);
     process
         .current_dir(ctx.workspace.root())
         .stdin(Stdio::null())
@@ -140,6 +147,19 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
         Ok(summary)
     } else {
         Ok(format!("{summary}\n{output}"))
+    }
+}
+
+/// The shell invocation shared by foreground commands and background jobs.
+pub(super) fn shell_command(command: &str) -> tokio::process::Command {
+    if cfg!(windows) {
+        let mut process = tokio::process::Command::new("cmd");
+        process.args(["/C", command]);
+        process
+    } else {
+        let mut process = tokio::process::Command::new("sh");
+        process.args(["-c", command]);
+        process
     }
 }
 
@@ -202,6 +222,7 @@ mod tests {
         let ctx = ToolContext {
             workspace,
             cancel,
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             run_id: "run-test".into(),
         };
 
@@ -219,6 +240,20 @@ mod tests {
             .unwrap();
         assert!(matches!(result, Err(ToolError::Cancelled)));
         assert!(elapsed < Duration::from_secs(2));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn starts_background_commands_with_a_job_id() {
+        let (ctx, root, _handle) = context("background");
+        let output = run_command(
+            &ctx,
+            json!({ "command": "printf hi", "run_in_background": true }),
+        )
+        .await
+        .unwrap();
+        assert!(output.starts_with("Started background job job-"));
         std::fs::remove_dir_all(&root).ok();
     }
 }

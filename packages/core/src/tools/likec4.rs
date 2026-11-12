@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-use super::{Tool, ToolContext, ToolError, parse_args};
+use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 use crate::architecture::read_capped;
 
 pub struct LikeC4 {
@@ -62,7 +62,7 @@ impl Tool for LikeC4 {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let query: Query = parse_args(args.clone())?;
             if query
@@ -123,7 +123,7 @@ impl Tool for LikeC4 {
             };
             tokio::select! {
                 _ = ctx.cancel.cancelled() => Err(ToolError::Cancelled),
-                result = work => result.map_err(ToolError::Failed),
+                result = work => result.map(ToolOutput::text).map_err(ToolError::Failed),
             }
         })
     }
@@ -179,6 +179,7 @@ mod tests {
         let ctx = ToolContext {
             workspace,
             cancel,
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             run_id: "run-test".into(),
         };
         let tool = LikeC4 {

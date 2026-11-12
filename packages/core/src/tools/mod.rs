@@ -18,12 +18,16 @@ use crate::spill;
 
 mod fs;
 pub(crate) mod history;
+mod image;
+pub(crate) mod jobs;
 mod likec4;
 mod mcp;
 mod patch;
+mod search;
 mod shell;
 pub(crate) mod skill;
 pub(crate) mod web;
+mod web_fetch;
 mod workspace;
 
 pub use workspace::Workspace;
@@ -75,6 +79,57 @@ pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
     None
 }
 
+/// One image returned by a tool. `data_url` is a complete `data:` URL so the
+/// agent loop can attach it to the next model request without another read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolImage {
+    pub data_url: String,
+}
+
+/// Model-facing result of one tool call. Most tools return text only; a few
+/// attach images the agent loop forwards as a separate user message.
+#[derive(Clone, Debug, Default)]
+pub struct ToolOutput {
+    pub text: String,
+    pub images: Vec<ToolImage>,
+}
+
+impl ToolOutput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    pub fn with_image(text: impl Into<String>, data_url: String) -> Self {
+        Self {
+            text: text.into(),
+            images: vec![ToolImage { data_url }],
+        }
+    }
+}
+
+impl std::ops::Deref for ToolOutput {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.text
+    }
+}
+
+impl PartialEq<&str> for ToolOutput {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<str> for ToolOutput {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
     /// Model-facing name, also used by the registry for lookup.
@@ -110,7 +165,7 @@ pub trait Tool: Send + Sync {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>>;
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>>;
 }
 
 /// Human-facing details for one approval card.
@@ -173,13 +228,17 @@ impl From<String> for ToolError {
 pub struct ToolOutcome {
     pub ok: bool,
     pub output: String,
+    /// Images returned by the call; the agent loop attaches them after the
+    /// batch's tool messages so every provider sees a normal image user turn.
+    pub images: Vec<ToolImage>,
 }
 
 impl ToolOutcome {
-    pub fn success(output: impl Into<String>) -> Self {
+    pub fn success_with_images(output: impl Into<String>, images: Vec<ToolImage>) -> Self {
         Self {
             ok: true,
             output: output.into(),
+            images,
         }
     }
 
@@ -187,6 +246,7 @@ impl ToolOutcome {
         Self {
             ok: false,
             output: message.into(),
+            images: Vec::new(),
         }
     }
 }
@@ -195,6 +255,8 @@ impl ToolOutcome {
 pub struct ToolContext {
     pub workspace: Workspace,
     pub cancel: Cancel,
+    /// Background jobs owned by the app process, shared across runs.
+    pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session run that owns spill files and, later, recall metadata.
     pub run_id: String,
 }
@@ -278,7 +340,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// Tools that need host state beyond the workspace: MCP servers (including
-    /// LikeC4) and, when an API key is configured, DeepSeek web search.
+    /// LikeC4) and, when a search key is configured, web search.
     pub async fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
         let mut registry = Self::new();
 
@@ -313,6 +375,7 @@ impl ToolRegistry {
                 &config.search_url,
             )));
         }
+        registry.tools.push(Box::new(web_fetch::WebFetch));
         registry
     }
 
@@ -320,11 +383,17 @@ impl ToolRegistry {
         Self {
             tools: vec![
                 Box::new(fs::ReadFile),
+                Box::new(image::ReadImage),
                 Box::new(fs::WriteFile),
                 Box::new(fs::EditFile),
                 Box::new(patch::ApplyPatch),
                 Box::new(fs::ListDir),
+                Box::new(search::Glob),
+                Box::new(search::Grep),
                 Box::new(shell::RunCommand),
+                Box::new(jobs::JobList),
+                Box::new(jobs::JobOutput),
+                Box::new(jobs::JobKill),
             ],
             warnings: Vec::new(),
         }
@@ -428,7 +497,10 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolOutcome::success(ctx.bound_output(name, call_id, output)),
+            Ok(output) => ToolOutcome::success_with_images(
+                ctx.bound_output(name, call_id, output.text),
+                output.images,
+            ),
             Err(error) => ToolOutcome::failure(ctx.bound_output(name, call_id, error.to_string())),
         }
     }
@@ -481,7 +553,7 @@ pub(crate) mod test_support {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{CancelHandle, ToolContext, Workspace};
+    use super::{CancelHandle, ToolContext, Workspace, jobs};
 
     pub fn temp_root(tag: &str) -> PathBuf {
         let stamp = SystemTime::now()
@@ -502,6 +574,7 @@ pub(crate) mod test_support {
             ToolContext {
                 workspace,
                 cancel,
+                jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 run_id: "run-test".into(),
             },
             root,
@@ -524,7 +597,7 @@ mod tests {
         ApprovalDecision, ApprovalRequest, Approver, CancelHandle, SPILL_MARKER_HEAD,
         SPILL_MARKER_POINTER, SPILL_MARKER_TAIL, TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER,
         TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError,
-        ToolRegistry, cap, prune_tool_output, spill_pointer,
+        ToolOutput, ToolRegistry, cap, prune_tool_output, spill_pointer,
     };
 
     struct Allow;
@@ -588,15 +661,15 @@ mod tests {
             &'a self,
             _ctx: &'a ToolContext,
             _args: Value,
-        ) -> BoxFuture<'a, Result<String, ToolError>> {
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
             self.ran.store(true, Ordering::SeqCst);
             if self.slow {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok("late".to_string())
+                    Ok(ToolOutput::text("late"))
                 })
             } else {
-                Box::pin(async { Ok("ran".to_string()) })
+                Box::pin(async { Ok(ToolOutput::text("ran")) })
             }
         }
     }
@@ -640,9 +713,9 @@ mod tests {
             &'a self,
             _ctx: &'a ToolContext,
             _args: Value,
-        ) -> BoxFuture<'a, Result<String, ToolError>> {
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
             let output = self.output.clone();
-            Box::pin(async move { Ok(output) })
+            Box::pin(async move { Ok(ToolOutput::text(output)) })
         }
     }
 
@@ -822,11 +895,17 @@ mod tests {
             names,
             vec![
                 "read_file",
+                "read_image",
                 "write_file",
                 "edit_file",
                 "apply_patch",
                 "list_dir",
-                "run_command"
+                "glob",
+                "grep",
+                "run_command",
+                "job_list",
+                "job_output",
+                "job_kill"
             ]
         );
     }
@@ -835,12 +914,18 @@ mod tests {
     fn only_read_only_tools_are_concurrency_safe() {
         let registry = ToolRegistry::new();
         assert!(registry.is_concurrency_safe("read_file"));
+        assert!(registry.is_concurrency_safe("read_image"));
         assert!(registry.is_concurrency_safe("list_dir"));
+        assert!(registry.is_concurrency_safe("glob"));
+        assert!(registry.is_concurrency_safe("grep"));
+        assert!(registry.is_concurrency_safe("job_list"));
         for name in [
             "write_file",
             "edit_file",
             "apply_patch",
             "run_command",
+            "job_output",
+            "job_kill",
             "nope",
         ] {
             assert!(!registry.is_concurrency_safe(name), "{name}");

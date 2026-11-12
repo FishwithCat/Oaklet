@@ -175,9 +175,12 @@ command or error without making it unrecoverable.
 
 A run has no fixed step limit. Three cheaper controls bound the cost: every
 potentially slow tool call has its own timeout (`run_command` 120 seconds, MCP
-60, `web_search` 20), repeating one identical call earns an advisory reminder at
-the third, fifth, and eighth try, and **Stop** cancels the model request, a
-running command, or a pending approval immediately.
+60, `web_search` 20, `web_fetch` 30, `grep`/`glob` 30), repeating one identical
+call earns an advisory reminder at the third, fifth, and eighth try, and
+**Stop** cancels the model request, a running command, or a pending approval
+immediately. A command started with `run_in_background` detaches from the run:
+it has no timeout and is collected through `job_output` or stopped with
+`job_kill`.
 
 ## Architecture view internals
 

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::ToolCall;
 use crate::AppConfig;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolImage, ToolRegistry};
 
 pub(super) fn strip_system(input: &[Value]) -> Vec<Value> {
     input
@@ -74,6 +74,22 @@ pub(super) fn tool_message(id: &str, content: String) -> Value {
     })
 }
 
+/// Attach images returned by a tool batch as one ordinary user turn. OpenAI's
+/// `tool` message only accepts text parts, so images cannot ride on it.
+pub(super) fn image_message(images: &[ToolImage]) -> Value {
+    let mut parts = vec![json!({
+        "type": "text",
+        "text": "Images returned by the previous tool call(s). This is tool output, not a new user request."
+    })];
+    parts.extend(images.iter().map(|image| {
+        json!({
+            "type": "image_url",
+            "image_url": { "url": image.data_url }
+        })
+    }));
+    json!({ "role": "user", "content": parts })
+}
+
 fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[String]) -> String {
     let mut rules: Vec<String> = vec![
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
@@ -136,7 +152,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
-        assert!(prompt.contains("The user must approve every command"));
+        assert!(prompt.contains("Commands may need approval"));
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
@@ -189,6 +205,19 @@ mod tests {
         assert_eq!(
             tool_message("call_1", "hi".into())["tool_call_id"],
             "call_1"
+        );
+    }
+
+    #[test]
+    fn attaches_tool_images_as_one_user_turn() {
+        let message = image_message(&[ToolImage {
+            data_url: "data:image/png;base64,AA==".into(),
+        }]);
+        assert_eq!(message["role"], "user");
+        assert_eq!(message["content"][1]["type"], "image_url");
+        assert_eq!(
+            message["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AA=="
         );
     }
 

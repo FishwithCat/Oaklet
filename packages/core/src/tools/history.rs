@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::store::Store;
 
-use super::{Tool, ToolContext, ToolError, parse_args};
+use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const DEFAULT_PAGE: usize = 8;
 const MAX_PAGE: usize = 50;
@@ -150,11 +150,12 @@ impl Tool for HistoryRead {
         &'a self,
         _ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let args: HistoryReadArgs = parse_args(args)?;
             self.page(args.offset.unwrap_or(1), args.limit.unwrap_or(DEFAULT_PAGE))
                 .map_err(ToolError::Failed)
+                .map(ToolOutput::text)
         })
     }
 }

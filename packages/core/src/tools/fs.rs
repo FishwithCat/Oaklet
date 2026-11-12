@@ -2,7 +2,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, ToolContext, ToolError, Workspace, parse_args};
+use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
 const DEFAULT_READ_LINES: usize = 400;
 const MAX_LIST_ENTRIES: usize = 500;
@@ -55,11 +55,11 @@ impl Tool for ReadFile {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let workspace = ctx.workspace.clone();
         Box::pin(async move {
             match tokio::task::spawn_blocking(move || read_file(&workspace, args)).await {
-                Ok(result) => result,
+                Ok(result) => result.map(ToolOutput::text),
                 Err(error) => Err(ToolError::Failed(format!("Read task failed: {error}"))),
             }
         })
@@ -149,8 +149,8 @@ impl Tool for WriteFile {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { write_file(ctx, args) })
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move { write_file(ctx, args).map(ToolOutput::text) })
     }
 }
 
@@ -218,8 +218,8 @@ impl Tool for EditFile {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { edit_file(ctx, args) })
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move { edit_file(ctx, args).map(ToolOutput::text) })
     }
 }
 
@@ -320,11 +320,11 @@ impl Tool for ListDir {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let workspace = ctx.workspace.clone();
         Box::pin(async move {
             match tokio::task::spawn_blocking(move || list_dir(&workspace, args)).await {
-                Ok(result) => result,
+                Ok(result) => result.map(ToolOutput::text),
                 Err(error) => Err(ToolError::Failed(format!("List task failed: {error}"))),
             }
         })

@@ -61,9 +61,11 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   checkpoint immediately. Replaced messages are archived, so a compacted chat
   can page through the originals with `history_read` instead of losing them.
 
-The agent has `read_file`, `write_file`, `edit_file`, `apply_patch`, `list_dir`,
-`run_command`, and, depending on your setup, `likec4_mcp`, `skill`, MCP server
-tools, `web_search`, and, after compaction, `history_read`.
+The agent has `read_file`, `read_image`, `write_file`, `edit_file`,
+`apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,
+`job_output`, `job_kill`, and `web_fetch`; depending on your setup it also has
+`likec4_mcp`, `skill`, MCP server tools, `web_search`, and, after compaction,
+`history_read`.
 
 ## Workspace views
 
@@ -201,14 +203,22 @@ model key to Exa. **Search URL** overrides the provider endpoint, and an empty
 value falls back to the provider default. Without a key for the selected
 provider the tool is not registered, so the model never sees it.
 
+`web_fetch` is always available and does not need a search key. It returns up
+to 200,000 characters and reduces HTML to readable text.
+
 ## Approvals and safety
 
 - File tools resolve paths against the canonical workspace root and reject `..`
   escapes, symlinked escapes, and writes inside `.git`.
 - `run_command` runs through your shell in the workspace and times out after
-  120 seconds with capped output. **Settings → Commands → Run commands without
-  approval** is on by default, so it runs without an approval card; turn it off
-  to see each command first.
+  120 seconds with capped output. Set `run_in_background` to start a long build
+  or server; it returns a job id, keeps running after the chat turn, and is read
+  and stopped with `job_output`/`job_kill` (or `job_list`). Background jobs have
+  no timeout and are stopped when Oaklet exits. **Settings → Commands → Run
+  commands without approval** is on by default, so commands run without an
+  approval card; turn it off to see each command first.
+- `web_fetch` reads any HTTP(S) URL and returns bounded text. It can reach
+  localhost and private addresses, so treat fetched content as untrusted data.
 - **Allow all in workspace** on an approval card stops prompting in that
   workspace for the rest of the app session. The sidebar leaf revokes that
   session grant. Grants never apply to file tools or another workspace, and

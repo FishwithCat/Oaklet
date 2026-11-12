@@ -540,6 +540,7 @@ mod tests {
             chat: crate::chat::ChatState::in_memory(),
             command_allow_all: std::sync::Mutex::new(None),
             terminal: std::sync::Mutex::new(std::collections::HashMap::new()),
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             architecture: std::sync::Mutex::new(ArchitectureCache::default()),
             ids: std::sync::atomic::AtomicU64::new(0),
         })

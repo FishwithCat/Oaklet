@@ -34,6 +34,9 @@ pub struct AppState {
     pub command_allow_all: Mutex<Option<PathBuf>>,
     /// Shells behind the terminal view, keyed by the frontend's session id.
     pub terminal: Mutex<HashMap<String, terminal::Session>>,
+    /// Background commands started through `run_command` with
+    /// `run_in_background`; shared across runs and stopped on app exit.
+    pub jobs: Arc<tools::jobs::JobRegistry>,
     /// Last valid architecture model and the in-flight compiler generation.
     pub architecture: Mutex<architecture::ArchitectureCache>,
     ids: AtomicU64,
@@ -752,6 +755,7 @@ pub fn run() {
                 chat,
                 command_allow_all: Mutex::new(command_allow_all),
                 terminal: Mutex::new(HashMap::new()),
+                jobs: Arc::new(tools::jobs::JobRegistry::new()),
                 architecture: Mutex::new(architecture::ArchitectureCache::default()),
                 ids: AtomicU64::new(0),
             }));
@@ -797,6 +801,7 @@ pub fn run() {
             ) {
                 architecture::cancel_all(app.state::<SharedState>().inner());
                 chat::stop_all(app.state::<SharedState>().inner());
+                app.state::<SharedState>().jobs.kill_all();
             }
         });
 }

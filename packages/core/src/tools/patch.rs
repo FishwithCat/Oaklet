@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::fs::MAX_FILE_BYTES;
-use super::{Tool, ToolContext, ToolError, parse_args};
+use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const BEGIN: &str = "*** Begin Patch";
 const END: &str = "*** End Patch";
@@ -1011,8 +1011,8 @@ impl Tool for ApplyPatch {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { apply_patch(ctx, args) })
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move { apply_patch(ctx, args).map(ToolOutput::text) })
     }
 }
 

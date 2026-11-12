@@ -970,6 +970,10 @@ impl RunContext {
         self.state.chat.store.clone()
     }
 
+    pub fn jobs(&self) -> std::sync::Arc<crate::tools::jobs::JobRegistry> {
+        self.state.jobs.clone()
+    }
+
     pub fn archived(&self) -> Arc<Mutex<Vec<Value>>> {
         self.archived.clone()
     }

@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-use super::{Tool, ToolContext, ToolError, cap};
+use super::{Tool, ToolContext, ToolError, ToolOutput, cap};
 use crate::{McpServerConfig, McpTransport};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -149,7 +149,7 @@ impl Tool for McpTool {
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             if args.as_object().is_none() {
                 return Err(ToolError::InvalidArguments(
@@ -190,7 +190,7 @@ impl Tool for McpTool {
             };
             match result {
                 Ok((true, message)) => Err(ToolError::Failed(message)),
-                Ok((false, output)) => Ok(output),
+                Ok((false, output)) => Ok(ToolOutput::text(output)),
                 Err(error) => {
                     // A protocol failure can leave unread responses behind;
                     // reconnect on the next call instead of reusing the stream.

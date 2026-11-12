@@ -14,10 +14,10 @@ use crate::chat::RunContext;
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
 use crate::repeat::RepeatGuard;
-use crate::tools::{Cancel, ToolContext, ToolOutcome, ToolRegistry, Workspace};
+use crate::tools::{Cancel, ToolContext, ToolImage, ToolOutcome, ToolRegistry, Workspace};
 
 use approval::TauriApprover;
-use messages::{assistant_message, initial_messages, strip_system, tool_message};
+use messages::{assistant_message, image_message, initial_messages, strip_system, tool_message};
 use model::stream_step;
 
 /// Read-only calls in one batch that may run at once. Bounded so a large
@@ -63,6 +63,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
+        jobs: ctx.jobs(),
         run_id: ctx.run_id().to_string(),
     };
 
@@ -205,6 +206,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // Reminders wait until every result in this batch exists, so a user
         // message never splits the tool results answering one assistant turn.
         let mut reminders = Vec::new();
+        let mut tool_images: Vec<ToolImage> = Vec::new();
 
         let mut index = 0;
         while index < calls.len() {
@@ -275,6 +277,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 while let Some((call, outcome)) = outcomes.next().await {
                     ctx.tool_result(&call.id, outcome.ok, &outcome.output);
                     messages.push(tool_message(&call.id, outcome.output));
+                    tool_images.extend(outcome.images);
                 }
                 continue;
             }
@@ -313,11 +316,19 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 .await;
             ctx.tool_result(&call.id, outcome.ok, &outcome.output);
             messages.push(tool_message(&call.id, outcome.output));
+            tool_images.extend(outcome.images);
 
             if cancel.is_cancelled() {
                 ctx.finish_stopped(messages[1..].to_vec()).await;
                 return;
             }
+        }
+
+        // A tool result cannot carry an image part on every OpenAI-compatible
+        // provider. Attach the batch's images as one user turn after all tool
+        // results, so the conversation stays valid and the model can see them.
+        if !tool_images.is_empty() {
+            messages.push(image_message(&tool_images));
         }
 
         for reminder in reminders {
@@ -528,7 +539,14 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(if index == 0 { 50 } else { 1 }))
                         .await;
                     active.fetch_sub(1, Ordering::SeqCst);
-                    (call, ToolOutcome::success(format!("read {index}")))
+                    (
+                        call,
+                        ToolOutcome {
+                            ok: true,
+                            output: format!("read {index}"),
+                            images: Vec::new(),
+                        },
+                    )
                 }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>
             })
             .collect();

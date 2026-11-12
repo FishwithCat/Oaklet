@@ -9,7 +9,7 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Tool, ToolContext, ToolError};
+use super::{Tool, ToolContext, ToolError, ToolOutput};
 
 const MAX_SKILL_BYTES: u64 = 256 * 1024;
 const MAX_BODY_CHARS: usize = 24_000;
@@ -316,7 +316,7 @@ impl Tool for LoadSkill {
         &'a self,
         _ctx: &'a ToolContext,
         args: Value,
-    ) -> BoxFuture<'a, Result<String, ToolError>> {
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let name = args
                 .get("name")
@@ -333,7 +333,7 @@ impl Tool for LoadSkill {
                 )));
             }
             let body = skill.read_body()?;
-            Ok(skill.render(&body))
+            Ok(ToolOutput::text(skill.render(&body)))
         })
     }
 }
