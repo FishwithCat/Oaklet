@@ -17,7 +17,7 @@ import {
 } from "./mcp-settings";
 import type { AppConfig } from "./config";
 
-type SettingsTab = "model" | "mcp";
+type SettingsTab = "model" | "commands" | "mcp";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -25,6 +25,7 @@ type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "model", label: "Model" },
+  { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
 ];
 
@@ -56,6 +57,7 @@ export function SettingsPanel({
   );
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     model: null,
+    commands: null,
     mcp: null,
   });
 
@@ -143,7 +145,9 @@ export function SettingsPanel({
               ? firstRun
                 ? "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine."
                 : "Choose the OpenAI-compatible model provider Oaklet should use."
-              : "Connect MCP servers and choose which ones the agent can use."}
+              : tab === "commands"
+                ? "Choose whether the agent asks before running commands."
+                : "Connect MCP servers and choose which ones the agent can use."}
           </p>
         </div>
 
@@ -288,6 +292,34 @@ export function SettingsPanel({
                     Used by web_search. Defaults to the DeepSeek Search API.
                   </p>
                 </div>
+              </section>
+            ) : tab === "commands" ? (
+              <section
+                id="settings-panel-commands"
+                role="tabpanel"
+                aria-labelledby="settings-tab-commands"
+                tabIndex={0}
+              >
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={draft.allowAllCommands}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        allowAllCommands: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span>
+                    <strong>Run commands without approval</strong>
+                    <span className="field-hint">
+                      The agent runs run_command in this workspace without an
+                      approval card. The sidebar leaf revokes it until the next
+                      app start. File tools never skip approval.
+                    </span>
+                  </span>
+                </label>
               </section>
             ) : (
               <section

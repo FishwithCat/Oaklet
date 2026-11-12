@@ -91,16 +91,17 @@ filesystem.
 
 Open **Settings** in the sidebar. Changes apply to the next run.
 
-| Setting        | Default                                    |
-| -------------- | ------------------------------------------ |
-| API key        | none                                       |
-| Base URL       | `https://api.deepseek.com`                 |
-| Model          | `deepseek-flash`                           |
-| Summary model  | same as Model                              |
-| Context window | `262144` tokens                            |
-| Search URL     | `https://api.deepseek.com/v1/tools/search` |
-| MCP servers    | none                                       |
-| Workspace      | your home directory                        |
+| Setting                       | Default                                    |
+| ----------------------------- | ------------------------------------------ |
+| API key                       | none                                       |
+| Base URL                      | `https://api.deepseek.com`                 |
+| Model                         | `deepseek-flash`                           |
+| Summary model                 | same as Model                              |
+| Context window                | `262144` tokens                            |
+| Run commands without approval | on                                         |
+| Search URL                    | `https://api.deepseek.com/v1/tools/search` |
+| MCP servers                   | none                                       |
+| Workspace                     | your home directory                        |
 
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a local setup with
@@ -199,13 +200,14 @@ registered, so the model never sees it.
 
 - File tools resolve paths against the canonical workspace root and reject `..`
   escapes, symlinked escapes, and writes inside `.git`.
-- `run_command` runs through your shell in the workspace and waits for an
-  approval card showing the exact command. It times out after 120 seconds and
-  caps captured output.
-- **Allow all in workspace** stops prompting for `run_command` in that workspace
-  for the rest of the app session. The sidebar indicator revokes it; the grant
-  is in memory only and never applies to file tools or another workspace.
-  Commands can still touch files outside the workspace, so grant it only in a
+- `run_command` runs through your shell in the workspace and times out after
+  120 seconds with capped output. **Settings → Commands → Run commands without
+  approval** is on by default, so it runs without an approval card; turn it off
+  to see each command first.
+- **Allow all in workspace** on an approval card stops prompting in that
+  workspace for the rest of the app session. The sidebar leaf revokes that
+  session grant. Grants never apply to file tools or another workspace, and
+  commands can still touch files outside the workspace, so allow them only in a
   project you trust.
 - Commands typed in the terminal run immediately in the workspace, without
   model involvement, approval, or a timeout.

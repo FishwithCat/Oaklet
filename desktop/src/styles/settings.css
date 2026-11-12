@@ -48,6 +48,28 @@
   line-height: 1.5;
 }
 
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  cursor: pointer;
+}
+
+.settings-check input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.settings-check strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 12.5px;
+}
+
 .error-text {
   margin: 0 0 12px;
   color: var(--red);

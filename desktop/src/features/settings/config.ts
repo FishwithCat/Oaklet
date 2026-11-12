@@ -7,6 +7,7 @@ export type AppConfig = {
   summaryModel: string;
   contextWindow: number;
   searchUrl: string;
+  allowAllCommands: boolean;
   mcpServers: McpServers;
   workspace: string;
 };

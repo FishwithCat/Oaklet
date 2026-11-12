@@ -80,6 +80,10 @@ pub struct AppConfig {
     pub context_window: usize,
     #[serde(default = "default_search_url")]
     pub search_url: String,
+    /// Skip the approval card for `run_command` in the configured workspace.
+    /// On by default; the sidebar leaf still revokes it for this session.
+    #[serde(default = "default_true")]
+    pub allow_all_commands: bool,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
     #[serde(default = "default_workspace")]
@@ -211,6 +215,7 @@ impl Default for AppConfig {
             summary_model: String::new(),
             context_window: default_context_window(),
             search_url: default_search_url(),
+            allow_all_commands: true,
             mcp_servers: BTreeMap::new(),
             workspace: default_workspace(),
         }
@@ -377,15 +382,18 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
         config.workspace = canonical.to_string_lossy().into_owned();
     }
 
-    let previous_workspace = state.config.lock().unwrap().workspace.clone();
+    let previous = state.config.lock().unwrap().clone();
     write_config(&state.config_path, &config)?;
     *state.config.lock().unwrap() = config.clone();
-    if previous_workspace != config.workspace
+    if (previous.workspace != config.workspace
+        || previous.allow_all_commands != config.allow_all_commands)
         && let Ok(mut granted) = state.command_allow_all.lock()
     {
-        *granted = None;
+        *granted = config
+            .allow_all_commands
+            .then(|| PathBuf::from(&config.workspace));
     }
-    if previous_workspace != config.workspace {
+    if previous.workspace != config.workspace {
         chat::stop_all(state.inner());
         architecture::cancel_for_workspace_change(state.inner());
     }
@@ -689,12 +697,15 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let chat = chat::ChatState::open(&data_dir.join("oaklet.db"))
                 .map_err(std::io::Error::other)?;
+            let command_allow_all = config
+                .allow_all_commands
+                .then(|| PathBuf::from(&config.workspace));
             app.manage(Arc::new(AppState {
                 config: Mutex::new(config),
                 config_path,
                 approvals: Mutex::new(HashMap::new()),
                 chat,
-                command_allow_all: Mutex::new(None),
+                command_allow_all: Mutex::new(command_allow_all),
                 terminal: Mutex::new(HashMap::new()),
                 architecture: Mutex::new(architecture::ArchitectureCache::default()),
                 ids: AtomicU64::new(0),
@@ -771,6 +782,12 @@ mod tests {
     fn configs_saved_before_context_window_default_to_256k() {
         let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
         assert_eq!(config.context_window, 262_144);
+    }
+
+    #[test]
+    fn configs_saved_before_allow_all_commands_default_to_allowed() {
+        let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert!(config.allow_all_commands);
     }
 
     #[test]
