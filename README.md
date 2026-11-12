@@ -49,7 +49,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   sent as image parts, so the configured model must accept image input; text
   files are inlined up to 200 KB.
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
-  expandable process rows.
+  expandable process rows. `write_file`, `edit_file`, and `apply_patch` show an
+  inline diff card with the applied changes and their added/removed line counts.
 - **⌘F** finds text in the open conversation and highlights every match;
   **Enter** and **Shift+Enter** step through them.
 - Select text in chat and click **Send to Terminal** to run it in the active

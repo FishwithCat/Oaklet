@@ -6,6 +6,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::diff::{FileDiff, compute_diffs};
 use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
 const DEFAULT_READ_LINES: usize = 400;
@@ -232,12 +233,33 @@ impl Tool for WriteFile {
         path_arg(args)
     }
 
+    fn preview(&self, ctx: &ToolContext, args: &Value) -> Vec<FileDiff> {
+        let Ok(args) = parse_args::<WriteFileArgs>(args.clone()) else {
+            return Vec::new();
+        };
+        let Ok(path) = ctx.workspace.resolve(&args.path) else {
+            return Vec::new();
+        };
+        let existed = path.is_file();
+        let before = existed
+            .then(|| std::fs::read_to_string(&path).ok())
+            .flatten();
+        if existed && before.is_none() {
+            return Vec::new();
+        }
+        compute_diffs(
+            &ctx.workspace.relative(&path).display().to_string(),
+            before.as_deref(),
+            &args.content,
+        )
+    }
+
     fn execute<'a>(
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
-        Box::pin(async move { write_file(ctx, args).map(ToolOutput::text) })
+        Box::pin(async move { write_file(ctx, args) })
     }
 }
 
@@ -248,7 +270,7 @@ struct WriteFileArgs {
     content: String,
 }
 
-fn write_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+fn write_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     let args: WriteFileArgs = parse_args(args)?;
     let path = ctx.workspace.resolve(&args.path)?;
     ctx.workspace.ensure_writable(&path)?;
@@ -256,12 +278,21 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
     if path.is_dir() {
         return Err(ToolError::Failed("That path is a directory.".into()));
     }
+    let existed = path.is_file();
+    let before = existed
+        .then(|| std::fs::read_to_string(&path).ok())
+        .flatten();
     write_atomic(&path, &args.content, false)
         .map_err(|error| format!("Cannot write file: {error}"))?;
-    Ok(format!(
-        "Wrote {} bytes to {}",
-        args.content.len(),
-        ctx.workspace.relative(&path).display()
+    let display = ctx.workspace.relative(&path).display().to_string();
+    let diffs = if existed && before.is_none() {
+        Vec::new()
+    } else {
+        compute_diffs(&display, before.as_deref(), &args.content)
+    };
+    Ok(ToolOutput::with_diffs(
+        format!("Wrote {} bytes to {}", args.content.len(), display),
+        diffs,
     ))
 }
 
@@ -298,12 +329,26 @@ impl Tool for EditFile {
         path_arg(args)
     }
 
+    fn preview(&self, ctx: &ToolContext, args: &Value) -> Vec<FileDiff> {
+        let Ok(args) = parse_args::<EditFileArgs>(args.clone()) else {
+            return Vec::new();
+        };
+        let Ok(path) = ctx.workspace.resolve(&args.path) else {
+            return Vec::new();
+        };
+        vec![FileDiff {
+            path: ctx.workspace.relative(&path).display().to_string(),
+            old_text: (!args.old_string.is_empty()).then_some(args.old_string),
+            new_text: args.new_string,
+        }]
+    }
+
     fn execute<'a>(
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
-        Box::pin(async move { edit_file(ctx, args).map(ToolOutput::text) })
+        Box::pin(async move { edit_file(ctx, args) })
     }
 }
 
@@ -317,7 +362,7 @@ struct EditFileArgs {
     replace_all: bool,
 }
 
-fn edit_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+fn edit_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     let args: EditFileArgs = parse_args(args)?;
     if args.old_string.is_empty() {
         return Err(ToolError::InvalidArguments(
@@ -359,10 +404,15 @@ fn edit_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         text.replacen(args.old_string.as_str(), &args.new_string, 1)
     };
     write_atomic(&path, &updated, false).map_err(|error| format!("Cannot write file: {error}"))?;
-    Ok(format!(
-        "Replaced {} occurrence(s) in {}",
-        if args.replace_all { count } else { 1 },
-        ctx.workspace.relative(&path).display()
+    let display = ctx.workspace.relative(&path).display().to_string();
+    let diffs = compute_diffs(&display, Some(&text), &updated);
+    Ok(ToolOutput::with_diffs(
+        format!(
+            "Replaced {} occurrence(s) in {}",
+            if args.replace_all { count } else { 1 },
+            display
+        ),
+        diffs,
     ))
 }
 
@@ -520,6 +570,30 @@ mod tests {
             std::fs::read_to_string(root.join("notes.txt")).unwrap(),
             "x gamma x"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn attaches_applied_diffs_to_writes_and_edits() {
+        let (ctx, root, _handle) = context("diffs");
+        let created = write_file(
+            &ctx,
+            json!({ "path": "notes.txt", "content": "alpha\nbeta\n" }),
+        )
+        .unwrap();
+        assert_eq!(created.diffs.len(), 1);
+        assert_eq!(created.diffs[0].path, "notes.txt");
+        assert_eq!(created.diffs[0].old_text, None);
+        assert_eq!(created.diffs[0].new_text, "alpha\nbeta");
+
+        let edited = edit_file(
+            &ctx,
+            json!({ "path": "notes.txt", "old_string": "beta", "new_string": "gamma" }),
+        )
+        .unwrap();
+        assert_eq!(edited.diffs.len(), 1);
+        assert_eq!(edited.diffs[0].old_text.as_deref(), Some("alpha\nbeta"));
+        assert_eq!(edited.diffs[0].new_text, "alpha\ngamma");
         std::fs::remove_dir_all(&root).ok();
     }
 

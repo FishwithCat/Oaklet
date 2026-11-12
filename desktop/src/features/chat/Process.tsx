@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   BookOpenTextRegular,
   BulbRegular,
@@ -12,6 +12,8 @@ import {
 } from "@mingcute/react/core-regular";
 import { CloseCircleFilled, WarningFilled } from "@mingcute/react/core-filled";
 import { MarkdownText } from "../../shared/Markdown";
+import { DiffCard } from "./DiffCard";
+import { diffTotals } from "./tool-diff";
 import {
   isActive,
   primaryCategory,
@@ -51,6 +53,7 @@ function DisclosureHead({
   open,
   expandable,
   trailing,
+  totals,
   onToggle,
 }: {
   icon: ReactNode;
@@ -60,6 +63,7 @@ function DisclosureHead({
   open: boolean;
   expandable: boolean;
   trailing?: ReactNode;
+  totals?: { added: number; removed: number };
   onToggle: () => void;
 }) {
   return (
@@ -79,6 +83,12 @@ function DisclosureHead({
             {summary}
           </span>
         </>
+      )}
+      {totals !== undefined && (totals.added > 0 || totals.removed > 0) && (
+        <span className="row-diff-stat">
+          <span className="add">+{totals.added}</span>
+          <span className="del">-{totals.removed}</span>
+        </span>
       )}
       {trailing}
       {expandable && <DownSmallRegular size={12} className="row-chevron" />}
@@ -161,6 +171,12 @@ function ToolRow({
   const category = toolCategory(item.name);
   const running = item.status === "pending" || item.status === "running";
   const hasOutput = Boolean(item.output);
+  const diffs = item.diffs ?? [];
+  const hasDiff = diffs.length > 0;
+  const totals = useMemo(
+    () => (hasDiff ? diffTotals(diffs) : undefined),
+    [diffs, hasDiff],
+  );
   const statusLabel = running
     ? "Running"
     : item.status === "awaiting"
@@ -190,14 +206,16 @@ function ToolRow({
         summary={toolSummary(item)}
         live={running}
         open={open}
-        expandable={hasOutput}
+        expandable={hasOutput || hasDiff}
         trailing={trailing}
+        totals={totals}
         onToggle={() => setOpen((value) => !value)}
       />
       {item.status === "awaiting" && (
         <Approval item={item} onApproval={onApproval} />
       )}
-      {open && item.output && (
+      {open && hasDiff && <DiffCard diffs={diffs} />}
+      {open && !hasDiff && item.output && (
         <div className="tool-body">
           <pre>{item.output}</pre>
         </div>

@@ -224,6 +224,139 @@
   overflow-wrap: anywhere;
 }
 
+.row-diff-stat {
+  flex: none;
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.row-diff-stat .add {
+  color: var(--green);
+}
+
+.row-diff-stat .del {
+  color: var(--red);
+}
+
+.tool-diff {
+  margin: 2px 0 5px 23px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.tool-diff-scroll {
+  max-height: 300px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.tool-diff-path {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-muted-strong);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.tool-diff-path-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-diff-path .diff-stat {
+  flex: none;
+  margin-left: auto;
+}
+
+.tool-diff-line {
+  display: flex;
+  min-width: 100%;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.tool-diff-line.add {
+  background: var(--palette-soft);
+}
+
+.tool-diff-line.del {
+  background: var(--danger-bg);
+}
+
+.tool-diff-line.context {
+  color: var(--muted);
+}
+
+.tool-diff-sign {
+  flex: none;
+  width: 18px;
+  color: var(--muted);
+  text-align: center;
+  user-select: none;
+}
+
+.tool-diff-line.add .tool-diff-sign {
+  color: var(--green);
+}
+
+.tool-diff-line.del .tool-diff-sign {
+  color: var(--red);
+}
+
+.tool-diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-diff-gap {
+  padding: 1px 10px;
+  background: var(--panel-muted);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.tool-diff-more {
+  display: block;
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 26px;
+  text-align: center;
+}
+
+.tool-diff-more:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
 .approval {
   margin: 4px 0 6px 23px;
   padding: 10px 12px 11px;

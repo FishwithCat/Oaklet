@@ -2,6 +2,13 @@ export type ToolStatus = "pending" | "awaiting" | "running" | "ok" | "error";
 
 export type ApprovalChoice = "deny" | "allow" | "allowAll";
 
+/** One changed file fragment supplied by the backend for a mutation tool. */
+export type FileDiff = {
+  path: string;
+  oldText: string | null;
+  newText: string;
+};
+
 export type ReasoningItem = {
   kind: "reasoning";
   runId: string;
@@ -24,6 +31,7 @@ export type ToolItem = {
   summary?: string;
   approvalPrompt?: string;
   approvalDetail?: string;
+  diffs?: FileDiff[];
 };
 
 export type ProcessItem = ReasoningItem | ToolItem;

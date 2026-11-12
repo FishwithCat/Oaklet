@@ -229,7 +229,11 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                         Ok(args) => tools.summary(&call.name, args),
                         Err(_) => String::new(),
                     };
-                    ctx.tool_start(&call.id, &call.name, &summary);
+                    let diffs = match &args {
+                        Ok(args) => tools.preview_diffs(&tool_context, &call.name, args),
+                        Err(_) => Vec::new(),
+                    };
+                    ctx.tool_start(&call.id, &call.name, &summary, &diffs);
                     let reminder = match &args {
                         Ok(args) => guard.observe(&call.name, args),
                         Err(_) => guard.observe(&call.name, &Value::String(call.arguments.clone())),
@@ -275,7 +279,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                     .collect();
                 let mut outcomes = read_group(executions);
                 while let Some((call, outcome)) = outcomes.next().await {
-                    ctx.tool_result(&call.id, outcome.ok, &outcome.output);
+                    ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
                     messages.push(tool_message(&call.id, outcome.output));
                     tool_images.extend(outcome.images);
                 }
@@ -287,8 +291,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             let args = match parse_args(&call.arguments) {
                 Ok(args) => args,
                 Err(message) => {
-                    ctx.tool_start(&call.id, &call.name, "");
-                    ctx.tool_result(&call.id, false, &message);
+                    ctx.tool_start(&call.id, &call.name, "", &[]);
+                    ctx.tool_result(&call.id, false, &message, &[]);
                     if let Some(reminder) =
                         guard.observe(&call.name, &Value::String(call.arguments.clone()))
                     {
@@ -300,7 +304,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             };
 
             let summary = tools.summary(&call.name, &args);
-            ctx.tool_start(&call.id, &call.name, &summary);
+            let diffs = tools.preview_diffs(&tool_context, &call.name, &args);
+            ctx.tool_start(&call.id, &call.name, &summary, &diffs);
 
             let approver = TauriApprover {
                 ctx: &ctx,
@@ -314,7 +319,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             let outcome = tools
                 .execute(&tool_context, &approver, &call.name, &call.id, args)
                 .await;
-            ctx.tool_result(&call.id, outcome.ok, &outcome.output);
+            ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
             messages.push(tool_message(&call.id, outcome.output));
             tool_images.extend(outcome.images);
 
@@ -545,6 +550,7 @@ mod tests {
                             ok: true,
                             output: format!("read {index}"),
                             images: Vec::new(),
+                            diffs: Vec::new(),
                         },
                     )
                 }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>

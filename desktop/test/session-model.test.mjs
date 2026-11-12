@@ -158,6 +158,41 @@ test("applyToolResult records success or failure and the elapsed time", () => {
   assert.equal(failed.items[0].durationMs, 750);
 });
 
+test("tool diffs survive the pending row and are replaced by the applied ones", () => {
+  const preview = [
+    { path: "a.txt", oldText: null, newText: "one" },
+  ];
+  const applied = [
+    { path: "a.txt", oldText: null, newText: "one\ntwo" },
+  ];
+  const started = applyToolStart(
+    session(),
+    {
+      runId: "run-1",
+      id: "tool-1",
+      name: "write_file",
+      summary: "a.txt",
+      diffs: preview,
+    },
+    1000,
+  );
+  assert.deepEqual(started.items[0].diffs, preview);
+
+  const finished = applyToolResult(
+    started,
+    { id: "tool-1", ok: true, output: "ok", diffs: applied },
+    1500,
+  );
+  assert.deepEqual(finished.items[0].diffs, applied);
+
+  const failed = applyToolResult(
+    started,
+    { id: "tool-1", ok: false, output: "no", diffs: [] },
+    1500,
+  );
+  assert.equal(failed.items[0].diffs, undefined);
+});
+
 test("applyApproval moves the matching tool into the awaiting state", () => {
   const started = applyToolStart(
     session(),
@@ -206,7 +241,13 @@ test("settleRun settles streaming and unfinished tools when the session is lost"
   const streaming = applyDeltas(
     applyToolStart(
       session(),
-      { runId: "run-1", id: "tool-1", name: "run_command", summary: "ls" },
+      {
+        runId: "run-1",
+        id: "tool-1",
+        name: "write_file",
+        summary: "a.txt",
+        diffs: [{ path: "a.txt", oldText: null, newText: "one" }],
+      },
       1000,
     ),
     "run-1",
@@ -218,6 +259,7 @@ test("settleRun settles streaming and unfinished tools when the session is lost"
   assert.equal(settled.activeRunId, null);
   assert.equal(settled.blocked, false);
   assert.equal(settled.items[0].status, "error");
+  assert.equal(settled.items[0].diffs, undefined);
   assert.equal(settled.items[1].streaming, false);
   assert.deepEqual(settled.items.at(-1), {
     kind: "notice",

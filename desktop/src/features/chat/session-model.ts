@@ -1,4 +1,5 @@
 import { settleStreaming, type Item } from "./chat-model.ts";
+import type { FileDiff } from "./process-model.ts";
 
 export type ContextUsage = { used: number; window: number };
 
@@ -114,7 +115,13 @@ export function applyDeltas(
 
 export function applyToolStart(
   tab: SessionView,
-  event: { runId: string; id: string; name: string; summary: string },
+  event: {
+    runId: string;
+    id: string;
+    name: string;
+    summary: string;
+    diffs?: FileDiff[];
+  },
   startedAt: number,
 ): SessionView {
   const items = [
@@ -127,6 +134,9 @@ export function applyToolStart(
       status: "pending" as const,
       summary: event.summary,
       startedAt,
+      ...(event.diffs && event.diffs.length > 0
+        ? { diffs: event.diffs }
+        : {}),
     },
   ];
   return {
@@ -138,23 +148,23 @@ export function applyToolStart(
 
 export function applyToolResult(
   tab: SessionView,
-  event: { id: string; ok: boolean; output: string },
+  event: { id: string; ok: boolean; output: string; diffs?: FileDiff[] },
   finishedAt: number,
 ): SessionView {
-  const items = tab.items.map((item) =>
-    item.kind === "tool" && item.id === event.id
-      ? {
-          ...item,
-          status: event.ok ? ("ok" as const) : ("error" as const),
-          output: event.output,
-          durationMs:
-            item.startedAt === undefined
-              ? undefined
-              : finishedAt - item.startedAt,
-          startedAt: undefined,
-        }
-      : item,
-  );
+  const items = tab.items.map((item) => {
+    if (item.kind !== "tool" || item.id !== event.id) return item;
+    const next = {
+      ...item,
+      status: event.ok ? ("ok" as const) : ("error" as const),
+      output: event.output,
+      durationMs:
+        item.startedAt === undefined ? undefined : finishedAt - item.startedAt,
+      startedAt: undefined,
+    };
+    if (event.diffs && event.diffs.length > 0) next.diffs = event.diffs;
+    else delete next.diffs;
+    return next;
+  });
   return withItems(tab, items);
 }
 
@@ -227,6 +237,7 @@ export function settleRun(
             startedAt: undefined,
             approvalPrompt: undefined,
             approvalDetail: undefined,
+            diffs: undefined,
           }
         : item,
     ),

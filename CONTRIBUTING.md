@@ -102,10 +102,10 @@ workflow then signs and notarizes instead of falling back to ad-hoc. See
 ## Tool architecture
 
 Tools live in `packages/core/src/tools/`. Each tool owns its schema,
-system-prompt guidance, pending-call summary, approval policy, timeout, and
-body. The registry projects the model-facing schemas, and the execution pipeline
-owns lookup, approval, deadlines, and result normalization. Adding a tool does
-not touch the agent loop or the chat UI.
+system-prompt guidance, pending-call summary and diff preview, approval policy,
+timeout, and body. The registry projects the model-facing schemas, and the
+execution pipeline owns lookup, approval, deadlines, and result normalization.
+Adding a tool does not touch the agent loop or the chat UI.
 
 ## Backend and UI
 

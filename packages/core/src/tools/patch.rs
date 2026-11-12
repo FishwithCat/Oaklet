@@ -15,6 +15,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::diff::{FileDiff, compute_diffs};
 use super::fs::{MAX_FILE_BYTES, write_atomic};
 use super::{Cancel, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
@@ -970,6 +971,82 @@ fn cancelled_output(
 
 pub struct ApplyPatch;
 
+/// Call-time preview of the requested operations, without touching disk.
+fn preview_diffs(operations: &[PatchOperation]) -> Vec<FileDiff> {
+    let mut diffs = Vec::new();
+    for operation in operations {
+        match operation {
+            PatchOperation::Add { path, content, .. } => diffs.push(FileDiff {
+                path: path.clone(),
+                old_text: None,
+                new_text: content.clone(),
+            }),
+            PatchOperation::Delete { .. } => {}
+            PatchOperation::Update { path, hunks, .. } => {
+                let old = hunks
+                    .iter()
+                    .flat_map(|hunk| hunk.old.iter().cloned())
+                    .collect::<Vec<_>>();
+                let new = hunks
+                    .iter()
+                    .flat_map(|hunk| hunk.new.iter().cloned())
+                    .collect::<Vec<_>>();
+                if !old.is_empty() || !new.is_empty() {
+                    diffs.push(FileDiff {
+                        path: path.clone(),
+                        old_text: (!old.is_empty()).then(|| old.join("\n")),
+                        new_text: new.join("\n"),
+                    });
+                }
+            }
+        }
+    }
+    diffs
+}
+
+/// Applied diffs for every file the completed patch touched.
+fn applied_diffs(plan: &[ResolvedPatch], before: &[Option<String>]) -> Vec<FileDiff> {
+    let mut diffs = Vec::new();
+    for (operation, before) in plan.iter().zip(before) {
+        match &operation.operation {
+            PatchOperation::Add { content, .. } => {
+                let after =
+                    std::fs::read_to_string(&operation.source).unwrap_or_else(|_| content.clone());
+                diffs.extend(compute_diffs(&operation.source_display, None, &after));
+            }
+            PatchOperation::Delete { .. } => {
+                if let Some(before) = before {
+                    diffs.extend(compute_diffs(&operation.source_display, Some(before), ""));
+                }
+            }
+            PatchOperation::Update { move_to: None, .. } => {
+                if let Some(before) = before
+                    && let Ok(after) = std::fs::read_to_string(&operation.source)
+                {
+                    diffs.extend(compute_diffs(
+                        &operation.source_display,
+                        Some(before),
+                        &after,
+                    ));
+                }
+            }
+            PatchOperation::Update {
+                move_to: Some(_), ..
+            } => {
+                if let Some(before) = before {
+                    if let Some((destination, display)) = &operation.destination
+                        && let Ok(after) = std::fs::read_to_string(destination)
+                    {
+                        diffs.extend(compute_diffs(display, Some(before), &after));
+                    }
+                    diffs.extend(compute_diffs(&operation.source_display, Some(before), ""));
+                }
+            }
+        }
+    }
+    diffs
+}
+
 impl Tool for ApplyPatch {
     fn name(&self) -> &str {
         "apply_patch"
@@ -1012,12 +1089,22 @@ impl Tool for ApplyPatch {
             .join(", ")
     }
 
+    fn preview(&self, _ctx: &ToolContext, args: &Value) -> Vec<FileDiff> {
+        let Some(input) = args.get("input").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        let Ok(operations) = parse_patch(input) else {
+            return Vec::new();
+        };
+        preview_diffs(&operations)
+    }
+
     fn execute<'a>(
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
-        Box::pin(async move { apply_patch(ctx, args).map(ToolOutput::text) })
+        Box::pin(async move { apply_patch(ctx, args) })
     }
 }
 
@@ -1027,7 +1114,7 @@ struct ApplyPatchArgs {
     input: String,
 }
 
-fn apply_patch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+fn apply_patch(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     let args: ApplyPatchArgs = parse_args(args)?;
     if args.input.trim().is_empty() {
         return Err(ToolError::InvalidArguments(
@@ -1042,7 +1129,15 @@ fn apply_patch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
     })?;
     let plan = plan(ctx, operations)?;
     preflight(&plan, &ctx.cancel)?;
-    commit(&plan, &ctx.cancel)
+    let before = plan
+        .iter()
+        .map(|operation| std::fs::read_to_string(&operation.source).ok())
+        .collect::<Vec<_>>();
+    let output = commit(&plan, &ctx.cancel)?;
+    Ok(ToolOutput::with_diffs(
+        output,
+        applied_diffs(&plan, &before),
+    ))
 }
 
 #[cfg(test)]
@@ -1057,7 +1152,9 @@ mod tests {
     use crate::tools::test_support::context;
 
     fn run(ctx: &crate::tools::ToolContext, input: &str) -> Result<String, String> {
-        apply_patch(ctx, json!({ "input": input })).map_err(|error| error.to_string())
+        apply_patch(ctx, json!({ "input": input }))
+            .map(|output| output.text)
+            .map_err(|error| error.to_string())
     }
 
     fn text(path: std::path::PathBuf) -> String {
@@ -1213,6 +1310,40 @@ mod tests {
         assert!(!root.join("gone.txt").exists());
         assert_eq!(text(root.join("moved.txt")), "new\n");
         assert!(!root.join("move.txt").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reports_applied_diffs_for_each_operation() {
+        let (ctx, root, _handle) = context("patch-diffs");
+        std::fs::write(root.join("notes.txt"), "keep\nold\n").unwrap();
+        std::fs::write(root.join("gone.txt"), "bye\n").unwrap();
+
+        let output = apply_patch(
+            &ctx,
+            json!({ "input": "\
+*** Begin Patch
+*** Add File: new.txt
++hello
+*** Update File: notes.txt
+@@ keep
+-old
++new
+*** Delete File: gone.txt
+*** End Patch" }),
+        )
+        .unwrap();
+
+        assert_eq!(output.diffs.len(), 3);
+        assert_eq!(output.diffs[0].path, "new.txt");
+        assert_eq!(output.diffs[0].old_text, None);
+        assert_eq!(output.diffs[0].new_text, "hello");
+        assert_eq!(output.diffs[1].path, "notes.txt");
+        assert_eq!(output.diffs[1].old_text.as_deref(), Some("keep\nold"));
+        assert_eq!(output.diffs[1].new_text, "keep\nnew");
+        assert_eq!(output.diffs[2].path, "gone.txt");
+        assert_eq!(output.diffs[2].old_text.as_deref(), Some("bye"));
+        assert_eq!(output.diffs[2].new_text, "");
         std::fs::remove_dir_all(&root).ok();
     }
 

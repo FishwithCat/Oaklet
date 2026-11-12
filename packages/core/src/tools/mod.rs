@@ -16,6 +16,7 @@ use tokio::sync::watch;
 
 use crate::spill;
 
+mod diff;
 mod fs;
 pub(crate) mod history;
 mod image;
@@ -30,6 +31,7 @@ pub(crate) mod web;
 mod web_fetch;
 mod workspace;
 
+pub use diff::FileDiff;
 pub use workspace::Workspace;
 
 /// Tool output above this many characters keeps only its head and tail.
@@ -86,12 +88,14 @@ pub struct ToolImage {
     pub data_url: String,
 }
 
-/// Model-facing result of one tool call. Most tools return text only; a few
-/// attach images the agent loop forwards as a separate user message.
+/// Result of one tool call. Most tools return text only; a few attach images
+/// the agent loop forwards as a separate user message, and file-mutation tools
+/// attach display-only diffs the chat UI renders.
 #[derive(Clone, Debug, Default)]
 pub struct ToolOutput {
     pub text: String,
     pub images: Vec<ToolImage>,
+    pub diffs: Vec<FileDiff>,
 }
 
 impl ToolOutput {
@@ -99,6 +103,7 @@ impl ToolOutput {
         Self {
             text: text.into(),
             images: Vec::new(),
+            diffs: Vec::new(),
         }
     }
 
@@ -106,6 +111,15 @@ impl ToolOutput {
         Self {
             text: text.into(),
             images: vec![ToolImage { data_url }],
+            diffs: Vec::new(),
+        }
+    }
+
+    pub fn with_diffs(text: impl Into<String>, diffs: Vec<FileDiff>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+            diffs,
         }
     }
 }
@@ -145,6 +159,10 @@ pub trait Tool: Send + Sync {
     /// Short pending-call summary (usually the touched path or command).
     fn summary(&self, _args: &Value) -> String {
         String::new()
+    }
+    /// Display-only diff shown while the call is pending, before it runs.
+    fn preview(&self, _ctx: &ToolContext, _args: &Value) -> Vec<FileDiff> {
+        Vec::new()
     }
     /// Approval to request before running this call, if any.
     fn approval(&self, _args: &Value) -> Option<ApprovalRequest> {
@@ -231,22 +249,17 @@ pub struct ToolOutcome {
     /// Images returned by the call; the agent loop attaches them after the
     /// batch's tool messages so every provider sees a normal image user turn.
     pub images: Vec<ToolImage>,
+    /// Applied diffs for the chat UI; empty for tools that do not mutate files.
+    pub diffs: Vec<FileDiff>,
 }
 
 impl ToolOutcome {
-    pub fn success_with_images(output: impl Into<String>, images: Vec<ToolImage>) -> Self {
-        Self {
-            ok: true,
-            output: output.into(),
-            images,
-        }
-    }
-
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             output: message.into(),
             images: Vec::new(),
+            diffs: Vec::new(),
         }
     }
 }
@@ -456,6 +469,13 @@ impl ToolRegistry {
             .unwrap_or_default()
     }
 
+    /// Pending-call diff preview for tools that edit files.
+    pub fn preview_diffs(&self, ctx: &ToolContext, name: &str, args: &Value) -> Vec<FileDiff> {
+        self.get(name)
+            .map(|tool| tool.preview(ctx, args))
+            .unwrap_or_default()
+    }
+
     /// Whether a tool may join a concurrent read group. Unknown and undeclared
     /// tools stay exclusive.
     pub fn is_concurrency_safe(&self, name: &str) -> bool {
@@ -497,10 +517,12 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolOutcome::success_with_images(
-                ctx.bound_output(name, call_id, output.text),
-                output.images,
-            ),
+            Ok(output) => ToolOutcome {
+                ok: true,
+                output: ctx.bound_output(name, call_id, output.text),
+                images: output.images,
+                diffs: output.diffs,
+            },
             Err(error) => ToolOutcome::failure(ctx.bound_output(name, call_id, error.to_string())),
         }
     }
@@ -945,6 +967,40 @@ mod tests {
         );
         assert_eq!(registry.summary("list_dir", &json!({})), ".");
         assert_eq!(registry.summary("nope", &json!({})), "");
+    }
+
+    #[test]
+    fn previews_pending_file_mutations() {
+        let (ctx, root, _handle) = context("preview");
+        std::fs::write(root.join("notes.txt"), "old\n").unwrap();
+        let registry = ToolRegistry::new();
+
+        let write = registry.preview_diffs(
+            &ctx,
+            "write_file",
+            &json!({ "path": "notes.txt", "content": "new\n" }),
+        );
+        assert_eq!(write.len(), 1);
+        assert_eq!(write[0].old_text.as_deref(), Some("old"));
+        assert_eq!(write[0].new_text, "new");
+
+        let edit = registry.preview_diffs(
+            &ctx,
+            "edit_file",
+            &json!({ "path": "notes.txt", "old_string": "old", "new_string": "new" }),
+        );
+        assert_eq!(edit[0].old_text.as_deref(), Some("old"));
+        assert_eq!(edit[0].new_text, "new");
+
+        let patch = registry.preview_diffs(
+            &ctx,
+            "apply_patch",
+            &json!({ "input": "*** Begin Patch\n*** Update File: notes.txt\n@@\n-old\n+new\n*** End Patch" }),
+        );
+        assert_eq!(patch[0].path, "notes.txt");
+        assert_eq!(patch[0].old_text.as_deref(), Some("old"));
+        assert_eq!(patch[0].new_text, "new");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::store::{self, ContextUsage, ImportEntry, NewUserTurn, RunEnd, Session, Store};
-use crate::tools::CancelHandle;
+use crate::tools::{CancelHandle, FileDiff};
 use crate::{AppState, SharedState, compaction, context, spill};
 
 const MAX_ATTACHMENTS: usize = 20;
@@ -128,6 +128,8 @@ struct ToolItem {
     approval_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     approval_detail: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diffs: Vec<FileDiff>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -151,7 +153,7 @@ enum NewItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<SentAttachment>>,
     },
-    Tool(ToolItem),
+    Tool(Box<ToolItem>),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -793,6 +795,7 @@ fn settle_unfinished_tools(items: &mut [Value]) {
                 object.remove("startedAt");
                 object.remove("approvalPrompt");
                 object.remove("approvalDetail");
+                object.remove("diffs");
             }
         }
     }
@@ -867,6 +870,7 @@ struct ToolStartEvent {
     id: String,
     name: String,
     summary: String,
+    diffs: Vec<FileDiff>,
 }
 
 #[derive(Clone, Serialize)]
@@ -877,6 +881,7 @@ struct ToolResultEvent {
     id: String,
     ok: bool,
     output: String,
+    diffs: Vec<FileDiff>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1033,11 +1038,11 @@ impl RunContext {
         );
     }
 
-    pub fn tool_start(&self, id: &str, name: &str, summary: &str) {
+    pub fn tool_start(&self, id: &str, name: &str, summary: &str, diffs: &[FileDiff]) {
         let started_at = store::now_ms() as u64;
         self.update_view(|view| {
             settle_streaming(&mut view.items);
-            let item = NewItem::Tool(ToolItem {
+            let item = NewItem::Tool(Box::new(ToolItem {
                 run_id: self.run_id.clone(),
                 id: id.to_string(),
                 name: name.to_string(),
@@ -1049,7 +1054,8 @@ impl RunContext {
                 request_id: None,
                 approval_prompt: None,
                 approval_detail: None,
-            });
+                diffs: diffs.to_vec(),
+            }));
             match serde_json::to_value(item) {
                 Ok(item) => view.items.push(item),
                 Err(error) => eprintln!("[oaklet] could not record a tool call: {error}"),
@@ -1065,11 +1071,12 @@ impl RunContext {
                 id: id.to_string(),
                 name: name.to_string(),
                 summary: summary.to_string(),
+                diffs: diffs.to_vec(),
             },
         );
     }
 
-    pub fn tool_result(&self, id: &str, ok: bool, output: &str) {
+    pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) {
         let finished_at = store::now_ms() as u64;
         self.update_view(|view| {
             if let Some(item) = find_tool_item(&mut view.items, id) {
@@ -1080,6 +1087,13 @@ impl RunContext {
                 };
                 item["status"] = json!(status);
                 item["output"] = json!(output);
+                if diffs.is_empty() {
+                    if let Some(object) = item.as_object_mut() {
+                        object.remove("diffs");
+                    }
+                } else {
+                    item["diffs"] = json!(diffs);
+                }
                 if let Some(started_at) = item.get("startedAt").and_then(Value::as_u64) {
                     item["durationMs"] = json!(finished_at.saturating_sub(started_at));
                 }
@@ -1097,6 +1111,7 @@ impl RunContext {
                 id: id.to_string(),
                 ok,
                 output: output.to_string(),
+                diffs: diffs.to_vec(),
             },
         );
     }
@@ -1455,7 +1470,7 @@ mod tests {
         assert_eq!(value["activeRunId"], serde_json::Value::Null);
         assert_eq!(value["context"], serde_json::Value::Null);
 
-        let item = serde_json::to_value(NewItem::Tool(ToolItem {
+        let item = serde_json::to_value(NewItem::Tool(Box::new(ToolItem {
             run_id: "r1".into(),
             id: "t1".into(),
             name: "read_file".into(),
@@ -1467,7 +1482,8 @@ mod tests {
             request_id: None,
             approval_prompt: None,
             approval_detail: None,
-        }))
+            diffs: Vec::new(),
+        })))
         .unwrap();
         assert_eq!(item["kind"], "tool");
         assert_eq!(item["runId"], "r1");
@@ -1647,7 +1663,13 @@ mod tests {
     #[test]
     fn settles_unfinished_tools_at_the_end_of_a_run() {
         let mut items = vec![
-            json!({ "kind": "tool", "id": "a", "status": "awaiting", "requestId": "1" }),
+            json!({
+                "kind": "tool",
+                "id": "a",
+                "status": "awaiting",
+                "requestId": "1",
+                "diffs": [{ "path": "a.txt", "oldText": null, "newText": "one" }],
+            }),
             json!({ "kind": "tool", "id": "b", "status": "ok", "output": "done" }),
             json!({ "kind": "assistant", "runId": "r", "text": "hi", "streaming": true }),
         ];
@@ -1656,6 +1678,7 @@ mod tests {
 
         assert_eq!(items[0]["status"], "error");
         assert!(items[0].get("requestId").is_none());
+        assert!(items[0].get("diffs").is_none());
         assert_eq!(items[1]["status"], "ok");
         assert_eq!(items[2]["streaming"], false);
         assert!(!is_blocked(&items));
