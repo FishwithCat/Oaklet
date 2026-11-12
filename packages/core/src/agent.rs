@@ -64,6 +64,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
+        run_id: ctx.run_id().to_string(),
     };
 
     let model_sources = {
@@ -186,7 +187,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 reminders.push(reminder);
             }
             let outcome = tools
-                .execute(&tool_context, &approver, &call.name, args)
+                .execute(&tool_context, &approver, &call.name, &call.id, args)
                 .await;
             ctx.tool_result(&call.id, outcome.ok, &outcome.output);
             messages.push(tool_message(&call.id, outcome.output));

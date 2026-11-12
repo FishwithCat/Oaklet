@@ -16,11 +16,19 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::store::{self, ContextUsage, ImportEntry, NewUserTurn, RunEnd, Session, Store};
 use crate::tools::CancelHandle;
-use crate::{AppState, SharedState, compaction, context};
+use crate::{AppState, SharedState, compaction, context, spill};
 
 const MAX_ATTACHMENTS: usize = 20;
 const MAX_FILE_BYTES: usize = 200_000;
 const MAX_IMAGE_DATA_URL: usize = 8_000_000;
+/// Attached text above this size is spilled instead of inlined whole.
+const ATTACHMENT_SPILL_BYTES: usize = 16_000;
+/// Lines kept at each end of a spilled attachment's inline preview.
+const ATTACHMENT_HEAD_LINES: usize = 80;
+const ATTACHMENT_TAIL_LINES: usize = 40;
+/// Character caps so one very long line cannot fill the preview budget.
+const ATTACHMENT_HEAD_CHARS: usize = 6_000;
+const ATTACHMENT_TAIL_CHARS: usize = 2_000;
 const INTERRUPTED_NOTICE: &str = "The app closed while this run was working. \
     Send another message to continue.";
 
@@ -341,7 +349,9 @@ pub async fn session_send(
     }
 
     let text = text.trim().to_string();
-    let (message, item, attachment_names) = build_user_turn(&text, &attachments)?;
+    let run_id = state.next_id();
+    let (message, item, attachment_names) =
+        build_user_turn(&text, &attachments, &config.workspace, &run_id)?;
     let title = if session.turns == 0 {
         let title = session_title(&text, &attachment_names);
         (!title.is_empty()).then_some(title)
@@ -354,7 +364,6 @@ pub async fn session_send(
         title,
     };
 
-    let run_id = state.next_id();
     let (cancel_handle, cancel) = CancelHandle::new();
 
     // Hold the live lock across the short SQLite write so two clients cannot
@@ -567,6 +576,8 @@ fn resolve_approvals(state: &AppState, run_id: &str) {
 fn build_user_turn(
     text: &str,
     attachments: &[IncomingAttachment],
+    workspace: &str,
+    run_id: &str,
 ) -> Result<(Value, Value, Vec<String>), String> {
     if text.is_empty() && attachments.is_empty() {
         return Err("A message is required.".into());
@@ -584,7 +595,7 @@ fn build_user_turn(
 
     let mut sent = Vec::new();
     let mut names = Vec::new();
-    for attachment in attachments {
+    for (index, attachment) in attachments.iter().enumerate() {
         match attachment {
             IncomingAttachment::Image {
                 name,
@@ -617,10 +628,23 @@ fn build_user_turn(
                         MAX_FILE_BYTES / 1000
                     ));
                 }
-                parts.push(json!({
-                    "type": "text",
-                    "text": format!("Attached file {name}:\n\n{file_text}"),
-                }));
+                // Save oversized text before trimming it; a failed write keeps
+                // the old inline behavior rather than dropping the content.
+                let spilled = (file_text.len() > ATTACHMENT_SPILL_BYTES)
+                    .then(|| {
+                        spill::save(
+                            Path::new(workspace),
+                            run_id,
+                            &format!("{}-{name}", index + 1),
+                            file_text,
+                        )
+                    })
+                    .flatten();
+                let body = match spilled {
+                    Some(spilled) => attachment_preview(name, file_text, &spilled),
+                    None => format!("Attached file {name}:\n\n{file_text}"),
+                };
+                parts.push(json!({ "type": "text", "text": body }));
                 sent.push(SentAttachment::File {
                     name: name.clone(),
                     bytes: *bytes,
@@ -642,6 +666,43 @@ fn build_user_turn(
     .map_err(|error| format!("Could not prepare the message: {error}"))?;
 
     Ok((message, item, names))
+}
+
+/// Inline preview for a spilled attachment: enough to recognize the file,
+/// plus the path for exactly paging through the rest.
+fn attachment_preview(name: &str, text: &str, spilled: &spill::Spilled) -> String {
+    let preview = spill::preview(
+        text,
+        ATTACHMENT_HEAD_LINES,
+        ATTACHMENT_TAIL_LINES,
+        ATTACHMENT_HEAD_CHARS,
+        ATTACHMENT_TAIL_CHARS,
+    );
+    let mut out = format!(
+        "Attached file {name}: full text ({} lines, {} bytes) saved to {}. Use read_file with offset and limit to page through it.\n\n",
+        spilled.lines,
+        spilled.bytes,
+        spilled.relative.display()
+    );
+    out.push_str(&preview.head);
+    if preview.omitted_lines > 0 || preview.clipped {
+        let note = if preview.omitted_lines > 0 {
+            format!(
+                "[... {} lines omitted; the full text is in the saved file ...]",
+                preview.omitted_lines
+            )
+        } else {
+            "[... preview clipped; the full text is in the saved file ...]".to_string()
+        };
+        out.push_str("\n\n");
+        out.push_str(&note);
+        out.push_str("\n\n");
+    } else {
+        // Head and tail meet, so the preview already holds the whole text.
+        out.push('\n');
+    }
+    out.push_str(&preview.tail);
+    out
 }
 
 /// First user message on one line; attached file names are the fallback.
@@ -1212,14 +1273,15 @@ impl RunContext {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
 
     use super::{
-        ChatState, IncomingAttachment, NewItem, RunHandle, SessionView, ToolItem, ToolStatus,
-        build_user_turn, format_tokens, is_blocked, merge_stream, session_title, settle_streaming,
-        settle_unfinished_tools, trim_incomplete_tool_block,
+        ATTACHMENT_SPILL_BYTES, ChatState, IncomingAttachment, NewItem, RunHandle, SessionView,
+        ToolItem, ToolStatus, build_user_turn, format_tokens, is_blocked, merge_stream,
+        session_title, settle_streaming, settle_unfinished_tools, trim_incomplete_tool_block,
     };
     use crate::store;
     use crate::tools::CancelHandle;
@@ -1396,6 +1458,8 @@ mod tests {
                     text: "hi".into(),
                 },
             ],
+            env!("CARGO_MANIFEST_DIR"),
+            "run-1",
         )
         .unwrap();
 
@@ -1422,11 +1486,12 @@ mod tests {
 
     #[test]
     fn plain_text_keeps_the_string_content_shape() {
-        let (message, item, names) = build_user_turn("hello", &[]).unwrap();
+        let (message, item, names) =
+            build_user_turn("hello", &[], env!("CARGO_MANIFEST_DIR"), "run-1").unwrap();
         assert_eq!(message["content"], "hello");
         assert!(item.get("attachments").is_none());
         assert!(names.is_empty());
-        assert!(build_user_turn("", &[]).is_err());
+        assert!(build_user_turn("", &[], env!("CARGO_MANIFEST_DIR"), "run-1").is_err());
     }
 
     #[test]
@@ -1436,7 +1501,65 @@ mod tests {
             bytes: 1,
             text: "x".repeat(200_001),
         };
-        assert!(build_user_turn("", &[file]).is_err());
+        assert!(build_user_turn("", &[file], env!("CARGO_MANIFEST_DIR"), "run-1").is_err());
+    }
+
+    #[test]
+    fn spills_oversized_text_attachments_with_a_preview() {
+        let root = crate::tools::test_support::temp_root("attachment-spill");
+        let head: Vec<String> = (1..=100).map(|line| format!("line {line}")).collect();
+        let tail: Vec<String> = (500..=540).map(|line| format!("line {line}")).collect();
+        let text = format!(
+            "{}\n{}\n{}",
+            head.join("\n"),
+            "x".repeat(ATTACHMENT_SPILL_BYTES),
+            tail.join("\n")
+        );
+        let file = IncomingAttachment::File {
+            name: "notes.md".into(),
+            bytes: text.len() as u64,
+            text: text.clone(),
+        };
+        let (message, _item, names) =
+            build_user_turn("", &[file], root.to_str().unwrap(), "run-1").unwrap();
+
+        let relative = Path::new(".oaklet/spill/run-1/1-notes.md.txt");
+        assert_eq!(
+            std::fs::read_to_string(root.join(relative)).unwrap(),
+            text,
+            "spill file keeps the complete attachment"
+        );
+        let body = message["content"][0]["text"].as_str().unwrap();
+        assert_eq!(names, vec!["notes.md"]);
+        assert!(body.contains(&relative.display().to_string()));
+        assert!(body.contains(&format!("{} lines", text.lines().count())));
+        assert!(body.contains(&format!("{} bytes", text.len())));
+        assert!(body.contains("line 1"));
+        assert!(body.contains("line 540"));
+        assert!(body.contains("lines omitted"));
+        assert!(!body.contains(&"x".repeat(1_000)));
+        assert!(body.chars().count() < 10_000);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn attachment_spill_failure_keeps_the_inline_text() {
+        let root = crate::tools::test_support::temp_root("attachment-spill-fail");
+        std::fs::write(root.join(".oaklet"), "not a directory").unwrap();
+        let text = "x".repeat(ATTACHMENT_SPILL_BYTES + 1);
+        let file = IncomingAttachment::File {
+            name: "notes.txt".into(),
+            bytes: text.len() as u64,
+            text: text.clone(),
+        };
+        let (message, _item, _names) =
+            build_user_turn("", &[file], root.to_str().unwrap(), "run-1").unwrap();
+
+        assert_eq!(
+            message["content"][0]["text"],
+            format!("Attached file notes.txt:\n\n{text}")
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

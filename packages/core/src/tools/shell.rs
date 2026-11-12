@@ -199,7 +199,11 @@ mod tests {
         let root = crate::tools::test_support::temp_root("cancel");
         let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
         let (handle, cancel) = CancelHandle::new();
-        let ctx = ToolContext { workspace, cancel };
+        let ctx = ToolContext {
+            workspace,
+            cancel,
+            run_id: "run-test".into(),
+        };
 
         let task = tokio::spawn(async move {
             let started = Instant::now();

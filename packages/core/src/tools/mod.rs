@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use tauri::Manager;
 use tokio::sync::watch;
 
+use crate::spill;
+
 mod fs;
 mod likec4;
 mod mcp;
@@ -33,6 +35,8 @@ const TOOL_OUTPUT_HEAD_CHARS: usize = 4_000;
 const TOOL_OUTPUT_TAIL_CHARS: usize = 1_500;
 /// Marker substituted for the removed middle.
 const TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output middle pruned ...]\n\n";
+/// Reading a spill file must not spill again, or each page would be another file.
+const TOOL_SPILL_SKIP: &str = "read_file";
 
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
@@ -132,14 +136,14 @@ impl ToolOutcome {
     pub fn success(output: impl Into<String>) -> Self {
         Self {
             ok: true,
-            output: prune_tool_output(output.into()),
+            output: output.into(),
         }
     }
 
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             ok: false,
-            output: prune_tool_output(message.into()),
+            output: message.into(),
         }
     }
 }
@@ -148,6 +152,38 @@ impl ToolOutcome {
 pub struct ToolContext {
     pub workspace: Workspace,
     pub cancel: Cancel,
+    /// Session run that owns spill files and, later, recall metadata.
+    pub run_id: String,
+}
+
+impl ToolContext {
+    /// Save oversized output before trimming it, so the full text survives in
+    /// a file the model can page through. A failed write keeps the old marker.
+    fn bound_output(&self, tool: &str, call_id: &str, text: String) -> String {
+        if text.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS {
+            return text;
+        }
+        let spilled = (tool != TOOL_SPILL_SKIP)
+            .then(|| {
+                spill::save(
+                    self.workspace.root(),
+                    &self.run_id,
+                    &format!("{tool}-{call_id}"),
+                    &text,
+                )
+            })
+            .flatten();
+        let marker = match &spilled {
+            Some(spilled) => format!(
+                "\n\n[... tool output middle pruned; full output ({} lines, {} bytes) saved to: {}. Use read_file with offset and limit to page through it.]\n\n",
+                spilled.lines,
+                spilled.bytes,
+                spilled.relative.display()
+            ),
+            None => TOOL_OUTPUT_MARKER.to_string(),
+        };
+        prune_tool_output(text, &marker)
+    }
 }
 
 /// Cooperative cancellation shared by the agent loop and running tools.
@@ -306,6 +342,7 @@ impl ToolRegistry {
         ctx: &ToolContext,
         approver: &dyn Approver,
         name: &str,
+        call_id: &str,
         args: Value,
     ) -> ToolOutcome {
         let Some(tool) = self.get(name) else {
@@ -333,8 +370,8 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolOutcome::success(output),
-            Err(error) => ToolOutcome::failure(error.to_string()),
+            Ok(output) => ToolOutcome::success(ctx.bound_output(name, call_id, output)),
+            Err(error) => ToolOutcome::failure(ctx.bound_output(name, call_id, error.to_string())),
         }
     }
 }
@@ -362,17 +399,22 @@ pub(crate) fn cap(text: String, max_chars: usize) -> String {
 ///
 /// The middle of a file dump or command log is the least useful part, while the
 /// head carries the shape of the result and the tail carries errors and
-/// summaries. Slicing is by character, so multi-byte text cannot be split.
-fn prune_tool_output(text: String) -> String {
+/// summaries. Slicing is by character, so multi-byte text cannot be split. The
+/// marker is budgeted too, so a long spill path cannot grow the result past the
+/// threshold.
+fn prune_tool_output(text: String, marker: &str) -> String {
     let total = text.chars().count();
     if total <= TOOL_OUTPUT_THRESHOLD_CHARS {
         return text;
     }
-    let head_end = TOOL_OUTPUT_HEAD_CHARS.min(total);
-    let tail_start = total.saturating_sub(TOOL_OUTPUT_TAIL_CHARS).max(head_end);
+    let budget = TOOL_OUTPUT_THRESHOLD_CHARS.saturating_sub(marker.chars().count());
+    let head_end = TOOL_OUTPUT_HEAD_CHARS.min(total).min(budget);
+    let tail_count = TOOL_OUTPUT_TAIL_CHARS
+        .min(total - head_end)
+        .min(budget - head_end);
     let mut pruned: String = text.chars().take(head_end).collect();
-    pruned.push_str(TOOL_OUTPUT_MARKER);
-    pruned.extend(text.chars().skip(tail_start));
+    pruned.push_str(marker);
+    pruned.extend(text.chars().skip(total - tail_count));
     pruned
 }
 
@@ -398,7 +440,15 @@ pub(crate) mod test_support {
         let root = temp_root(tag);
         let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
         let (handle, cancel) = CancelHandle::new();
-        (ToolContext { workspace, cancel }, root, handle)
+        (
+            ToolContext {
+                workspace,
+                cancel,
+                run_id: "run-test".into(),
+            },
+            root,
+            handle,
+        )
     }
 }
 
@@ -509,6 +559,41 @@ mod tests {
         )
     }
 
+    struct Wordy {
+        name: &'static str,
+        output: String,
+    }
+
+    impl Tool for Wordy {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "wordy"
+        }
+
+        fn parameters(&self) -> Value {
+            json!({ "type": "object", "properties": {} })
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<String, ToolError>> {
+            let output = self.output.clone();
+            Box::pin(async move { Ok(output) })
+        }
+    }
+
+    fn wordy(name: &'static str, output: String) -> ToolRegistry {
+        ToolRegistry {
+            tools: vec![Box::new(Wordy { name, output })],
+            warnings: Vec::new(),
+        }
+    }
+
     #[test]
     fn caps_long_output_at_char_boundaries() {
         let text = "日本語".repeat(10);
@@ -520,7 +605,7 @@ mod tests {
     #[test]
     fn keeps_short_tool_output_verbatim() {
         let text = "x".repeat(TOOL_OUTPUT_THRESHOLD_CHARS);
-        assert_eq!(prune_tool_output(text.clone()), text);
+        assert_eq!(prune_tool_output(text.clone(), TOOL_OUTPUT_MARKER), text);
     }
 
     #[test]
@@ -528,7 +613,7 @@ mod tests {
         let head = "h".repeat(TOOL_OUTPUT_HEAD_CHARS);
         let tail = "t".repeat(TOOL_OUTPUT_TAIL_CHARS);
         let text = format!("{head}{}{tail}", "m".repeat(TOOL_OUTPUT_THRESHOLD_CHARS));
-        let pruned = prune_tool_output(text);
+        let pruned = prune_tool_output(text, TOOL_OUTPUT_MARKER);
 
         assert!(pruned.starts_with(&head));
         assert!(pruned.ends_with(&tail));
@@ -539,12 +624,101 @@ mod tests {
     #[test]
     fn prunes_multibyte_output_without_splitting_characters() {
         let text = "日本語".repeat(10_000);
-        let pruned = prune_tool_output(text);
+        let pruned = prune_tool_output(text, TOOL_OUTPUT_MARKER);
 
         assert!(pruned.starts_with(&"日本語".repeat(TOOL_OUTPUT_HEAD_CHARS / 3)));
         assert!(pruned.ends_with(&"日本語".repeat(TOOL_OUTPUT_TAIL_CHARS / 3)));
         assert!(!pruned.contains('\u{fffd}'));
         assert!(pruned.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+    }
+
+    #[test]
+    fn a_long_marker_stays_inside_the_pruning_budget() {
+        let text = "x".repeat(TOOL_OUTPUT_THRESHOLD_CHARS * 2);
+        let marker = format!("[saved to {}]", "p".repeat(TOOL_OUTPUT_THRESHOLD_CHARS / 2));
+        let pruned = prune_tool_output(text, &marker);
+
+        assert!(pruned.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+        assert!(pruned.contains(&marker));
+    }
+
+    #[tokio::test]
+    async fn oversized_tool_output_is_spilled_with_a_readable_marker() {
+        let (ctx, root, _handle) = context("spill-output");
+        let full = format!(
+            "HEAD\n{}\nMIDDLE-TOKEN\n{}\nTAIL",
+            "a".repeat(6_000),
+            "b".repeat(6_000)
+        );
+        let registry = wordy("wordy", full.clone());
+        let outcome = registry
+            .execute(&ctx, &Allow, "wordy", "call-7", json!({}))
+            .await;
+
+        let relative = std::path::Path::new(".oaklet/spill/run-test/wordy-call-7.txt");
+        assert_eq!(
+            std::fs::read_to_string(root.join(relative)).unwrap(),
+            full,
+            "spill file keeps the complete output"
+        );
+        assert!(outcome.ok);
+        assert!(outcome.output.contains(&relative.display().to_string()));
+        assert!(
+            outcome
+                .output
+                .contains(&format!("{} lines", full.lines().count()))
+        );
+        assert!(outcome.output.contains(&format!("{} bytes", full.len())));
+        assert!(
+            outcome
+                .output
+                .contains("Use read_file with offset and limit")
+        );
+        assert!(!outcome.output.contains("MIDDLE-TOKEN"));
+        assert!(outcome.output.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+
+        // The marker's instruction works: paging with offset/limit recovers the
+        // part the model could not see inline.
+        let read = ToolRegistry::new()
+            .execute(
+                &ctx,
+                &Allow,
+                "read_file",
+                "call-8",
+                json!({ "path": relative.to_str().unwrap(), "offset": 3, "limit": 2 }),
+            )
+            .await;
+        assert!(read.ok);
+        assert!(read.output.contains("MIDDLE-TOKEN"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn read_file_output_is_not_spilled_again() {
+        let (ctx, root, _handle) = context("spill-read");
+        let registry = wordy("read_file", "r".repeat(TOOL_OUTPUT_THRESHOLD_CHARS + 1));
+        let outcome = registry
+            .execute(&ctx, &Allow, "read_file", "call-1", json!({}))
+            .await;
+
+        assert!(outcome.output.contains(TOOL_OUTPUT_MARKER));
+        assert!(!root.join(".oaklet/spill").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn an_unwritable_spill_falls_back_to_the_plain_marker() {
+        let (ctx, root, _handle) = context("spill-fail");
+        std::fs::write(root.join(".oaklet"), "not a directory").unwrap();
+        let registry = wordy("wordy", "w".repeat(TOOL_OUTPUT_THRESHOLD_CHARS + 1));
+        let outcome = registry
+            .execute(&ctx, &Allow, "wordy", "call-1", json!({}))
+            .await;
+
+        assert!(outcome.output.contains(TOOL_OUTPUT_MARKER));
+        assert!(!outcome.output.contains("saved to:"));
+        assert!(outcome.output.chars().count() <= TOOL_OUTPUT_THRESHOLD_CHARS);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -602,7 +776,7 @@ mod tests {
     async fn unknown_tool_is_a_failed_outcome() {
         let (ctx, root, _handle) = context("unknown");
         let outcome = ToolRegistry::new()
-            .execute(&ctx, &Allow, "nope", json!({}))
+            .execute(&ctx, &Allow, "nope", "call-1", json!({}))
             .await;
         assert!(!outcome.ok);
         assert!(outcome.output.contains("Unknown tool: nope"));
@@ -617,7 +791,9 @@ mod tests {
             warnings: Vec::new(),
         };
         let (ctx, root, _handle) = context("denied");
-        let outcome = registry.execute(&ctx, &Deny, "risky", json!({})).await;
+        let outcome = registry
+            .execute(&ctx, &Deny, "risky", "call-1", json!({}))
+            .await;
         assert!(!ran.load(Ordering::SeqCst));
         assert!(!outcome.ok);
         assert_eq!(outcome.output, "The user denied this command.");
@@ -632,7 +808,9 @@ mod tests {
             warnings: Vec::new(),
         };
         let (ctx, root, _handle) = context("stopped");
-        let outcome = registry.execute(&ctx, &Stop, "risky", json!({})).await;
+        let outcome = registry
+            .execute(&ctx, &Stop, "risky", "call-1", json!({}))
+            .await;
         assert!(!ran.load(Ordering::SeqCst));
         assert_eq!(outcome.output, "Cancelled.");
         std::fs::remove_dir_all(&root).ok();
@@ -646,7 +824,9 @@ mod tests {
             warnings: Vec::new(),
         };
         let (ctx, root, _handle) = context("timeout");
-        let outcome = registry.execute(&ctx, &Allow, "slow", json!({})).await;
+        let outcome = registry
+            .execute(&ctx, &Allow, "slow", "call-1", json!({}))
+            .await;
         assert!(ran.load(Ordering::SeqCst));
         assert!(outcome.output.starts_with("Timed out after"));
         std::fs::remove_dir_all(&root).ok();

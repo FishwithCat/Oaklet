@@ -176,7 +176,11 @@ mod tests {
             super::super::Workspace::new(helper.join("test/fixtures/valid").to_str().unwrap())
                 .unwrap();
         let (_handle, cancel) = super::super::CancelHandle::new();
-        let ctx = ToolContext { workspace, cancel };
+        let ctx = ToolContext {
+            workspace,
+            cancel,
+            run_id: "run-test".into(),
+        };
         let tool = LikeC4 {
             node: Some(node),
             helper: Some(helper),
