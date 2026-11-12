@@ -125,8 +125,7 @@ fn parse_patch(input: &str) -> Result<Vec<PatchOperation>, ParseError> {
     let mut ended = false;
     let count = lines.len();
 
-    for index in 1..count {
-        let (number, text) = &lines[index];
+    for (index, (number, text)) in lines.iter().enumerate().skip(1) {
         let is_last = index == count - 1;
         // Inside an update, indentation makes a marker ordinary context; the
         // final End marker is still recognized so a missing close is caught.
@@ -248,21 +247,22 @@ fn read_update(
         }
     }
 
-    if hunks.is_empty() && move_to.is_none() {
-        if let Some(path) = text.strip_prefix(MOVE) {
-            *move_to = Some(path.to_string());
-            return Ok(());
-        }
+    if hunks.is_empty()
+        && move_to.is_none()
+        && let Some(path) = text.strip_prefix(MOVE)
+    {
+        *move_to = Some(path.to_string());
+        return Ok(());
     }
 
     if marker {
-        if let Some(last) = hunks.last() {
-            if last.is_empty() {
-                return Err((
-                    number,
-                    "Update hunk must contain context, added, or removed lines".into(),
-                ));
-            }
+        if let Some(last) = hunks.last()
+            && last.is_empty()
+        {
+            return Err((
+                number,
+                "Update hunk must contain context, added, or removed lines".into(),
+            ));
         }
         let mut hunk = PatchHunk::new(number);
         if let Some(context) = text.strip_prefix("@@ ") {
@@ -286,13 +286,13 @@ fn read_update(
     }
 
     let prefix = line.chars().next();
-    if let Some(character) = prefix {
-        if !matches!(character, ' ' | '+' | '-') {
-            return Err((
-                number,
-                "Expected a context (' '), added ('+'), removed ('-') line, or '@@'".into(),
-            ));
-        }
+    if let Some(character) = prefix
+        && !matches!(character, ' ' | '+' | '-')
+    {
+        return Err((
+            number,
+            "Expected a context (' '), added ('+'), removed ('-') line, or '@@'".into(),
+        ));
     }
     if hunks.is_empty() {
         hunks.push(PatchHunk::new(number));
