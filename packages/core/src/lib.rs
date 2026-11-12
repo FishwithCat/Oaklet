@@ -63,6 +63,39 @@ fn auto_approves_command(tool: &str, workspace: &Path, granted: Option<&Path>) -
     tool == "run_command" && granted == Some(workspace)
 }
 
+/// Search backend for the `web_search` tool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProvider {
+    #[default]
+    Deepseek,
+    Exa,
+}
+
+impl SearchProvider {
+    pub fn default_endpoint(self) -> &'static str {
+        match self {
+            Self::Deepseek => tools::web::DEFAULT_ENDPOINT,
+            Self::Exa => tools::web::EXA_ENDPOINT,
+        }
+    }
+
+    /// The key to use for this provider. DeepSeek reuses the model key; Exa
+    /// never does, so a model credential is not sent to another service.
+    pub fn api_key<'a>(self, search_key: &'a str, model_key: &'a str) -> Option<&'a str> {
+        let key = if search_key.trim().is_empty() {
+            match self {
+                Self::Deepseek => model_key,
+                Self::Exa => return None,
+            }
+        } else {
+            search_key
+        };
+        let key = key.trim();
+        (!key.is_empty()).then_some(key)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -79,8 +112,13 @@ pub struct AppConfig {
     /// Prompt tokens the model accepts. History is compacted near this size.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
+    #[serde(default)]
+    pub search_provider: SearchProvider,
     #[serde(default = "default_search_url")]
     pub search_url: String,
+    /// Key for the search provider. Empty reuses `api_key` for DeepSeek only.
+    #[serde(default)]
+    pub search_api_key: String,
     /// Skip the approval card for `run_command` in the configured workspace.
     /// On by default; the sidebar leaf still revokes it for this session.
     #[serde(default = "default_true")]
@@ -215,7 +253,9 @@ impl Default for AppConfig {
             model: default_model(),
             summary_model: String::new(),
             context_window: default_context_window(),
+            search_provider: SearchProvider::Deepseek,
             search_url: default_search_url(),
+            search_api_key: String::new(),
             allow_all_commands: true,
             mcp_servers: BTreeMap::new(),
             workspace: default_workspace(),
@@ -354,11 +394,15 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     config.api_key = config.api_key.trim().to_string();
     config.model = config.model.trim().to_string();
     config.summary_model = config.summary_model.trim().to_string();
+    config.search_api_key = config.search_api_key.trim().to_string();
     config.search_url = config.search_url.trim().trim_end_matches('/').to_string();
     config.workspace = config.workspace.trim().to_string();
 
-    if config.search_url.is_empty() {
-        config.search_url = default_search_url();
+    if config.search_url.is_empty()
+        || (config.search_provider != SearchProvider::Deepseek
+            && config.search_url == default_search_url())
+    {
+        config.search_url = config.search_provider.default_endpoint().to_string();
     }
     if !(config.base_url.starts_with("http://") || config.base_url.starts_with("https://")) {
         return Err("Base URL must start with http:// or https://.".into());
@@ -763,7 +807,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        AppConfig, McpServerConfig, McpTransport, auto_approves_command, normalize_mcp_servers,
+        AppConfig, McpServerConfig, McpTransport, SearchProvider, auto_approves_command,
+        normalize_mcp_servers,
     };
 
     #[test]
@@ -784,6 +829,40 @@ mod tests {
     fn configs_saved_before_context_window_default_to_256k() {
         let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
         assert_eq!(config.context_window, 262_144);
+    }
+
+    #[test]
+    fn configs_saved_before_search_provider_default_to_deepseek() {
+        let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert_eq!(config.search_provider, SearchProvider::Deepseek);
+        assert!(config.search_api_key.is_empty());
+    }
+
+    #[test]
+    fn search_provider_uses_the_frontend_names() {
+        let config = AppConfig {
+            search_provider: SearchProvider::Exa,
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""searchProvider":"exa""#));
+
+        let config: AppConfig = serde_json::from_str(r#"{"searchProvider":"deepseek"}"#).unwrap();
+        assert_eq!(config.search_provider, SearchProvider::Deepseek);
+    }
+
+    #[test]
+    fn exa_needs_its_own_key_but_deepseek_reuses_the_model_key() {
+        assert_eq!(
+            SearchProvider::Deepseek.api_key("", " model "),
+            Some("model")
+        );
+        assert_eq!(
+            SearchProvider::Deepseek.api_key(" search ", "model"),
+            Some("search")
+        );
+        assert_eq!(SearchProvider::Exa.api_key("", "model"), None);
+        assert_eq!(SearchProvider::Exa.api_key(" exa ", "model"), Some("exa"));
     }
 
     #[test]

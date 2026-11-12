@@ -15,9 +15,14 @@ import {
   parseMcpConfig,
   setServerEnabled,
 } from "./mcp-settings";
-import type { AppConfig } from "./config";
+import {
+  SEARCH_PROVIDERS,
+  defaultSearchUrl,
+  type AppConfig,
+  type SearchProvider,
+} from "./config";
 
-type SettingsTab = "model" | "commands" | "mcp";
+type SettingsTab = "model" | "web" | "commands" | "mcp";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -35,6 +40,7 @@ type TestStatus = {
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "model", label: "Model" },
+  { id: "web", label: "Web Search" },
   { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
 ];
@@ -70,6 +76,7 @@ export function SettingsPanel({
   );
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     model: null,
+    web: null,
     commands: null,
     mcp: null,
   });
@@ -187,9 +194,11 @@ export function SettingsPanel({
               ? firstRun
                 ? "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine."
                 : "Choose the OpenAI-compatible model provider Oaklet should use."
-              : tab === "commands"
-                ? "Choose whether the agent asks before running commands."
-                : "Connect MCP servers and choose which ones the agent can use."}
+              : tab === "web"
+                ? "Choose the provider, key, and endpoint the web_search tool uses."
+                : tab === "commands"
+                  ? "Choose whether the agent asks before running commands."
+                  : "Connect MCP servers and choose which ones the agent can use."}
           </p>
         </div>
 
@@ -343,12 +352,65 @@ export function SettingsPanel({
                     history near 80% of this.
                   </p>
                 </div>
+              </section>
+            ) : tab === "web" ? (
+              <section
+                id="settings-panel-web"
+                role="tabpanel"
+                aria-labelledby="settings-tab-web"
+                tabIndex={0}
+              >
+                <div className="field">
+                  <label htmlFor="search-provider">Provider</label>
+                  <select
+                    id="search-provider"
+                    value={draft.searchProvider}
+                    onChange={(event) => {
+                      const searchProvider = event.target.value as SearchProvider;
+                      setDraft((current) => ({
+                        ...current,
+                        searchProvider,
+                        searchUrl: defaultSearchUrl(searchProvider),
+                      }));
+                    }}
+                  >
+                    {SEARCH_PROVIDERS.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="search-api-key">Search API key</label>
+                  <input
+                    id="search-api-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={
+                      draft.searchProvider === "exa" ? "Required" : "Optional"
+                    }
+                    value={draft.searchApiKey}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        searchApiKey: event.target.value,
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    {draft.searchProvider === "exa"
+                      ? "Required for Exa. Create a key at dashboard.exa.ai. The model API key is never sent to Exa."
+                      : "Optional. Empty reuses the model API key above."}
+                  </p>
+                </div>
 
                 <div className="field">
                   <label htmlFor="search-url">Search URL</label>
                   <input
                     id="search-url"
-                    placeholder="https://api.deepseek.com/v1/tools/search"
+                    placeholder={defaultSearchUrl(draft.searchProvider)}
                     value={draft.searchUrl}
                     onChange={(event) =>
                       setDraft((current) => ({
@@ -358,7 +420,8 @@ export function SettingsPanel({
                     }
                   />
                   <p className="field-hint">
-                    Used by web_search. Defaults to the DeepSeek Search API.
+                    Optional endpoint override. Empty uses the provider
+                    default.
                   </p>
                 </div>
               </section>

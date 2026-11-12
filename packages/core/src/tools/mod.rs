@@ -303,9 +303,13 @@ impl ToolRegistry {
             mcp::discover(&config.mcp_servers, std::path::Path::new(&config.workspace)).await;
         registry.tools.extend(tools);
         registry.warnings = warnings;
-        if !config.api_key.trim().is_empty() {
+        if let Some(key) = config
+            .search_provider
+            .api_key(&config.search_api_key, &config.api_key)
+        {
             registry.tools.push(Box::new(web::WebSearch::new(
-                &config.api_key,
+                config.search_provider,
+                key,
                 &config.search_url,
             )));
         }

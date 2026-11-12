@@ -99,7 +99,9 @@ Open **Settings** in the sidebar. Changes apply to the next run.
 | Summary model                 | same as Model                              |
 | Context window                | `262144` tokens                            |
 | Run commands without approval | on                                         |
-| Search URL                    | `https://api.deepseek.com/v1/tools/search` |
+| Search provider               | DeepSeek                                   |
+| Search API key                | none (DeepSeek falls back to API key)      |
+| Search URL                    | provider default                           |
 | MCP servers                   | none                                       |
 | Workspace                     | your home directory                        |
 
@@ -186,15 +188,18 @@ data, never as instructions.
 
 ## Web search
 
-With an API key in Settings, the agent also gets `web_search`. It sends one
-query to the DeepSeek Search API and returns up to 10 results with title, URL,
-summary or snippet, and date, within 20 seconds. It asks for no approval: it
-sends only the query, to the provider the conversation already uses.
+With a search key in Settings, the agent also gets `web_search`. It sends one
+query to the configured provider and returns up to 10 results with title, URL,
+excerpt, and date, within 20 seconds. It asks for no approval: it sends only the
+query, never workspace content.
 
-**Search URL** sets the endpoint and ignores the configured Base URL and Model,
-so search works with any model provider as long as the key is a DeepSeek key. An
-empty Search URL falls back to the default. Without a key the tool is not
-registered, so the model never sees it.
+**Settings → Web Search → Provider** picks DeepSeek Search or Exa. DeepSeek
+reuses the model API key, so search works with any model provider as long as
+that key is a DeepSeek key. Exa needs its own key from
+[dashboard.exa.ai](https://dashboard.exa.ai/api-keys); Oaklet never sends the
+model key to Exa. **Search URL** overrides the provider endpoint, and an empty
+value falls back to the provider default. Without a key for the selected
+provider the tool is not registered, so the model never sees it.
 
 ## Approvals and safety
 
