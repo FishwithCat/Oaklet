@@ -150,7 +150,15 @@ pub(crate) fn preview(
     let head_source = lines[..head_count].join("\n");
     let tail_source = lines[lines.len() - tail_count..].join("\n");
     let (head, head_clipped) = clip_head(&head_source, head_chars);
-    let (tail, tail_clipped) = clip_tail(&tail_source, tail_chars);
+    let (mut tail, mut tail_clipped) = clip_tail(&tail_source, tail_chars);
+    // Fewer lines than the head budget leaves no line for the tail. If the head
+    // was then clipped by characters, take the tail from the remainder so the
+    // end of the file still appears in the preview.
+    if tail.is_empty() && head_clipped {
+        let head_len = head.chars().count();
+        let remainder: String = head_source.chars().skip(head_len).collect();
+        (tail, tail_clipped) = clip_tail(&remainder, tail_chars);
+    }
     Preview {
         head,
         tail,
@@ -252,6 +260,17 @@ mod tests {
 
         assert_eq!(preview.head, "h".repeat(10));
         assert_eq!(preview.tail, "t".repeat(5));
+        assert_eq!(preview.omitted_lines, 0);
+        assert!(preview.clipped);
+    }
+
+    #[test]
+    fn preview_keeps_the_tail_of_a_few_long_lines() {
+        let text = format!("{}\n... error: connection reset", "h".repeat(20_000));
+        let preview = preview(&text, 80, 40, 6_000, 2_000);
+
+        assert_eq!(preview.head, "h".repeat(6_000));
+        assert!(preview.tail.ends_with("... error: connection reset"));
         assert_eq!(preview.omitted_lines, 0);
         assert!(preview.clipped);
     }
