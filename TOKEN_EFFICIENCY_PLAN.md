@@ -1,6 +1,6 @@
 # Token 效率改造：从 DSH 借鉴上下文纪律
 
-Status: plan · 2026-11-12 · scope: `packages/core`
+Status: P0 L0 implemented · 2026-11-12 · scope: `packages/core`
 
 本文是 Oaklet 从 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 借鉴
 token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而是搬三条已经被验证的成本曲线：
@@ -10,7 +10,7 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 3. **压缩后原文可召回**：敢删，是因为删掉的东西还能读回来。
 
 > 基线说明：本文基于 2026-11-12 的 HEAD `73b55ae`。下表中的“已落地”项都已经在仓库里，
-> 开始前先看 `git log` / `git status`，不要重复实现；本文本身尚未提交。
+> 开始前先看 `git log` / `git status`，不要重复实现；正常压力 L0 已实现。
 
 ## 1. 已落地（不要重复做）
 
@@ -23,6 +23,7 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 | Provider 溢出恢复 | `agent.rs::RequestError` / `force` / 单次重试 | 已提交（`bf6604e`） |
 | 压缩归档 + `history_read` | `store.rs::session_history`；`tools/history.rs` | 已提交（`73b55ae`） |
 | 溢出时 L0 裁剪 | `compaction.rs::trim_tool_outputs` / `force` | 已提交（`73b55ae`） |
+| 正常压力下先尝试 L0 | `compaction.rs::compact` | 已实现 |
 
 几个已经成立的设计约束，后续改动不要破坏：
 
@@ -36,7 +37,6 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 
 | 优先级 | 改造 | 主要落点 | 效果 | 工作量 |
 | --- | --- | --- | --- | --- |
-| P0 | 正常压力下先做 L0 裁剪，再决定是否摘要 | `compaction.rs::compact` | 多数会话不再调用摘要模型 | 0.5–1 天 |
 | P0 | 摘要失败时用机械摘要兜底 | `compaction.rs::compact_at` | 失败不再丢光历史 | 1 天 |
 | P1 | completion / cache token 遥测 | `agent.rs`、`context.rs`、`store.rs`、UI | 能验证是否真的省了钱 | 0.5–1 天 |
 | P2 | MCP 工具顺序稳定 / 按需加载 | `mcp.rs`、`tools/mod.rs` | MCP 多时省固定 schema 税 | 0.5–3 天 |
@@ -47,20 +47,22 @@ token 节约机制的落地清单。重点不是把 Oaklet 改造成 DSH，而�
 
 ### 3.1 P0：正常压缩先做 L0
 
-当前 `compact()` 只有一条路径：
+已实现：`compact()` 先试温和 L0；只有裁剪后仍超阈值时才调用摘要。
 
 ```text
-select_cut -> compact_at -> summarize
+尝试 L0 -> 足以降到 trigger 以下：保存裁剪结果并归档原文
+       -> 仍然超限：select_cut -> compact_at -> summarize（使用原始 messages）
 ```
 
-只要压力超过阈值，即使历史主要是旧工具输出，也会先付一次摘要调用。`force()` 已经在溢出路径上
-先做 `trim_tool_outputs`，但正常压力路径没有。
+判断使用 `Meter` 的当前压力减去本次裁剪节约的估算 token，保留 provider 锚定的额外开销。
+`force()` 继续使用更激进的 2k 字符预算。
 
-建议改成“先试 L0，单独够用才提交”：
+实现保持“先试 L0，单独够用才采用”：
 
 ```rust
-let trimmed = trim_tool_outputs_for_pressure(messages);
-if estimate_tokens(&trimmed) <= trigger_at(window) {
+let (trimmed, replaced_indices) = trim_tool_outputs(messages, 4_500, 3_000, 1_000);
+let saved = estimate_tokens(messages) - estimate_tokens(&trimmed);
+if !replaced_indices.is_empty() && pressure.saturating_sub(saved) <= trigger_at(window) {
     return Some(Compacted {
         messages: trimmed,
         replaced: original_tool_messages,
@@ -68,7 +70,6 @@ if estimate_tokens(&trimmed) <= trigger_at(window) {
 }
 // L0 单独不够：不要提交它，用原始 messages 走摘要，保住 prefix cache。
 let compacted = compact_at(messages, ...)?;
-// 摘要后可选：对保留的 tail 再做一次温和 L0，并把它替换的原文加入 replaced。
 ```
 
 为什么是“试”而不是“先改再摘要”：如果 L0 已经改写了要被摘要的区间，摘要请求就不再是上一轮
@@ -77,7 +78,8 @@ let compacted = compact_at(messages, ...)?;
 
 实现要点：
 
-- 新增 `PRESSURE_TOOL_OUTPUT_CHARS`（建议 6k，head 4k + tail 1.5k），比 `force` 的 2k 温和。
+- `PRESSURE_TOOL_OUTPUT_CHARS = 4_500`，head 3k + tail 1k，其余留给标记，比 `force` 的 2k 温和。
+  原建议的 head 4k + tail 1.5k 无法满足下述 32k / 20 条结果的验收预算。
 - 只改 `role == "tool"` 的 `content`，保留 `tool_call_id`，不破坏 tool call/result 配对。
 - `Compacted.replaced` 要带上被替换的原始 tool message，`history_read` 才能找回。
 - 不要跳过 spill 文件本身；所有 tool 结果一视同仁。
@@ -198,11 +200,11 @@ spill 路径一起切掉。虽然原文已归档、`history_read` 能找回，�
 - **65KB `AGENTS.md` 预算**：桌面 agent 不需要这么长的常驻指令。
 - **LLMLingua 式 prompt 压缩 / semantic cache**：有损、破坏精确标识符和缓存，不适合 coding agent。
 
-## 5. 建议提交顺序（atomic，尚未执行）
+## 5. 提交顺序与状态（atomic）
 
 按仓库的 Conventional Commits 约定，每项独立可回滚：
 
-1. `feat(core): trim retained tool output before summarizing under pressure`
+1. `feat(core): trim retained tool output before summarizing under pressure`（已实现）
 2. `feat(core): fall back to a mechanical digest when summarization fails`
 3. `feat(core): record completion and cache token usage per run`
 4. `perf(core): keep MCP tool schema order stable`
@@ -210,7 +212,7 @@ spill 路径一起切掉。虽然原文已归档、`history_read` 能找回，�
 6. `feat(core): load MCP tools on demand`（仅在第 3 项数据支持时）
 7. `feat(core): run independent read-only tools concurrently`（P3）
 
-> `AGENTS.md` 要求提交前获得明确授权；以上只是提交信息建议，未执行 `git commit`。
+> `AGENTS.md` 要求提交前获得明确授权；以上为原子提交划分；实际完成项见上表及 git log。
 
 ## 6. 验证
 

@@ -286,7 +286,9 @@ async fn compact_before_request(
         return Ok(());
     }
 
-    if let Some(compacted) = compaction::compact(client, config, messages, tools, cancel).await? {
+    if let Some(compacted) =
+        compaction::compact(client, config, messages, pressure, tools, cancel).await?
+    {
         note_compaction(pressure, estimate_tokens(&compacted.messages));
         archived.extend(compacted.replaced);
         *messages = compacted.messages;

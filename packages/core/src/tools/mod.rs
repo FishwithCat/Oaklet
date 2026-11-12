@@ -44,23 +44,32 @@ const TOOL_SPILL_SKIP: &str = "read_file";
 const SPILL_MARKER_HEAD: &str = "[... tool output middle pruned; full output (";
 const SPILL_MARKER_POINTER: &str = ") saved to: ";
 const SPILL_MARKER_TAIL: &str = ". Use read_file with offset and limit to page through it.]";
+const SPILL_RECOVERY_HEAD: &str =
+    "[... tool output trimmed for context recovery; full output saved to: ";
 /// The spill writer's workspace-relative paths are far shorter than this.
 const SPILL_POINTER_MAX_CHARS: usize = 512;
 
 /// Extract the path from a complete, Oaklet-generated spill marker.
 pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
-    for (start, _) in text.match_indices(SPILL_MARKER_HEAD) {
-        let rest = &text[start + SPILL_MARKER_HEAD.len()..];
-        let Some((_, after_pointer)) = rest.split_once(SPILL_MARKER_POINTER) else {
-            continue;
-        };
-        let Some((path, _)) = after_pointer.split_once(SPILL_MARKER_TAIL) else {
-            continue;
-        };
-        if (path.starts_with(".oaklet/spill/") || path.starts_with(".oaklet\\spill\\"))
-            && path.chars().count() <= SPILL_POINTER_MAX_CHARS
-        {
-            return Some(path);
+    for head in [SPILL_MARKER_HEAD, SPILL_RECOVERY_HEAD] {
+        for (start, _) in text.match_indices(head) {
+            let rest = &text[start + head.len()..];
+            let after_pointer = if head == SPILL_MARKER_HEAD {
+                let Some((_, after_pointer)) = rest.split_once(SPILL_MARKER_POINTER) else {
+                    continue;
+                };
+                after_pointer
+            } else {
+                rest
+            };
+            let Some((path, _)) = after_pointer.split_once(SPILL_MARKER_TAIL) else {
+                continue;
+            };
+            if (path.starts_with(".oaklet/spill/") || path.starts_with(".oaklet\\spill\\"))
+                && path.chars().count() <= SPILL_POINTER_MAX_CHARS
+            {
+                return Some(path);
+            }
         }
     }
     None

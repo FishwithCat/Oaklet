@@ -140,9 +140,12 @@ and transcript is restored from History.
 
 ## Context and cost controls
 
-Oaklet keeps long tool output to its head and tail, and when a run approaches
-the context window it asks the model to replace older history with a short
-checkpoint. That summary request replays the system prompt, tool schemas, and
+Oaklet keeps long tool output to its head and tail. Near the context limit it
+first tries trimming each oversized tool result to at most 4,500 characters,
+archiving the originals. If that alone relieves the pressure, no summary model
+is called. Otherwise it asks the model to replace older history with a short
+checkpoint, using the history from before that trimming attempt. That summary
+request replays the system prompt, tool schemas, and
 older messages unchanged, then appends one instruction, so the provider can
 reuse its prefix cache instead of re-billing the whole history. The system
 prompt and the current turn are never summarized. The

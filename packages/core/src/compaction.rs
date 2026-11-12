@@ -1,5 +1,5 @@
-//! Replace old conversation with an LLM-written checkpoint when the prompt
-//! approaches the configured context window.
+//! Trim tool output before replacing old conversation with a checkpoint when
+//! the prompt approaches the configured context window.
 //!
 //! The system prompt and the newest turn stay untouched; everything between
 //! them becomes one `user` message so the run can continue instead of failing
@@ -31,6 +31,12 @@ const OUTPUT_RESERVE: usize = 32_768;
 
 /// Below this, a summary would cost more than the history it replaces.
 const MIN_REPLACED: usize = 4_000;
+
+/// Normal pressure keeps more detail than overflow recovery, while fitting
+/// twenty typical tool results in a 32k window without a summary request.
+const PRESSURE_TOOL_OUTPUT_CHARS: usize = 4_500;
+const PRESSURE_TOOL_OUTPUT_HEAD_CHARS: usize = 3_000;
+const PRESSURE_TOOL_OUTPUT_TAIL_CHARS: usize = 1_000;
 
 /// Tool output kept during overflow recovery. The normal pipeline already
 /// caps one result at 12k characters, but a long run can accumulate enough of
@@ -121,8 +127,7 @@ fn force_retain_at(window: usize) -> usize {
     (retain / 2).clamp(1_000, FORCE_RETAIN_TOKENS).min(retain)
 }
 
-/// Summarize the oldest part of `messages`, or keep them when that is not
-/// useful.
+/// Try tool-output trimming first, then summarize the untouched history if needed.
 ///
 /// Returns `Ok(None)` when there is nothing worth compacting. Only a cancelled
 /// run returns an error; a failed summary falls back to dropping the old
@@ -131,9 +136,30 @@ pub async fn compact(
     client: &reqwest::Client,
     config: &AppConfig,
     messages: &[Value],
+    pressure: usize,
     tools: &ToolRegistry,
     cancel: &Cancel,
 ) -> Result<Option<Compacted>, String> {
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
+    let (trimmed, replaced) = trim_tool_outputs(
+        messages,
+        PRESSURE_TOOL_OUTPUT_CHARS,
+        PRESSURE_TOOL_OUTPUT_HEAD_CHARS,
+        PRESSURE_TOOL_OUTPUT_TAIL_CHARS,
+    );
+    let saved = estimate_tokens(messages).saturating_sub(estimate_tokens(&trimmed));
+    if !replaced.is_empty() && pressure.saturating_sub(saved) <= trigger_at(config.context_window) {
+        return Ok(Some(Compacted {
+            messages: trimmed,
+            replaced: replaced
+                .into_iter()
+                .map(|index| messages[index].clone())
+                .collect(),
+        }));
+    }
+    // Keep the summary request's prefix unchanged when trimming alone is insufficient.
     let Some(cut) = select_cut(messages, retain_at(config.context_window), MIN_REPLACED) else {
         return Ok(None);
     };
@@ -162,7 +188,12 @@ pub async fn force(
     cancel: &Cancel,
 ) -> Result<Option<Compacted>, String> {
     let target = force_retain_at(config.context_window);
-    let (mut next, mut replaced) = trim_tool_outputs(messages);
+    let (mut next, mut replaced) = trim_tool_outputs(
+        messages,
+        FORCE_TOOL_OUTPUT_CHARS,
+        FORCE_TOOL_OUTPUT_HEAD_CHARS,
+        FORCE_TOOL_OUTPUT_TAIL_CHARS,
+    );
     let mut origins: Vec<Option<usize>> = (0..messages.len()).map(Some).collect();
 
     if estimate_tokens(&next) > target
@@ -206,7 +237,12 @@ pub async fn force(
 }
 
 /// L0: shrink tool results in place without touching the conversational order.
-fn trim_tool_outputs(messages: &[Value]) -> (Vec<Value>, BTreeSet<usize>) {
+fn trim_tool_outputs(
+    messages: &[Value],
+    max_chars: usize,
+    head_chars: usize,
+    tail_chars: usize,
+) -> (Vec<Value>, BTreeSet<usize>) {
     let mut replaced = BTreeSet::new();
     let next = messages
         .iter()
@@ -218,11 +254,11 @@ fn trim_tool_outputs(messages: &[Value]) -> (Vec<Value>, BTreeSet<usize>) {
             let Some(text) = message.get("content").and_then(Value::as_str) else {
                 return message.clone();
             };
-            if text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS {
+            if text.chars().count() <= max_chars {
                 return message.clone();
             }
             let mut trimmed = message.clone();
-            trimmed["content"] = json!(trim_head_and_tail(text));
+            trimmed["content"] = json!(trim_head_and_tail(text, max_chars, head_chars, tail_chars));
             replaced.insert(index);
             trimmed
         })
@@ -230,7 +266,12 @@ fn trim_tool_outputs(messages: &[Value]) -> (Vec<Value>, BTreeSet<usize>) {
     (next, replaced)
 }
 
-fn trim_head_and_tail(text: &str) -> String {
+fn trim_head_and_tail(
+    text: &str,
+    max_chars: usize,
+    head_chars: usize,
+    tail_chars: usize,
+) -> String {
     let total = text.chars().count();
     let marker = match spill_pointer(text) {
         Some(path) => format!(
@@ -239,12 +280,10 @@ fn trim_head_and_tail(text: &str) -> String {
         ),
         None => FORCE_TOOL_OUTPUT_MARKER.to_string(),
     };
-    let budget = FORCE_TOOL_OUTPUT_CHARS.saturating_sub(marker.chars().count());
-    let head = FORCE_TOOL_OUTPUT_HEAD_CHARS.min(total).min(budget);
-    let tail = FORCE_TOOL_OUTPUT_TAIL_CHARS
-        .min(total - head)
-        .min(budget - head);
-    let mut trimmed = String::with_capacity(FORCE_TOOL_OUTPUT_CHARS);
+    let budget = max_chars.saturating_sub(marker.chars().count());
+    let head = head_chars.min(total).min(budget);
+    let tail = tail_chars.min(total - head).min(budget - head);
+    let mut trimmed = String::with_capacity(max_chars);
     trimmed.extend(text.chars().take(head));
     trimmed.push_str(&marker);
     trimmed.extend(text.chars().skip(total - tail));
@@ -651,6 +690,34 @@ mod tests {
         json!({ "role": "tool", "tool_call_id": id, "content": text })
     }
 
+    fn tool_history(count: usize) -> Vec<Value> {
+        let mut messages = vec![system(), user("Fix the build; preserve public APIs.")];
+        for index in 0..count {
+            messages.push(json!({
+                "role": "assistant",
+                "content": "Investigating the build failure.",
+                "tool_calls": [{
+                    "id": format!("call_{index}"),
+                    "type": "function",
+                    "function": { "name": "read_file", "arguments": "{\"path\":\"build.log\"}" }
+                }]
+            }));
+            messages.push(tool(
+                &format!("call_{index}"),
+                &format!(
+                    "{}UNIQUE ERROR: disk full{}",
+                    "h".repeat(4_000),
+                    "t".repeat(4_000)
+                ),
+            ));
+        }
+        messages.push(assistant(
+            "The failure is located; the fix is still pending.",
+        ));
+        messages.push(user("Continue with the fix."));
+        messages
+    }
+
     const SUMMARY_BODY: &str =
         r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
 
@@ -731,12 +798,159 @@ mod tests {
         assert!(force_retain_at(8_192) < retain_at(8_192));
     }
 
+    #[tokio::test]
+    async fn pressure_trimming_fits_twenty_results_without_a_summary() {
+        use crate::tools::CancelHandle;
+
+        let messages = tool_history(20);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let config = AppConfig {
+            base_url: format!("http://{}", listener.local_addr().unwrap()),
+            context_window: 32_768,
+            ..AppConfig::default()
+        };
+        assert!(estimate_tokens(&messages) > trigger_at(config.context_window));
+        let (_handle, cancel) = CancelHandle::new();
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let compacted = compact(
+            &client,
+            &config,
+            &messages,
+            estimate_tokens(&messages),
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(estimate_tokens(&compacted.messages) <= trigger_at(config.context_window));
+        assert_eq!(compacted.messages.len(), messages.len());
+        assert_eq!(
+            compacted.replaced,
+            messages
+                .iter()
+                .filter(|message| role(message) == Some("tool"))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        for (original, next) in messages.iter().zip(&compacted.messages) {
+            if role(original) == Some("tool") {
+                assert_eq!(original["tool_call_id"], next["tool_call_id"]);
+                let text = next["content"].as_str().unwrap();
+                assert!(text.chars().count() <= PRESSURE_TOOL_OUTPUT_CHARS);
+                assert!(text.chars().count() > FORCE_TOOL_OUTPUT_CHARS);
+            } else {
+                assert_eq!(original, next);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pressure_trimming_observes_cancellation() {
+        use crate::tools::CancelHandle;
+
+        let messages = tool_history(20);
+        let (handle, cancel) = CancelHandle::new();
+        handle.cancel();
+        let result = compact(
+            &reqwest::Client::new(),
+            &AppConfig::default(),
+            &messages,
+            estimate_tokens(&messages),
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await;
+        assert!(matches!(result, Err(error) if error == "Stopped."));
+    }
+
+    #[tokio::test]
+    async fn insufficient_pressure_trimming_summarizes_the_original_prefix() {
+        use crate::tools::CancelHandle;
+
+        // The second case fits locally, but provider-reported overhead still requires a summary.
+        for (count, overhead) in [(40, 0), (20, 8_000)] {
+            let (base_url, seen, server) = summary_server();
+            let messages = tool_history(count);
+            let config = AppConfig {
+                base_url,
+                context_window: 32_768,
+                ..AppConfig::default()
+            };
+            let cut =
+                select_cut(&messages, retain_at(config.context_window), MIN_REPLACED).unwrap();
+            let tools = ToolRegistry::new();
+            let (_handle, cancel) = CancelHandle::new();
+            let compacted = compact(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                estimate_tokens(&messages) + overhead,
+                &tools,
+                &cancel,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            let body: Value = serde_json::from_str(&seen[0]).unwrap();
+            let replayed = body["messages"].as_array().unwrap();
+            assert_eq!(&replayed[..cut], &messages[..cut]);
+            assert_eq!(replayed.len(), cut + 1);
+            assert_eq!(body["tools"], tools.schemas());
+            assert_eq!(compacted.replaced, messages[1..cut]);
+            drop(seen);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn pressure_then_force_trimming_keeps_the_spill_pointer() {
+        let path = ".oaklet/spill/run-1/read_file-call_1.txt";
+        let text = format!(
+            "{}\n\n[... tool output middle pruned; full output (900 lines, 20000 bytes) saved to: {path}. Use read_file with offset and limit to page through it.]\n\n{}",
+            "h".repeat(4_000),
+            "t".repeat(1_500)
+        );
+        let pressure = trim_head_and_tail(
+            &text,
+            PRESSURE_TOOL_OUTPUT_CHARS,
+            PRESSURE_TOOL_OUTPUT_HEAD_CHARS,
+            PRESSURE_TOOL_OUTPUT_TAIL_CHARS,
+        );
+        let forced = trim_head_and_tail(
+            &pressure,
+            FORCE_TOOL_OUTPUT_CHARS,
+            FORCE_TOOL_OUTPUT_HEAD_CHARS,
+            FORCE_TOOL_OUTPUT_TAIL_CHARS,
+        );
+
+        assert_eq!(spill_pointer(&forced), Some(path));
+        assert!(forced.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
+    }
+
     #[test]
     fn trims_oversized_tool_output_for_recovery() {
         let original = "x".repeat(20_000);
         let messages = vec![system(), user("go"), tool("call_1", &original)];
 
-        let (trimmed, replaced) = trim_tool_outputs(&messages);
+        let (trimmed, replaced) = trim_tool_outputs(
+            &messages,
+            FORCE_TOOL_OUTPUT_CHARS,
+            FORCE_TOOL_OUTPUT_HEAD_CHARS,
+            FORCE_TOOL_OUTPUT_TAIL_CHARS,
+        );
         let text = trimmed[2]["content"].as_str().unwrap();
 
         assert!(text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
@@ -756,7 +970,12 @@ mod tests {
             "t".repeat(4_000)
         );
 
-        let trimmed = trim_head_and_tail(&original);
+        let trimmed = trim_head_and_tail(
+            &original,
+            FORCE_TOOL_OUTPUT_CHARS,
+            FORCE_TOOL_OUTPUT_HEAD_CHARS,
+            FORCE_TOOL_OUTPUT_TAIL_CHARS,
+        );
 
         assert!(trimmed.contains(path));
         assert!(trimmed.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
@@ -1003,10 +1222,17 @@ mod tests {
         let client = reqwest::Client::new();
         let tools = ToolRegistry::new();
 
-        let compacted = compact(&client, &config, &messages, &tools, &cancel)
-            .await
-            .unwrap()
-            .expect("compaction should apply");
+        let compacted = compact(
+            &client,
+            &config,
+            &messages,
+            estimate_tokens(&messages),
+            &tools,
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("compaction should apply");
         let next = compacted.messages;
 
         server.join().unwrap();
@@ -1281,10 +1507,17 @@ mod tests {
         let (_handle, cancel) = CancelHandle::new();
         let tools = ToolRegistry::new();
 
-        compact(&reqwest::Client::new(), &config, &messages, &tools, &cancel)
-            .await
-            .unwrap()
-            .expect("compaction should apply");
+        compact(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            estimate_tokens(&messages),
+            &tools,
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .expect("compaction should apply");
 
         server.join().unwrap();
         let seen = seen.lock().unwrap();
