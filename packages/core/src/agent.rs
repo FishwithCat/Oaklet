@@ -1,3 +1,4 @@
+mod approval;
 mod messages;
 
 use std::collections::BTreeMap;
@@ -5,22 +6,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
 
+use crate::AppConfig;
 use crate::chat::RunContext;
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
 use crate::repeat::RepeatGuard;
-use crate::tools::{
-    ApprovalDecision, ApprovalRequest, Approver, Cancel, ToolContext, ToolRegistry, Workspace, cap,
-};
-use crate::{AppConfig, PendingApproval, auto_approves_command};
+use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace, cap};
 
+use approval::TauriApprover;
 use messages::{assistant_message, initial_messages, strip_system, tool_message};
-
-const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Default)]
 struct ToolCall {
@@ -589,91 +585,6 @@ fn emit_stream_delta(ctx: &RunContext, delta: StreamDelta) {
     if let Some(text) = delta.content {
         ctx.delta(&text);
     }
-}
-
-struct TauriApprover<'a> {
-    ctx: &'a RunContext,
-    call_id: &'a str,
-    workspace: &'a Path,
-    cancel: &'a Cancel,
-}
-
-impl Approver for TauriApprover<'_> {
-    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, ApprovalDecision> {
-        Box::pin(async move {
-            let allowed =
-                request_approval(self.ctx, self.call_id, self.workspace, request, self.cancel)
-                    .await;
-            if allowed {
-                ApprovalDecision::Allow
-            } else if self.cancel.is_cancelled() {
-                ApprovalDecision::Cancelled
-            } else {
-                ApprovalDecision::Deny
-            }
-        })
-    }
-}
-
-async fn request_approval(
-    ctx: &RunContext,
-    call_id: &str,
-    workspace: &Path,
-    request: ApprovalRequest,
-    cancel: &Cancel,
-) -> bool {
-    if cancel.is_cancelled() {
-        return false;
-    }
-
-    let state = ctx.state();
-    let granted = state
-        .command_allow_all
-        .lock()
-        .ok()
-        .and_then(|granted| granted.clone());
-    if auto_approves_command(&request.tool, workspace, granted.as_deref()) {
-        return true;
-    }
-
-    let request_id = state.next_id();
-    let (sender, receiver) = oneshot::channel();
-    if let Ok(mut approvals) = state.approvals.lock() {
-        approvals.insert(
-            request_id.clone(),
-            PendingApproval {
-                run_id: ctx.run_id().to_string(),
-                workspace: workspace.to_path_buf(),
-                sender,
-            },
-        );
-    } else {
-        return false;
-    }
-    if cancel.is_cancelled() {
-        if let Ok(mut approvals) = state.approvals.lock() {
-            approvals.remove(&request_id);
-        }
-        return false;
-    }
-
-    ctx.approval(
-        call_id,
-        &request_id,
-        &request.tool,
-        request.args,
-        &request.prompt,
-        &request.detail,
-    );
-
-    let decision = tokio::time::timeout(APPROVAL_TIMEOUT, receiver).await;
-    if let Ok(mut approvals) = state.approvals.lock() {
-        approvals.remove(&request_id);
-    }
-
-    let allowed = matches!(decision, Ok(Ok(true)));
-    ctx.approval_resolved(call_id, allowed);
-    allowed
 }
 
 fn apply_sse_line(
