@@ -71,6 +71,10 @@ pub struct AppConfig {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Model for compaction summaries. Empty reuses `model` so the summary
+    /// request can hit the same provider prefix cache.
+    #[serde(default)]
+    pub summary_model: String,
     /// Prompt tokens the model accepts. History is compacted near this size.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
@@ -204,6 +208,7 @@ impl Default for AppConfig {
             base_url: default_base_url(),
             api_key: String::new(),
             model: default_model(),
+            summary_model: String::new(),
             context_window: default_context_window(),
             search_url: default_search_url(),
             mcp_servers: BTreeMap::new(),
@@ -342,6 +347,7 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     config.base_url = config.base_url.trim().trim_end_matches('/').to_string();
     config.api_key = config.api_key.trim().to_string();
     config.model = config.model.trim().to_string();
+    config.summary_model = config.summary_model.trim().to_string();
     config.search_url = config.search_url.trim().trim_end_matches('/').to_string();
     config.workspace = config.workspace.trim().to_string();
 
@@ -757,6 +763,7 @@ mod tests {
             config.search_url,
             "https://api.deepseek.com/v1/tools/search"
         );
+        assert!(config.summary_model.is_empty());
         assert!(config.mcp_servers.is_empty());
     }
 

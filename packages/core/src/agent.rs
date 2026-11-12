@@ -89,7 +89,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         let pressure = meter.prepare(&messages);
 
         if pressure > compaction::trigger_at(config.context_window) {
-            match compaction::compact(&client, &config, &messages, &cancel).await {
+            match compaction::compact(&client, &config, &messages, &tools, &cancel).await {
                 Ok(Some(next)) => {
                     note_compaction(pressure, estimate_tokens(&next));
                     messages = next;

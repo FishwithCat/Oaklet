@@ -231,6 +231,26 @@ export function SettingsPanel({
                 </div>
 
                 <div className="field">
+                  <label htmlFor="summary-model">Summary model</label>
+                  <input
+                    id="summary-model"
+                    placeholder={draft.model}
+                    value={draft.summaryModel}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        summaryModel: event.target.value,
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    Optional. Empty reuses Model, so compaction summaries hit
+                    the provider's prefix cache. A cheaper model lowers the
+                    per-token price but loses that cache.
+                  </p>
+                </div>
+
+                <div className="field">
                   <label htmlFor="context-window">Context window</label>
                   <input
                     id="context-window"

@@ -5,6 +5,11 @@
 //! them becomes one `user` message so the run can continue instead of failing
 //! with a context-length error. The history is a plain array here, so a failed
 //! compaction never leaves a half-written state behind.
+//!
+//! The summary request replays the untouched prefix and appends one directive,
+//! so it is a genuine prefix of the conversation and can hit the provider's
+//! warm cache. Flattening the range into a fresh prompt would re-bill every
+//! token and can even exceed the size of the history it replaces.
 
 use std::time::Duration;
 
@@ -13,7 +18,7 @@ use serde_json::{Value, json};
 use crate::AppConfig;
 use crate::context::{estimate_message, estimate_text, estimate_tokens};
 use crate::repeat::is_reminder;
-use crate::tools::{Cancel, cap};
+use crate::tools::{Cancel, ToolRegistry, cap};
 
 /// Room kept for the response and for the next round of tool output.
 const OUTPUT_RESERVE: usize = 32_768;
@@ -29,10 +34,10 @@ const DROPPED: &str = "The earlier part of this conversation was dropped so the 
 within the context window. Treat it as unavailable: re-read files and re-run checks instead of \
 assuming what happened before.";
 
-const SUMMARIZER_PROMPT: &str = "\
-You compress a coding agent's conversation into a checkpoint that the same agent will read to \
-continue the task. Preserve the facts needed to keep working; drop greetings, repetition, and raw \
-tool output that no longer matters.
+const COMPACTION_INSTRUCTION: &str = "\
+Condense the conversation above into a checkpoint that the same coding agent will read to continue \
+the task. Preserve the facts needed to keep working; drop greetings, repetition, and raw tool \
+output that no longer matters.
 
 Return Markdown only, at most 800 words, using these sections. Omit a section only when it is empty.
 
@@ -64,7 +69,7 @@ Rules:
 - Quote exact paths, identifiers, commands, and error strings.
 - Never invent work that did not happen; mark uncertain items as uncertain.
 - Keep the language of the original conversation for quoted requirements.
-- Do not include tool-call syntax, JSON, or thinking out loud.";
+- Do not include tool-call syntax, JSON, or thinking out loud, and do not call any tool.";
 
 /// Prompt size at which history gets compacted.
 ///
@@ -90,6 +95,7 @@ pub async fn compact(
     client: &reqwest::Client,
     config: &AppConfig,
     messages: &[Value],
+    tools: &ToolRegistry,
     cancel: &Cancel,
 ) -> Result<Option<Vec<Value>>, String> {
     let Some(cut) = select_cut(messages, retain_at(config.context_window), MIN_REPLACED) else {
@@ -97,7 +103,7 @@ pub async fn compact(
     };
 
     Ok(Some(
-        compact_at(client, config, messages, cut, cancel, true).await?,
+        compact_at(client, config, messages, cut, Some(tools), cancel, true).await?,
     ))
 }
 
@@ -111,13 +117,13 @@ async fn compact_at(
     config: &AppConfig,
     messages: &[Value],
     cut: usize,
+    tools: Option<&ToolRegistry>,
     cancel: &Cancel,
     drop_on_failure: bool,
 ) -> Result<Vec<Value>, String> {
     let replaced = estimate_tokens(&messages[1..cut]);
-    let rendered = render(&messages[1..cut]);
 
-    let summary = match summarize(client, config, &rendered, cancel).await {
+    let summary = match summarize(client, config, &messages[..cut], tools, cancel).await {
         Ok(summary) if estimate_text(&summary) < replaced => summary,
         Ok(summary) => {
             note_fallback(&format!(
@@ -170,7 +176,7 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let next = compact_at(client, config, &history, cut, cancel, false).await?;
+    let next = compact_at(client, config, &history, cut, None, cancel, false).await?;
     Ok(Some(next[1..].to_vec()))
 }
 
@@ -276,108 +282,45 @@ fn role(message: &Value) -> Option<&str> {
     message.get("role").and_then(Value::as_str)
 }
 
-fn content_text(message: &Value) -> String {
-    match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    }
-}
-
-/// Flatten the compacted range into plain text for the summarizer.
-fn render(messages: &[Value]) -> String {
-    let mut out = String::new();
-    for message in messages {
-        let role = role(message).unwrap_or("unknown");
-        let text = content_text(message);
-
-        match role {
-            "assistant" => {
-                out.push_str("[assistant] ");
-                out.push_str(text.trim());
-                out.push('\n');
-                if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-                    for call in calls {
-                        let name = call
-                            .pointer("/function/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("tool");
-                        let arguments = call
-                            .pointer("/function/arguments")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        out.push_str("  calls ");
-                        out.push_str(name);
-                        out.push('(');
-                        out.push_str(arguments);
-                        out.push_str(")\n");
-                    }
-                }
-            }
-            "tool" => {
-                out.push_str("[tool result] ");
-                out.push_str(text.trim());
-                out.push('\n');
-            }
-            _ => {
-                out.push('[');
-                out.push_str(role);
-                out.push_str("] ");
-                out.push_str(text.trim());
-                out.push('\n');
-            }
-        }
-        out.push('\n');
-    }
-    out
-}
-
 async fn summarize(
     client: &reqwest::Client,
     config: &AppConfig,
-    rendered: &str,
+    prefix: &[Value],
+    tools: Option<&ToolRegistry>,
     cancel: &Cancel,
 ) -> Result<String, String> {
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let body = json!({
-        "model": config.model,
-        "messages": [
-            { "role": "system", "content": SUMMARIZER_PROMPT },
-            {
-                "role": "user",
-                "content": format!("Conversation to compress:\n\n{rendered}")
-            }
-        ],
+    let mut body = json!({
+        "model": summary_model(config),
+        "messages": summary_messages(prefix),
         "stream": false,
         "temperature": 0.2,
         "max_tokens": SUMMARY_MAX_TOKENS,
     });
-
-    let mut request = client.post(&url).json(&body).timeout(SUMMARY_TIMEOUT);
-    if !config.api_key.is_empty() {
-        request = request.bearer_auth(&config.api_key);
+    if let Some(tools) = tools {
+        body["tools"] = tools.schemas();
+        body["tool_choice"] = json!("none");
     }
 
-    let response = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err("Stopped.".into()),
-        response = request.send() => response
-            .map_err(|err| format!("Could not reach {}: {err}", config.base_url))?,
-    };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let detail = cap(response.text().await.unwrap_or_default(), 2_000);
-        return Err(format!("Summary request failed ({status}): {detail}"));
+    let (mut status, mut payload) = post_summary(client, config, &body, cancel).await?;
+    if !status.is_success() && tools.is_some() && tool_params_rejected(status, &payload) {
+        // Some OpenAI-compatible providers reject `tool_choice` on auxiliary
+        // calls. Dropping `tools` still keeps the message prefix cacheable and
+        // only gives up the schema segment.
+        if let Some(body) = body.as_object_mut() {
+            body.remove("tools");
+            body.remove("tool_choice");
+        }
+        (status, payload) = post_summary(client, config, &body, cancel).await?;
     }
 
-    let value: Value = response
-        .json()
-        .await
+    if !status.is_success() {
+        return Err(format!(
+            "Summary request failed ({status}): {}",
+            cap(payload, 2_000)
+        ));
+    }
+
+    let value: Value = serde_json::from_str(&payload)
         .map_err(|err| format!("Malformed summary response: {err}"))?;
     let summary = value
         .pointer("/choices/0/message/content")
@@ -389,6 +332,68 @@ async fn summarize(
         return Err("The model returned an empty summary.".into());
     }
     Ok(summary)
+}
+
+/// Replay the untouched prefix, then append the directive as the final user
+/// message. Reusing the conversation's own system prompt and message objects
+/// keeps this call a true prefix of the last request, so only the directive and
+/// the summary output are uncached.
+///
+/// An empty system head (the placeholder manual compaction adds for indexing)
+/// contributes no message.
+fn summary_messages(prefix: &[Value]) -> Vec<Value> {
+    let mut messages: Vec<Value> = prefix
+        .iter()
+        .filter(|message| {
+            !(role(message) == Some("system")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.trim().is_empty()))
+        })
+        .cloned()
+        .collect();
+    messages.push(json!({ "role": "user", "content": COMPACTION_INSTRUCTION }));
+    messages
+}
+
+/// Empty means the main model, which lets the summary request reuse that
+/// model's warm prefix cache.
+fn summary_model(config: &AppConfig) -> &str {
+    let configured = config.summary_model.trim();
+    if configured.is_empty() {
+        &config.model
+    } else {
+        configured
+    }
+}
+
+async fn post_summary(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    body: &Value,
+    cancel: &Cancel,
+) -> Result<(reqwest::StatusCode, String), String> {
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let mut request = client.post(&url).json(body).timeout(SUMMARY_TIMEOUT);
+    if !config.api_key.is_empty() {
+        request = request.bearer_auth(&config.api_key);
+    }
+
+    let response = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err("Stopped.".into()),
+        response = request.send() => response
+            .map_err(|err| format!("Could not reach {}: {err}", config.base_url))?,
+    };
+
+    let status = response.status();
+    let payload = response.text().await.unwrap_or_default();
+    Ok((status, payload))
+}
+
+fn tool_params_rejected(status: reqwest::StatusCode, detail: &str) -> bool {
+    matches!(status.as_u16(), 400 | 422) && detail.to_ascii_lowercase().contains("tool")
 }
 
 fn note_fallback(reason: &str) {
@@ -422,47 +427,63 @@ mod tests {
         json!({ "role": "tool", "tool_call_id": id, "content": text })
     }
 
-    /// One-shot OpenAI-compatible endpoint that answers a summary request and
-    /// records its body.
-    fn summary_server() -> (String, Arc<StdMutex<String>>, thread::JoinHandle<()>) {
+    const SUMMARY_BODY: &str =
+        r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
+
+    /// OpenAI-compatible endpoint that answers each summary request with the
+    /// next canned response and records every request body.
+    fn summary_server() -> (String, Arc<StdMutex<Vec<String>>>, thread::JoinHandle<()>) {
+        summary_server_with(vec![(200, SUMMARY_BODY)])
+    }
+
+    fn summary_server_with(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, Arc<StdMutex<Vec<String>>>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let seen = Arc::new(StdMutex::new(String::new()));
+        let seen = Arc::new(StdMutex::new(Vec::new()));
         let seen_by_server = seen.clone();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut raw = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let read = stream.read(&mut buffer).unwrap();
-                if read == 0 {
-                    break;
-                }
-                raw.extend_from_slice(&buffer[..read]);
-                if let Some(head) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&raw[..head]).to_ascii_lowercase();
-                    let length = headers
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length: "))
-                        .and_then(|value| value.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if raw.len() >= head + 4 + length {
-                        let body = String::from_utf8_lossy(&raw[head + 4..head + 4 + length]);
-                        *seen_by_server.lock().unwrap() = body.to_string();
+            for (status, response_body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut raw = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
                         break;
                     }
+                    raw.extend_from_slice(&buffer[..read]);
+                    if let Some(head) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&raw[..head]).to_ascii_lowercase();
+                        let length = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if raw.len() >= head + 4 + length {
+                            let request =
+                                String::from_utf8_lossy(&raw[head + 4..head + 4 + length]);
+                            seen_by_server.lock().unwrap().push(request.to_string());
+                            break;
+                        }
+                    }
                 }
+                let reason = if (200..300).contains(&status) {
+                    "OK"
+                } else {
+                    "Bad Request"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
             }
-            let body = r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
         });
         (format!("http://{address}"), seen, server)
     }
@@ -605,8 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn renders_tool_calls_and_results_for_the_summarizer() {
+    fn summary_messages_replay_tool_history_before_the_directive() {
         let messages = vec![
+            json!({ "role": "system", "content": "" }),
             json!({
                 "role": "assistant",
                 "content": "",
@@ -618,10 +640,28 @@ mod tests {
             }),
             tool("call_1", "file body"),
         ];
-        let text = render(&messages);
-        assert!(text.contains("read_file"));
-        assert!(text.contains("{\"path\":\"a\"}"));
-        assert!(text.contains("file body"));
+        let replayed = summary_messages(&messages);
+        assert_eq!(replayed.len(), 3);
+        assert_eq!(
+            replayed[0]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        assert_eq!(replayed[1]["content"], "file body");
+        assert_eq!(replayed[2]["role"], "user");
+        assert!(
+            replayed[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("checkpoint")
+        );
+    }
+
+    #[test]
+    fn summary_uses_the_main_model_unless_overridden() {
+        let mut config = AppConfig::default();
+        assert_eq!(summary_model(&config), config.model.as_str());
+        config.summary_model = "cheap-model".into();
+        assert_eq!(summary_model(&config), "cheap-model");
     }
 
     #[tokio::test]
@@ -644,8 +684,9 @@ mod tests {
         };
         let (_handle, cancel) = CancelHandle::new();
         let client = reqwest::Client::new();
+        let tools = ToolRegistry::new();
 
-        let next = compact(&client, &config, &messages, &cancel)
+        let next = compact(&client, &config, &messages, &tools, &cancel)
             .await
             .unwrap()
             .expect("compaction should apply");
@@ -660,9 +701,72 @@ mod tests {
         }));
         assert_eq!(next.last().unwrap(), &last);
 
-        let request = seen.lock().unwrap();
-        assert!(request.contains("Conversation to compress"));
-        assert!(request.contains("request 0"));
+        let seen = seen.lock().unwrap();
+        let body: Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(body["model"], config.model);
+        assert_eq!(body["tool_choice"], "none");
+        assert!(
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "read_file")
+        );
+        let replayed = body["messages"].as_array().unwrap();
+        assert_eq!(replayed[0]["content"], "You are Oaklet.");
+        assert_eq!(replayed.last().unwrap()["role"], "user");
+        assert!(
+            replayed.last().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("at most 800 words")
+        );
+        assert!(replayed.iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("request 0"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn retries_without_tools_when_a_provider_rejects_tool_choice() {
+        use crate::tools::CancelHandle;
+
+        let (base_url, seen, server) = summary_server_with(vec![
+            (
+                400,
+                r#"{"error":{"message":"unsupported parameter: tool_choice"}}"#,
+            ),
+            (200, SUMMARY_BODY),
+        ]);
+        let mut messages = vec![system()];
+        for step in 0..30 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        let config = AppConfig {
+            base_url,
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let tools = ToolRegistry::new();
+
+        compact(&reqwest::Client::new(), &config, &messages, &tools, &cancel)
+            .await
+            .unwrap()
+            .expect("compaction should apply");
+
+        server.join().unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let first: Value = serde_json::from_str(&seen[0]).unwrap();
+        let second: Value = serde_json::from_str(&seen[1]).unwrap();
+        assert_eq!(first["tool_choice"], "none");
+        assert!(first.get("tools").is_some());
+        assert!(second.get("tools").is_none());
+        assert!(second.get("tool_choice").is_none());
+        assert_eq!(second["messages"], first["messages"]);
     }
 
     #[tokio::test]

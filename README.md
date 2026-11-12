@@ -95,6 +95,7 @@ Open **Settings** in the sidebar. Changes apply to the next run.
 | API key        | none                                       |
 | Base URL       | `https://api.deepseek.com`                 |
 | Model          | `deepseek-flash`                           |
+| Summary model  | same as Model                              |
 | Context window | `262144` tokens                            |
 | Search URL     | `https://api.deepseek.com/v1/tools/search` |
 | MCP servers    | none                                       |
