@@ -39,7 +39,7 @@ const FORCE_TOOL_OUTPUT_CHARS: usize = 2_000;
 const FORCE_TOOL_OUTPUT_HEAD_CHARS: usize = 1_400;
 const FORCE_TOOL_OUTPUT_TAIL_CHARS: usize = 400;
 const FORCE_TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output trimmed for context recovery; \
-     re-read the file or re-run the command if the middle matters ...]\n\n";
+     read the archived original with history_read if the middle matters ...]\n\n";
 
 /// Overflow recovery keeps only a small recent tail. The summary carries the
 /// rest, and the current request is never cut. Normal compaction retains about
@@ -741,6 +741,7 @@ mod tests {
 
         assert!(text.chars().count() <= FORCE_TOOL_OUTPUT_CHARS);
         assert!(text.contains(FORCE_TOOL_OUTPUT_MARKER));
+        assert!(text.contains("history_read"));
         assert!(text.starts_with('x') && text.ends_with('x'));
         assert_eq!(replaced.into_iter().collect::<Vec<_>>(), vec![2]);
         assert_eq!(messages[2]["content"].as_str().unwrap(), original);
