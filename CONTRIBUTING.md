@@ -117,6 +117,13 @@ the final session view. The UI is a render cache: it never stores conversation
 state or executes files or commands itself. Open tabs, drafts, and the active
 tab are client UI state.
 
+`packages/core/src/agent.rs` is the turn coordinator: it owns the request/tool
+loop, context preflight, and tool-batch sequencing. Its private submodules each
+own one responsibility: `agent/model.rs` performs a single streamed completion
+and classifies provider errors, `agent/messages.rs` builds the system prompt and
+model-history JSON, and `agent/approval.rs` adapts tool approvals to Tauri's
+pending-request state.
+
 ### Session storage
 
 Conversations live in `oaklet.db` in the app data directory (`0600` on Unix)
