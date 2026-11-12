@@ -171,6 +171,38 @@
   font-size: 10.5px;
 }
 
+.settings-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: -2px 0 14px;
+}
+
+.settings-test button {
+  flex: none;
+}
+
+.settings-test-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-test-status.ok {
+  color: var(--green);
+}
+
+.settings-test-status.error {
+  color: var(--red);
+}
+
 .mcp-heading {
   display: flex;
   align-items: center;

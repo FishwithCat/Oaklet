@@ -2,6 +2,7 @@ mod agent;
 mod architecture;
 mod chat;
 mod compaction;
+mod connection;
 mod context;
 mod files;
 mod git;
@@ -715,6 +716,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_config,
             save_config,
+            connection::test_connection,
             chat::session_create,
             chat::session_list,
             chat::session_get,

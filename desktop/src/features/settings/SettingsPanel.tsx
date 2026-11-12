@@ -23,6 +23,16 @@ type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
 };
 
+type ConnectionTest = {
+  model: string;
+  latencyMs: number;
+};
+
+type TestStatus = {
+  ok: boolean;
+  text: string;
+};
+
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "model", label: "Model" },
   { id: "commands", label: "Commands" },
@@ -51,6 +61,9 @@ export function SettingsPanel({
   const [tab, setTab] = useState<SettingsTab>("model");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
+  const testRequest = useRef(0);
   const mcpParse = useMemo(
     () => parseMcpConfig(draft.mcpText),
     [draft.mcpText],
@@ -68,6 +81,12 @@ export function SettingsPanel({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  useEffect(() => {
+    testRequest.current += 1;
+    setTesting(false);
+    setTestStatus(null);
+  }, [draft.baseUrl, draft.apiKey, draft.model]);
 
   function onTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
     const index = TABS.findIndex((item) => item.id === tab);
@@ -109,6 +128,29 @@ export function SettingsPanel({
     } catch (err) {
       setError(errorText(err));
       setSaving(false);
+    }
+  }
+
+  async function testConnection() {
+    const request = ++testRequest.current;
+    setTesting(true);
+    setTestStatus(null);
+    try {
+      const result = await invoke<ConnectionTest>("test_connection", {
+        baseUrl: draft.baseUrl,
+        apiKey: draft.apiKey,
+        model: draft.model,
+      });
+      if (request !== testRequest.current) return;
+      setTestStatus({
+        ok: true,
+        text: `Connected. ${result.model} replied in ${result.latencyMs} ms.`,
+      });
+    } catch (err) {
+      if (request !== testRequest.current) return;
+      setTestStatus({ ok: false, text: errorText(err) });
+    } finally {
+      if (request === testRequest.current) setTesting(false);
     }
   }
 
@@ -232,6 +274,33 @@ export function SettingsPanel({
                       }))
                     }
                   />
+                </div>
+
+                <div className="settings-test">
+                  {testStatus && (
+                    <p
+                      className={`settings-test-status${
+                        testStatus.ok ? " ok" : " error"
+                      }`}
+                      role={testStatus.ok ? "status" : "alert"}
+                    >
+                      {testStatus.text}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={testConnection}
+                    aria-label="Test connection"
+                    disabled={
+                      testing ||
+                      saving ||
+                      !draft.baseUrl.trim() ||
+                      !draft.model.trim()
+                    }
+                  >
+                    {testing ? "Testing..." : "Test"}
+                  </button>
                 </div>
 
                 <div className="field">
