@@ -5,6 +5,8 @@ mod model;
 use std::path::Path;
 use std::time::Duration;
 
+use futures_util::future::BoxFuture;
+use futures_util::{Stream, StreamExt};
 use serde_json::{Value, json};
 
 use crate::AppConfig;
@@ -12,11 +14,15 @@ use crate::chat::RunContext;
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
 use crate::repeat::RepeatGuard;
-use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace};
+use crate::tools::{Cancel, ToolContext, ToolOutcome, ToolRegistry, Workspace};
 
 use approval::TauriApprover;
 use messages::{assistant_message, initial_messages, strip_system, tool_message};
 use model::stream_step;
+
+/// Read-only calls in one batch that may run at once. Bounded so a large
+/// exploration batch cannot exhaust file descriptors.
+const MAX_PARALLEL_READS: usize = 10;
 
 #[derive(Default)]
 struct ToolCall {
@@ -200,12 +206,81 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // message never splits the tool results answering one assistant turn.
         let mut reminders = Vec::new();
 
-        for call in &calls {
+        let mut index = 0;
+        while index < calls.len() {
             if cancel.is_cancelled() {
                 ctx.finish_stopped(messages[1..].to_vec()).await;
                 return;
             }
 
+            // Consecutive read-only calls overlap; anything else is a barrier.
+            if tools.is_concurrency_safe(&calls[index].name) {
+                let start = index;
+                while index < calls.len() && tools.is_concurrency_safe(&calls[index].name) {
+                    index += 1;
+                }
+                let group = &calls[start..index];
+                let mut prepared = Vec::with_capacity(group.len());
+                for call in group {
+                    let args = parse_args(&call.arguments);
+                    let summary = match &args {
+                        Ok(args) => tools.summary(&call.name, args),
+                        Err(_) => String::new(),
+                    };
+                    ctx.tool_start(&call.id, &call.name, &summary);
+                    let reminder = match &args {
+                        Ok(args) => guard.observe(&call.name, args),
+                        Err(_) => guard.observe(&call.name, &Value::String(call.arguments.clone())),
+                    };
+                    if let Some(reminder) = reminder {
+                        reminders.push(reminder);
+                    }
+                    prepared.push(args);
+                }
+
+                let executions: Vec<BoxFuture<'_, (&ToolCall, ToolOutcome)>> = group
+                    .iter()
+                    .zip(prepared)
+                    .map(|(call, args)| {
+                        let ctx = &ctx;
+                        let tools = &tools;
+                        let tool_context = &tool_context;
+                        let cancel = &cancel;
+                        Box::pin(async move {
+                            let outcome = match args {
+                                Err(message) => ToolOutcome::failure(message),
+                                Ok(args) => {
+                                    let approver = TauriApprover {
+                                        ctx,
+                                        call_id: &call.id,
+                                        workspace: tool_context.workspace.root(),
+                                        cancel,
+                                    };
+                                    tools
+                                        .execute(
+                                            tool_context,
+                                            &approver,
+                                            &call.name,
+                                            &call.id,
+                                            args,
+                                        )
+                                        .await
+                                }
+                            };
+                            (call, outcome)
+                        }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>
+                    })
+                    .collect();
+                let mut outcomes = read_group(executions);
+                while let Some((call, outcome)) = outcomes.next().await {
+                    ctx.tool_result(&call.id, outcome.ok, &outcome.output);
+                    messages.push(tool_message(&call.id, outcome.output));
+                }
+                continue;
+            }
+
+            let call = &calls[index];
+            index += 1;
             let args = match parse_args(&call.arguments) {
                 Ok(args) => args,
                 Err(message) => {
@@ -249,6 +324,17 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             messages.push(json!({ "role": "user", "content": reminder }));
         }
     }
+}
+
+/// Run one consecutive group of read-only calls concurrently.
+///
+/// `buffered` keeps at most [`MAX_PARALLEL_READS`] bodies in flight and yields
+/// their outcomes in model order, so a later read that finishes first still
+/// lands after the earlier tool result in the transcript.
+fn read_group<'a>(
+    executions: Vec<BoxFuture<'a, (&'a ToolCall, ToolOutcome)>>,
+) -> impl Stream<Item = (&'a ToolCall, ToolOutcome)> + 'a {
+    futures_util::stream::iter(executions).buffered(MAX_PARALLEL_READS)
 }
 
 /// Print context pressure while developing; release builds stay quiet.
@@ -407,5 +493,59 @@ mod tests {
         assert_eq!(parse_args("").unwrap(), json!({}));
         assert!(parse_args("not json").is_err());
         assert!(parse_args("[1,2]").is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_reads_overlap_and_keep_model_order() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let calls = [
+            ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: String::new(),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "read_file".into(),
+                arguments: String::new(),
+            },
+        ];
+        let executions: Vec<BoxFuture<'_, (&ToolCall, ToolOutcome)>> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let active = active.clone();
+                let peak = peak.clone();
+                Box::pin(async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // The first read is slower, so ordering cannot come from
+                    // completion order.
+                    tokio::time::sleep(Duration::from_millis(if index == 0 { 50 } else { 1 }))
+                        .await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    (call, ToolOutcome::success(format!("read {index}")))
+                }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>
+            })
+            .collect();
+
+        let mut outcomes = read_group(executions);
+        let mut results = Vec::new();
+        while let Some(outcome) = outcomes.next().await {
+            results.push(outcome);
+        }
+
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        let ids: Vec<&str> = results.iter().map(|(call, _)| call.id.as_str()).collect();
+        assert_eq!(ids, ["c1", "c2"]);
+        let labels: Vec<&str> = results
+            .iter()
+            .map(|(_, outcome)| outcome.output.as_str())
+            .collect();
+        assert_eq!(labels, ["read 0", "read 1"]);
     }
 }

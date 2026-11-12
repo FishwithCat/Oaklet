@@ -2,7 +2,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, ToolContext, ToolError, parse_args};
+use super::{Tool, ToolContext, ToolError, Workspace, parse_args};
 
 const DEFAULT_READ_LINES: usize = 400;
 const MAX_LIST_ENTRIES: usize = 500;
@@ -47,12 +47,22 @@ impl Tool for ReadFile {
         path_arg(args)
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn execute<'a>(
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { read_file(ctx, args) })
+        let workspace = ctx.workspace.clone();
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || read_file(&workspace, args)).await {
+                Ok(result) => result,
+                Err(error) => Err(ToolError::Failed(format!("Read task failed: {error}"))),
+            }
+        })
     }
 }
 
@@ -64,9 +74,9 @@ struct ReadFileArgs {
     limit: Option<usize>,
 }
 
-fn read_file(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+fn read_file(workspace: &Workspace, args: Value) -> Result<String, ToolError> {
     let args: ReadFileArgs = parse_args(args)?;
-    let path = ctx.workspace.resolve(&args.path)?;
+    let path = workspace.resolve(&args.path)?;
     let meta = std::fs::metadata(&path).map_err(|error| format!("Cannot read file: {error}"))?;
     if meta.is_dir() {
         return Err(ToolError::Failed(
@@ -302,12 +312,22 @@ impl Tool for ListDir {
         if path.is_empty() { ".".into() } else { path }
     }
 
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn execute<'a>(
         &'a self,
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<String, ToolError>> {
-        Box::pin(async move { list_dir(ctx, args) })
+        let workspace = ctx.workspace.clone();
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || list_dir(&workspace, args)).await {
+                Ok(result) => result,
+                Err(error) => Err(ToolError::Failed(format!("List task failed: {error}"))),
+            }
+        })
     }
 }
 
@@ -317,9 +337,9 @@ struct ListDirArgs {
     path: Option<String>,
 }
 
-fn list_dir(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+fn list_dir(workspace: &Workspace, args: Value) -> Result<String, ToolError> {
     let args: ListDirArgs = parse_args(args)?;
-    let path = ctx.workspace.resolve(args.path.as_deref().unwrap_or("."))?;
+    let path = workspace.resolve(args.path.as_deref().unwrap_or("."))?;
     if !path.is_dir() {
         return Err(ToolError::Failed("That path is not a directory.".into()));
     }
@@ -367,7 +387,7 @@ mod tests {
         );
 
         let page = read_file(
-            &ctx,
+            &ctx.workspace,
             json!({ "path": "src/hello.txt", "offset": 2, "limit": 1 }),
         )
         .unwrap();
@@ -425,7 +445,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("notes.txt"), "hi").unwrap();
 
-        let output = list_dir(&ctx, json!({})).unwrap();
+        let output = list_dir(&ctx.workspace, json!({})).unwrap();
         assert!(output.contains("src/"));
         assert!(output.contains("notes.txt"));
         std::fs::remove_dir_all(&root).ok();
@@ -434,9 +454,9 @@ mod tests {
     #[test]
     fn rejects_unknown_and_missing_arguments() {
         let (ctx, root, _handle) = context("args");
-        let unknown = read_file(&ctx, json!({ "path": "x", "nope": 1 })).unwrap_err();
+        let unknown = read_file(&ctx.workspace, json!({ "path": "x", "nope": 1 })).unwrap_err();
         assert!(unknown.to_string().contains("unknown field"));
-        let missing = read_file(&ctx, json!({})).unwrap_err();
+        let missing = read_file(&ctx.workspace, json!({})).unwrap_err();
         assert!(missing.to_string().contains("missing field"));
         std::fs::remove_dir_all(&root).ok();
     }

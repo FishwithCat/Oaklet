@@ -95,6 +95,12 @@ pub trait Tool: Send + Sync {
     fn approval(&self, _args: &Value) -> Option<ApprovalRequest> {
         None
     }
+    /// Whether this call may overlap with sibling read-only calls. The agent
+    /// only groups runs of exact `true`; everything else is a barrier. Opt in
+    /// only when the body neither writes nor asks for approval.
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
     /// Cooperative deadline enforced by the pipeline.
     fn timeout(&self) -> Option<Duration> {
         None
@@ -375,6 +381,13 @@ impl ToolRegistry {
         self.get(name)
             .map(|tool| tool.summary(args))
             .unwrap_or_default()
+    }
+
+    /// Whether a tool may join a concurrent read group. Unknown and undeclared
+    /// tools stay exclusive.
+    pub fn is_concurrency_safe(&self, name: &str) -> bool {
+        self.get(name)
+            .is_some_and(|tool| tool.is_concurrency_safe())
     }
 
     /// Look up, ask, run under a deadline, and normalize one call.
@@ -812,6 +825,22 @@ mod tests {
                 "run_command"
             ]
         );
+    }
+
+    #[test]
+    fn only_read_only_tools_are_concurrency_safe() {
+        let registry = ToolRegistry::new();
+        assert!(registry.is_concurrency_safe("read_file"));
+        assert!(registry.is_concurrency_safe("list_dir"));
+        for name in [
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "run_command",
+            "nope",
+        ] {
+            assert!(!registry.is_concurrency_safe(name), "{name}");
+        }
     }
 
     #[test]
