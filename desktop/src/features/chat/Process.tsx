@@ -7,6 +7,7 @@ import {
   Pencil2Regular,
   PencilRegular,
   SandglassRegular,
+  SearchAIRegular,
   Sparkles3Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
@@ -34,6 +35,7 @@ const CATEGORY_ICONS: Record<ToolCategory, ReactNode> = {
   write: <PencilRegular size={14} />,
   edit: <Pencil2Regular size={14} />,
   command: <TerminalBoxRegular size={14} />,
+  web: <SearchAIRegular size={14} />,
   tools: <Sparkles3Regular size={14} />,
 };
 

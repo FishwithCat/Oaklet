@@ -38,7 +38,7 @@ export type ToolItem = {
 
 export type ProcessItem = ReasoningItem | ToolItem;
 
-export type ToolCategory = "read" | "write" | "edit" | "command" | "tools";
+export type ToolCategory = "read" | "write" | "edit" | "command" | "web" | "tools";
 
 const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   read_file: "read",
@@ -53,7 +53,8 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   job_list: "read",
   job_output: "read",
   job_kill: "command",
-  web_fetch: "tools",
+  web_search: "web",
+  web_fetch: "web",
 };
 
 const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> = {
@@ -61,6 +62,7 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
   write: { running: "Writing files", done: "Wrote files" },
   edit: { running: "Editing files", done: "Edited files" },
   command: { running: "Running commands", done: "Ran commands" },
+  web: { running: "Searching the web", done: "Searched the web" },
   tools: { running: "Calling tools", done: "Called tools" },
 };
 
