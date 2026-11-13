@@ -13,11 +13,14 @@ use crate::AppConfig;
 use crate::chat::RunContext;
 use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
+use crate::instructions::WorkspaceInstructions;
 use crate::repeat::RepeatGuard;
 use crate::tools::{Cancel, ToolContext, ToolImage, ToolOutcome, ToolRegistry, Workspace};
 
 use approval::TauriApprover;
-use messages::{assistant_message, image_message, initial_messages, strip_system, tool_message};
+use messages::{
+    assistant_message, image_message, initial_messages, strip_system, system_prompt, tool_message,
+};
 use model::stream_step;
 
 /// Read-only calls in one batch that may run at once. Bounded so a large
@@ -58,6 +61,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             return;
         }
     };
+    let mut instructions = WorkspaceInstructions::load(workspace.root());
     let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config).await;
     ensure_history_tool(&mut tools, &ctx);
     let tool_context = ToolContext {
@@ -76,7 +80,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         .unwrap_or_default()
     };
 
-    let mut messages = initial_messages(&config, &tools, &model_sources, input);
+    let mut messages = initial_messages(
+        &config,
+        &tools,
+        &model_sources,
+        instructions.render().as_deref(),
+        input,
+    );
     let mut meter = Meter::default();
     let mut guard = RepeatGuard::new();
     // A forced compaction already shrank the prompt for the retry, so do not
@@ -215,6 +225,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // message never splits the tool results answering one assistant turn.
         let mut reminders = Vec::new();
         let mut tool_images: Vec<ToolImage> = Vec::new();
+        let mut instruction_touches = Vec::new();
 
         let mut index = 0;
         while index < calls.len() {
@@ -249,13 +260,21 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                     if let Some(reminder) = reminder {
                         reminders.push(reminder);
                     }
-                    prepared.push(args);
+                    let touched = match &args {
+                        Ok(args) => {
+                            touched_instruction_path(&tool_context.workspace, &call.name, args)
+                        }
+                        Err(_) => None,
+                    };
+                    prepared.push((args, touched));
                 }
 
-                let executions: Vec<BoxFuture<'_, (&ToolCall, ToolOutcome)>> = group
+                let executions: Vec<
+                    BoxFuture<'_, (&ToolCall, ToolOutcome, Option<std::path::PathBuf>)>,
+                > = group
                     .iter()
                     .zip(prepared)
-                    .map(|(call, args)| {
+                    .map(|(call, (args, touched))| {
                         let ctx = &ctx;
                         let tools = &tools;
                         let tool_context = &tool_context;
@@ -281,13 +300,19 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                                         .await
                                 }
                             };
-                            (call, outcome)
-                        }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>
+                            (call, outcome, touched)
+                        })
+                            as BoxFuture<'_, (&ToolCall, ToolOutcome, Option<std::path::PathBuf>)>
                     })
                     .collect();
                 let mut outcomes = read_group(executions);
-                while let Some((call, outcome)) = outcomes.next().await {
+                while let Some((call, outcome, touched)) = outcomes.next().await {
                     ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
+                    if outcome.ok
+                        && let Some(touched) = touched
+                    {
+                        instruction_touches.push(touched);
+                    }
                     messages.push(tool_message(&call.id, outcome.output));
                     tool_images.extend(outcome.images);
                 }
@@ -324,10 +349,16 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             if let Some(reminder) = guard.observe(&call.name, &args) {
                 reminders.push(reminder);
             }
+            let touched = touched_instruction_path(&tool_context.workspace, &call.name, &args);
             let outcome = tools
                 .execute(&tool_context, &approver, &call.name, &call.id, args)
                 .await;
             ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
+            if outcome.ok
+                && let Some(touched) = touched
+            {
+                instruction_touches.push(touched);
+            }
             messages.push(tool_message(&call.id, outcome.output));
             tool_images.extend(outcome.images);
 
@@ -335,6 +366,25 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 ctx.finish_stopped(messages[1..].to_vec()).await;
                 return;
             }
+        }
+
+        // Newly reached directories join the existing system prompt instead of
+        // becoming a history message, so a later run starts from disk again
+        // rather than replaying stale instructions.
+        let mut loaded_nested = false;
+        for path in instruction_touches {
+            loaded_nested |= instructions.touch(tool_context.workspace.root(), &path);
+        }
+        if loaded_nested {
+            messages[0] = json!({
+                "role": "system",
+                "content": system_prompt(
+                    &config,
+                    &tools,
+                    &model_sources,
+                    instructions.render().as_deref(),
+                ),
+            });
         }
 
         // A tool result cannot carry an image part on every OpenAI-compatible
@@ -360,9 +410,24 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
 /// their outcomes in model order, so a later read that finishes first still
 /// lands after the earlier tool result in the transcript.
 fn read_group<'a>(
-    executions: Vec<BoxFuture<'a, (&'a ToolCall, ToolOutcome)>>,
-) -> impl Stream<Item = (&'a ToolCall, ToolOutcome)> + 'a {
+    executions: Vec<BoxFuture<'a, (&'a ToolCall, ToolOutcome, Option<std::path::PathBuf>)>>,
+) -> impl Stream<Item = (&'a ToolCall, ToolOutcome, Option<std::path::PathBuf>)> + 'a {
     futures_util::stream::iter(executions).buffered(MAX_PARALLEL_READS)
+}
+
+/// File paths that can reveal instructions in a directory the run has not
+/// scanned yet. `apply_patch` is omitted; it parses several paths from one
+/// patch, and a read in the same directory usually precedes it.
+fn touched_instruction_path(
+    workspace: &Workspace,
+    tool: &str,
+    args: &Value,
+) -> Option<std::path::PathBuf> {
+    if !matches!(tool, "read_file" | "write_file" | "edit_file") {
+        return None;
+    }
+    let path = args.get("path").and_then(Value::as_str)?;
+    workspace.resolve(path).ok()
 }
 
 /// Print context pressure while developing; release builds stay quiet.
@@ -545,32 +610,35 @@ mod tests {
                 arguments: String::new(),
             },
         ];
-        let executions: Vec<BoxFuture<'_, (&ToolCall, ToolOutcome)>> = calls
-            .iter()
-            .enumerate()
-            .map(|(index, call)| {
-                let active = active.clone();
-                let peak = peak.clone();
-                Box::pin(async move {
-                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    peak.fetch_max(now, Ordering::SeqCst);
-                    // The first read is slower, so ordering cannot come from
-                    // completion order.
-                    tokio::time::sleep(Duration::from_millis(if index == 0 { 50 } else { 1 }))
-                        .await;
-                    active.fetch_sub(1, Ordering::SeqCst);
-                    (
-                        call,
-                        ToolOutcome {
-                            ok: true,
-                            output: format!("read {index}"),
-                            images: Vec::new(),
-                            diffs: Vec::new(),
-                        },
-                    )
-                }) as BoxFuture<'_, (&ToolCall, ToolOutcome)>
-            })
-            .collect();
+        let executions: Vec<BoxFuture<'_, (&ToolCall, ToolOutcome, Option<std::path::PathBuf>)>> =
+            calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    let active = active.clone();
+                    let peak = peak.clone();
+                    Box::pin(async move {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        // The first read is slower, so ordering cannot come from
+                        // completion order.
+                        tokio::time::sleep(Duration::from_millis(if index == 0 { 50 } else { 1 }))
+                            .await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        (
+                            call,
+                            ToolOutcome {
+                                ok: true,
+                                output: format!("read {index}"),
+                                images: Vec::new(),
+                                diffs: Vec::new(),
+                            },
+                            None,
+                        )
+                    })
+                        as BoxFuture<'_, (&ToolCall, ToolOutcome, Option<std::path::PathBuf>)>
+                })
+                .collect();
 
         let mut outcomes = read_group(executions);
         let mut results = Vec::new();
@@ -579,11 +647,14 @@ mod tests {
         }
 
         assert_eq!(peak.load(Ordering::SeqCst), 2);
-        let ids: Vec<&str> = results.iter().map(|(call, _)| call.id.as_str()).collect();
+        let ids: Vec<&str> = results
+            .iter()
+            .map(|(call, _, _)| call.id.as_str())
+            .collect();
         assert_eq!(ids, ["c1", "c2"]);
         let labels: Vec<&str> = results
             .iter()
-            .map(|(_, outcome)| outcome.output.as_str())
+            .map(|(_, outcome, _)| outcome.output.as_str())
             .collect();
         assert_eq!(labels, ["read 0", "read 1"]);
     }

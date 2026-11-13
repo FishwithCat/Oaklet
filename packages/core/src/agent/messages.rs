@@ -22,12 +22,13 @@ pub(super) fn initial_messages(
     config: &AppConfig,
     tools: &ToolRegistry,
     model_sources: &[String],
+    instructions: Option<&str>,
     input: Vec<Value>,
 ) -> Vec<Value> {
     let mut messages = Vec::with_capacity(input.len() + 1);
     messages.push(json!({
         "role": "system",
-        "content": system_prompt(config, tools, model_sources)
+        "content": system_prompt(config, tools, model_sources, instructions)
     }));
     messages.extend(
         input
@@ -90,7 +91,12 @@ pub(super) fn image_message(images: &[ToolImage]) -> Value {
     json!({ "role": "user", "content": parts })
 }
 
-fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[String]) -> String {
+pub(super) fn system_prompt(
+    config: &AppConfig,
+    tools: &ToolRegistry,
+    model_sources: &[String],
+    instructions: Option<&str>,
+) -> String {
     let mut rules: Vec<String> = vec![
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
         "Paths are relative to the workspace; absolute paths inside it also work. Shell commands start in the workspace root, so never prefix them with cd <workspace>.".into(),
@@ -115,7 +121,7 @@ fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[Stri
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
 
-    format!(
+    let mut prompt = format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
          inspect and change the project in their workspace.\n\n\
          Workspace: {workspace}\nPlatform: {platform}\n\n\
@@ -123,7 +129,12 @@ fn system_prompt(config: &AppConfig, tools: &ToolRegistry, model_sources: &[Stri
         workspace = config.workspace,
         platform = std::env::consts::OS,
         rules = rules.join("\n- "),
-    )
+    );
+    if let Some(instructions) = instructions {
+        prompt.push_str("\n\nWorkspace instructions:\n\n");
+        prompt.push_str(instructions);
+    }
+    prompt
 }
 
 #[cfg(test)]
@@ -138,6 +149,7 @@ mod tests {
             &config,
             &tools,
             &[],
+            None,
             vec![
                 json!({ "role": "system", "content": "stale prompt" }),
                 json!({ "role": "user", "content": "hi" }),
@@ -151,7 +163,7 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("Commands may need approval"));
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
@@ -172,7 +184,7 @@ mod tests {
         let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
         let mut tools = ToolRegistry::new();
         tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[]);
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
 
         assert!(prompt.contains("Available skills"));
         assert!(prompt.contains("`review`: Review a change."));
@@ -180,14 +192,31 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_includes_workspace_instructions() {
+        let config = AppConfig::default();
+        let tools = ToolRegistry::new();
+        let prompt = system_prompt(
+            &config,
+            &tools,
+            &[],
+            Some("Instructions from: AGENTS.md\n\nroot rules"),
+        );
+        assert!(prompt.contains("Workspace instructions:"));
+        assert!(prompt.contains("root rules"));
+
+        let prompt = system_prompt(&config, &tools, &[], None);
+        assert!(!prompt.contains("Workspace instructions:"));
+    }
+
+    #[test]
     fn system_prompt_requests_architecture_updates_when_models_exist() {
         let sources = vec!["architecture/model.c4".to_string()];
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources);
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources, None);
         assert!(prompt.contains("architecture/model.c4"));
         assert!(prompt.contains("After you finish code changes"));
         assert!(prompt.contains("update the affected model"));
 
-        let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[]);
+        let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(!without_sources.contains("LikeC4 architecture sources"));
     }
 

@@ -6,6 +6,7 @@ mod connection;
 mod context;
 mod files;
 mod git;
+mod instructions;
 mod repeat;
 mod spill;
 mod store;
