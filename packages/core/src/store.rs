@@ -14,45 +14,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const SCHEMA_VERSION: i64 = 5;
+mod migrations;
 
 /// Events in one UI window. The model surface never uses this page size.
 pub const PAGE_EVENTS: usize = 200;
 
 const SESSION_COLUMNS: &str = "id, workspace, title, turns, created_at, updated_at, \
      context_used, context_window";
-
-const SCHEMA: &str = "\
-CREATE TABLE IF NOT EXISTS sessions (
-  id             TEXT PRIMARY KEY,
-  workspace      TEXT NOT NULL,
-  title          TEXT NOT NULL DEFAULT '',
-  turns          INTEGER NOT NULL DEFAULT 0,
-  created_at     INTEGER NOT NULL,
-  updated_at     INTEGER NOT NULL,
-  context_used   INTEGER,
-  context_window INTEGER
-);
-CREATE INDEX IF NOT EXISTS sessions_by_workspace ON sessions(workspace, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS session_events (
-  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  seq        INTEGER NOT NULL,
-  payload    TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (session_id, seq)
-);
-
-CREATE TABLE IF NOT EXISTS runs (
-  id          TEXT PRIMARY KEY,
-  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  status      TEXT NOT NULL,
-  started_at  INTEGER NOT NULL,
-  finished_at INTEGER,
-  error       TEXT
-);
-CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id, started_at DESC);
-";
 
 /// One append-only transcript entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -527,7 +495,7 @@ impl Store {
         let conn = Connection::open(path)
             .map_err(|error| format!("Could not open the session database: {error}"))?;
         configure(&conn)?;
-        migrate(&conn)?;
+        migrations::migrate(&conn)?;
         restrict_permissions(path);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -539,7 +507,7 @@ impl Store {
         let conn = Connection::open_in_memory()
             .map_err(|error| format!("Could not open the test database: {error}"))?;
         configure(&conn)?;
-        migrate(&conn)?;
+        migrations::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -954,41 +922,6 @@ fn configure(conn: &Connection) -> Result<(), String> {
         "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
     )
     .map_err(|error| format!("Could not configure the session database: {error}"))
-}
-
-fn migrate(conn: &Connection) -> Result<(), String> {
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|error| format!("Could not read the session database version: {error}"))?;
-    if version > SCHEMA_VERSION {
-        return Err(
-            "This Oaklet data was created by a newer version. Update Oaklet to open it.".into(),
-        );
-    }
-    if version == SCHEMA_VERSION && has_table(conn, "session_events")? {
-        return Ok(());
-    }
-
-    // v5 is a deliberate reset: unreleased history is discarded and the new
-    // event log starts empty.
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|error| format!("Could not prepare the session database: {error}"))?;
-    tx.execute_batch(
-        "DROP TABLE IF EXISTS session_history;
-         DROP TABLE IF EXISTS session_messages;
-         DROP TABLE IF EXISTS session_events;
-         DROP TABLE IF EXISTS runs;
-         DROP TABLE IF EXISTS sessions;",
-    )
-    .map_err(|error| format!("Could not reset the session database: {error}"))?;
-    tx.execute_batch(SCHEMA)
-        .map_err(|error| format!("Could not create the session tables: {error}"))?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(|error| format!("Could not version the session database: {error}"))?;
-    tx.commit()
-        .map_err(|error| format!("Could not create the session tables: {error}"))?;
-    Ok(())
 }
 
 fn has_table(conn: &Connection, table: &str) -> Result<bool, String> {
@@ -1447,8 +1380,8 @@ mod tests {
     }
 
     #[test]
-    fn resets_an_old_database_to_v5() {
-        let root = crate::tools::test_support::temp_root("store-reset-v5");
+    fn refuses_a_pre_v0_database_without_resetting() {
+        let root = crate::tools::test_support::temp_root("store-pre-v0");
         let path = root.join("oaklet.db");
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
@@ -1494,15 +1427,21 @@ mod tests {
             .unwrap();
         }
 
-        let store = Store::open(&path).unwrap();
-        assert!(store.get_session("old").unwrap().is_none());
-        let conn = store.connection().unwrap();
-        assert!(has_table(&conn, "session_events").unwrap());
-        assert!(!has_table(&conn, "session_messages").unwrap());
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
+        let error = Store::open(&path).err().expect("must fail");
+        assert!(error.contains("predates"), "{error}");
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let old: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'old'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(old, 1);
+        assert!(has_table(&conn, "session_messages").unwrap());
+        assert!(!has_table(&conn, "schema_migrations").unwrap());
+        drop(conn);
         std::fs::remove_dir_all(&root).ok();
     }
 }
