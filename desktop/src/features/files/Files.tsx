@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { Fragment, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -11,8 +11,7 @@ import {
   Refresh3Regular,
   RightSmallRegular,
 } from "@mingcute/react/core-regular";
-import CodeMirror from "@uiw/react-codemirror";
-import { EditorState, type Extension } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
 import { MarkdownText } from "../../shared/Markdown";
 import { errorText } from "../../shared/error-text";
 import { BranchMenu } from "../source-control/BranchMenu";
@@ -20,6 +19,9 @@ import { useGitBranch } from "../source-control/useGitBranch";
 import { breadcrumbParts, editorText, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
+
+// The editor bundle is heavy; load it when a file is opened, not with the page.
+const FileEditor = lazy(() => import("./FileEditor"));
 
 export type FilesHandle = { canLeave: () => Promise<boolean> };
 type Document = { path: string; original: string; content: string };
@@ -57,7 +59,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const leaveRef = useRef<() => Promise<boolean>>(async () => true);
-  const extensions = useMemo(() => [syntax, EditorState.lineSeparator.of("\n")], [syntax]);
   const {
     branch,
     branches,
@@ -214,13 +215,13 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
               </div>
             </div>
             {preview ? <div className="files-preview"><MarkdownText text={document.content} /></div> :
-              <CodeMirror key={document.path} className="files-editor" value={document.content} height="100%" extensions={extensions}
-                readOnly={busy} editable={!busy} aria-label={`File contents: ${document.path}`}
-                onChange={(_, update) => {
-                  const content = update.state.sliceDoc();
-                  dirtyRef.current = content !== editorText(document.original);
-                  setDocument({ ...document, content });
-                }} />}
+              <Suspense fallback={<div className="files-editor" />}>
+                <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                  onChange={(content) => {
+                    dirtyRef.current = content !== editorText(document.original);
+                    setDocument({ ...document, content });
+                  }} />
+              </Suspense>}
           </> : <div className="files-empty files-placeholder">Select a file to view or edit.</div>}
         </div>
       </div>
