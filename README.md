@@ -242,6 +242,12 @@ to 200,000 characters and reduces HTML to readable text.
 - The agent stores the API key in the app config directory (`0600` on Unix),
   never in the repository.
 
+## Logs
+
+Release builds append key diagnostics (a session that failed to save, stale runs
+recovered at startup) to `oaklet.log` in the platform log directory, for example
+`~/Library/Logs/com.oaklet.desktop/oaklet.log` on macOS.
+
 ## Status
 
 Initial MVP. Open chat tabs and drafts are in memory (a restart clears them;

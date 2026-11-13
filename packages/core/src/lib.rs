@@ -7,6 +7,7 @@ mod context;
 mod files;
 mod git;
 mod instructions;
+mod log;
 mod repeat;
 mod spill;
 mod store;
@@ -696,6 +697,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Ok(log_dir) = app.path().app_log_dir() {
+                log::init(log_dir.join("oaklet.log"));
+            }
             let config_path = app.path().app_config_dir()?.join("config.json");
             let mut config = read_config(&config_path).unwrap_or_default();
             if config.workspace.trim().is_empty() || !Path::new(&config.workspace).is_dir() {

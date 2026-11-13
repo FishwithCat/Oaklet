@@ -217,7 +217,9 @@ impl ChatState {
             &json!({ "role": "notice", "tone": Tone::Error, "text": INTERRUPTED_NOTICE }),
         )?;
         if recovered > 0 {
-            eprintln!("[oaklet] marked {recovered} interrupted run(s)");
+            crate::log::key(format_args!(
+                "[oaklet] marked {recovered} interrupted run(s)"
+            ));
         }
         Ok(Self {
             store,
@@ -1341,7 +1343,9 @@ impl RunContext {
             }));
             match serde_json::to_value(item) {
                 Ok(item) => view.items.push(item),
-                Err(error) => eprintln!("[oaklet] could not record a tool call: {error}"),
+                Err(error) => crate::log::key(format_args!(
+                    "[oaklet] could not record a tool call: {error}"
+                )),
             }
             view.active_run_id = Some(self.run_id.clone());
             refresh_blocked(view);
@@ -1625,7 +1629,7 @@ impl RunContext {
         }
 
         if let Some(save_error) = &save_error {
-            eprintln!("[oaklet] {save_error}");
+            crate::log::key(format_args!("[oaklet] {save_error}"));
         }
 
         match status {
