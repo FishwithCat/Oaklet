@@ -64,8 +64,9 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - The plant in the composer's top-left corner estimates the next request against
   the context window and turns from green to yellow to red. Hover it for the
   percentage and token counts; click it while idle to fold older turns into a
-  checkpoint immediately. Replaced messages are archived, so a compacted chat
-  can page through the originals with `history_read` instead of losing them.
+  checkpoint immediately. Replaced messages stay in the transcript, so a
+  compacted chat can page through the originals with `history_read` instead of
+  losing them.
 
 The agent has `read_file`, `read_image`, `write_file`, `edit_file`,
 `apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,

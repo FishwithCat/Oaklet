@@ -1049,7 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn automatic_summary_failures_keep_a_recallable_mechanical_checkpoint() {
-        use crate::store::{ContextUsage, Store};
+        use crate::store::{ContextUsage, EventPayload, RunEnd, Store};
         use crate::tools::history::HistoryRead;
         use crate::tools::test_support::context;
         use crate::tools::{CancelHandle, Tool};
@@ -1097,14 +1097,35 @@ mod tests {
             let store = Store::in_memory().unwrap();
             store.create_session("s1", "/tmp", 1).unwrap();
             store
+                .finish_run(&RunEnd {
+                    session_id: "s1".into(),
+                    run_id: "seed".into(),
+                    status: "done",
+                    finished_at: 1,
+                    appended: messages[1..]
+                        .iter()
+                        .map(|message| EventPayload::Message {
+                            message: message.clone(),
+                            display: None,
+                        })
+                        .collect(),
+                    compaction: None,
+                    context: None,
+                    error: None,
+                })
+                .unwrap();
+            store
                 .apply_compaction(
                     "s1",
-                    &compacted.messages[1..],
-                    &compacted.replaced,
-                    &json!({"kind": "notice"}),
-                    ContextUsage {
-                        used: estimate_tokens(&compacted.messages),
-                        window: config.context_window,
+                    &crate::store::CompactionRecord {
+                        summary: compacted.messages[1].clone(),
+                        shadowed_through: cut as i64 - 1,
+                        before: estimate_tokens(&messages),
+                        after: estimate_tokens(&compacted.messages),
+                        context: ContextUsage {
+                            used: estimate_tokens(&compacted.messages),
+                            window: config.context_window,
+                        },
                     },
                     2,
                 )

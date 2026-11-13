@@ -260,10 +260,54 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::store::{ContextUsage, Store};
+    use crate::store::{ContextUsage, EventPayload, RunEnd, Store};
     use crate::tools::test_support::context;
 
     use super::{HistoryRead, Tool, render_message};
+
+    fn archive(store: &Store, session: &str, messages: Vec<serde_json::Value>) {
+        let shadowed_through = messages.len() as i64;
+        store
+            .finish_run(&RunEnd {
+                session_id: session.into(),
+                run_id: "r1".into(),
+                status: "done",
+                finished_at: 2,
+                appended: messages
+                    .into_iter()
+                    .map(|message| EventPayload::Message {
+                        message,
+                        display: None,
+                    })
+                    .collect(),
+                compaction: None,
+                context: Some(ContextUsage {
+                    used: 1,
+                    window: 10,
+                }),
+                error: None,
+            })
+            .unwrap();
+        store
+            .apply_compaction(
+                session,
+                &crate::store::CompactionRecord {
+                    summary: json!({
+                        "role": "user",
+                        "content": "<compacted-summary>earlier turns</compacted-summary>",
+                    }),
+                    shadowed_through,
+                    before: 1,
+                    after: 1,
+                    context: ContextUsage {
+                        used: 1,
+                        window: 10,
+                    },
+                },
+                2,
+            )
+            .unwrap();
+    }
 
     #[test]
     fn renders_tool_calls_and_results_verbatim() {
@@ -310,19 +354,11 @@ mod tests {
         let tool = HistoryRead::new(store.clone(), "s1".into(), Arc::new(Mutex::new(Vec::new())));
         assert!(!tool.has_entries());
 
-        store
-            .apply_compaction(
-                "s1",
-                &[json!({ "role": "user", "content": "summary" })],
-                &[json!({ "role": "user", "content": "old" })],
-                &json!({ "kind": "notice" }),
-                ContextUsage {
-                    used: 1,
-                    window: 10,
-                },
-                2,
-            )
-            .unwrap();
+        archive(
+            &store,
+            "s1",
+            vec![json!({ "role": "user", "content": "old" })],
+        );
         assert!(tool.has_entries());
     }
 
@@ -330,22 +366,14 @@ mod tests {
     async fn pages_stored_and_pending_archives() {
         let store = Store::in_memory().unwrap();
         store.create_session("s1", "/tmp", 1).unwrap();
-        store
-            .apply_compaction(
-                "s1",
-                &[json!({ "role": "user", "content": "summary" })],
-                &[
-                    json!({ "role": "user", "content": "old request" }),
-                    json!({ "role": "assistant", "content": "old answer" }),
-                ],
-                &json!({ "kind": "notice" }),
-                ContextUsage {
-                    used: 1,
-                    window: 10,
-                },
-                2,
-            )
-            .unwrap();
+        archive(
+            &store,
+            "s1",
+            vec![
+                json!({ "role": "user", "content": "old request" }),
+                json!({ "role": "assistant", "content": "old answer" }),
+            ],
+        );
 
         let (_ctx, root, _handle) = context("history-tool");
         let tool = HistoryRead::new(
@@ -373,22 +401,14 @@ mod tests {
     async fn executes_with_one_based_paging_arguments() {
         let store = Store::in_memory().unwrap();
         store.create_session("s1", "/tmp", 1).unwrap();
-        store
-            .apply_compaction(
-                "s1",
-                &[json!({ "role": "user", "content": "summary" })],
-                &[
-                    json!({ "role": "user", "content": "first" }),
-                    json!({ "role": "user", "content": "second" }),
-                ],
-                &json!({ "kind": "notice" }),
-                ContextUsage {
-                    used: 1,
-                    window: 10,
-                },
-                2,
-            )
-            .unwrap();
+        archive(
+            &store,
+            "s1",
+            vec![
+                json!({ "role": "user", "content": "first" }),
+                json!({ "role": "assistant", "content": "second" }),
+            ],
+        );
 
         let (ctx, root, _handle) = context("history-tool-args");
         let tool = HistoryRead::new(store, "s1".into(), Arc::new(Mutex::new(Vec::new())));

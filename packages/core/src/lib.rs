@@ -732,7 +732,6 @@ pub fn run() {
             chat::session_send,
             chat::session_stop,
             chat::session_compact,
-            chat::session_import,
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,

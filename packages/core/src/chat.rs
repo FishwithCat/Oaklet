@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::store::{self, ContextUsage, ImportEntry, NewUserTurn, RunEnd, Session, Store};
+use crate::store::{self, ContextUsage, Event, EventPayload, NewUserTurn, RunEnd, Session, Store};
 use crate::tools::{CancelHandle, FileDiff};
 use crate::{AppState, SharedState, compaction, context, spill};
 
@@ -148,11 +148,6 @@ enum Tone {
     rename_all_fields = "camelCase"
 )]
 enum NewItem {
-    User {
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        attachments: Option<Vec<SentAttachment>>,
-    },
     Tool(Box<ToolItem>),
 }
 
@@ -214,7 +209,7 @@ impl ChatState {
         let store = Store::open(path)?;
         let recovered = store.interrupt_stale_runs(
             store::now_ms(),
-            &json!({ "kind": "notice", "tone": Tone::Error, "text": INTERRUPTED_NOTICE }),
+            &json!({ "role": "notice", "tone": Tone::Error, "text": INTERRUPTED_NOTICE }),
         )?;
         if recovered > 0 {
             eprintln!("[oaklet] marked {recovered} interrupted run(s)");
@@ -277,13 +272,197 @@ fn view_from_session(session: Session, compacting: bool) -> SessionView {
         title: session.title,
         updated_at: session.updated_at,
         turns: session.turns,
-        items: session.items,
+        items: project_events(&session.events),
         context: session.context,
         running: false,
         blocked: false,
         compacting,
         active_run_id: None,
     }
+}
+
+/// Text a user bubble shows; attachment bodies in the model message stay out
+/// of the bubble.
+fn item_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn display_flag(display: Option<&Value>, key: &str) -> bool {
+    display
+        .and_then(|display| display.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn display_str<'a>(display: Option<&'a Value>, key: &str) -> &'a str {
+    display
+        .and_then(|display| display.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+/// The rendered transcript is a pure function of the event log. The live run
+/// mutates the same shape only while tokens stream; the saved view replaces it
+/// with this projection when the run ends.
+fn project_events(events: &[Event]) -> Vec<Value> {
+    let mut items = Vec::new();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+
+    for event in events {
+        match &event.payload {
+            EventPayload::Notice { tone, text } => items.push(json!({
+                "kind": "notice",
+                "tone": tone,
+                "text": text,
+            })),
+            EventPayload::Compaction { before, after, .. } => items.push(json!({
+                "kind": "notice",
+                "tone": "muted",
+                "text": format!(
+                    "Compacted context: {} → {} tokens. Earlier messages stay readable with history_read.",
+                    format_tokens(*before),
+                    format_tokens(*after)
+                ),
+            })),
+            EventPayload::Message {
+                message,
+                display,
+            } => {
+                if display_flag(display.as_ref(), "hidden") {
+                    continue;
+                }
+                let run_id = display_str(display.as_ref(), "runId");
+                match message.get("role").and_then(Value::as_str).unwrap_or("") {
+                    "user" => {
+                        if store::is_checkpoint(message) {
+                            continue;
+                        }
+                        let text = display
+                            .as_ref()
+                            .and_then(|display| display.get("text"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| item_text(message.get("content")));
+                        let mut item = json!({ "kind": "user", "text": text });
+                        if let Some(attachments) = display
+                            .as_ref()
+                            .and_then(|display| display.get("attachments"))
+                            .filter(|value| value.as_array().is_some_and(|list| !list.is_empty()))
+                        {
+                            item["attachments"] = attachments.clone();
+                        }
+                        items.push(item);
+                    }
+                    "assistant" => {
+                        let reasoning = message
+                            .get("reasoning_content")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if !reasoning.is_empty() {
+                            items.push(json!({
+                                "kind": "reasoning",
+                                "runId": run_id,
+                                "text": reasoning,
+                                "streaming": false,
+                            }));
+                        }
+                        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                            for call in calls {
+                                let id = call.get("id").and_then(Value::as_str);
+                                let name = call.pointer("/function/name").and_then(Value::as_str);
+                                if let (Some(id), Some(name)) = (id, name) {
+                                    tool_names.insert(id.to_string(), name.to_string());
+                                }
+                            }
+                        }
+                        let content = item_text(message.get("content"));
+                        if !content.is_empty() {
+                            items.push(json!({
+                                "kind": "assistant",
+                                "runId": run_id,
+                                "text": content,
+                                "streaming": false,
+                            }));
+                        }
+                    }
+                    "tool" => {
+                        let id = message
+                            .get("tool_call_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let name = display
+                            .as_ref()
+                            .and_then(|display| display.get("name"))
+                            .and_then(Value::as_str)
+                            .or_else(|| tool_names.get(id).map(String::as_str))
+                            .unwrap_or("");
+                        let summary = display_str(display.as_ref(), "summary");
+                        let ok = display
+                            .as_ref()
+                            .and_then(|display| display.get("ok"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
+                        let pending = display_flag(display.as_ref(), "pending");
+                        let mut item = json!({
+                            "kind": "tool",
+                            "runId": run_id,
+                            "id": id,
+                            "name": name,
+                            "status": if ok && !pending { "ok" } else { "error" },
+                            "summary": summary,
+                            "output": message.get("content").and_then(Value::as_str).unwrap_or(""),
+                        });
+                        if let Some(diffs) = display
+                            .as_ref()
+                            .and_then(|display| display.get("diffs"))
+                            .and_then(Value::as_array)
+                            .filter(|diffs| !diffs.is_empty() && !pending)
+                        {
+                            item["diffs"] = Value::Array(diffs.clone());
+                        }
+                        items.push(item);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    items
+}
+
+/// Model-facing history: the latest summary plus every message after its
+/// boundary. Display-only data never crosses this line.
+fn surface_messages(events: &[Event]) -> Vec<Value> {
+    let through = events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::Compaction {
+            shadowed_through, ..
+        } => Some(*shadowed_through),
+        _ => None,
+    });
+    let start = through.unwrap_or(0);
+    let mut messages = Vec::new();
+    if through.is_some()
+        && let Some(EventPayload::Compaction { summary, .. }) = events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.payload, EventPayload::Compaction { .. }))
+            .map(|event| &event.payload)
+    {
+        messages.push(summary.clone());
+    }
+    messages.extend(events.iter().filter_map(|event| match &event.payload {
+        EventPayload::Message { message, .. } if event.seq > start => Some(message.clone()),
+        _ => None,
+    }));
+    trim_incomplete_tool_block(messages)
 }
 
 #[tauri::command]
@@ -352,7 +531,7 @@ pub async fn session_send(
 
     let text = text.trim().to_string();
     let run_id = state.next_id();
-    let (message, item, attachment_names) =
+    let (message, display, attachment_names) =
         build_user_turn(&text, &attachments, &config.workspace, &run_id)?;
     let title = if session.turns == 0 {
         let title = session_title(&text, &attachment_names);
@@ -362,7 +541,7 @@ pub async fn session_send(
     };
     let turn = NewUserTurn {
         message,
-        item,
+        display: Some(display),
         title,
     };
 
@@ -378,19 +557,20 @@ pub async fn session_send(
             return Err("This chat is already working.".into());
         }
         let updated = store.begin_run(&session_id, &run_id, &turn, store::now_ms())?;
+        let items = project_events(&updated.events);
         let view = SessionView {
             id: updated.id,
             title: updated.title,
             updated_at: updated.updated_at,
             turns: updated.turns,
-            items: updated.items,
+            items,
             context: updated.context,
             running: true,
             blocked: false,
             compacting: false,
             active_run_id: Some(run_id.clone()),
         };
-        let messages = updated.messages;
+        let messages = surface_messages(&updated.events);
         let view = Arc::new(Mutex::new(view));
         live.runs.insert(
             run_id.clone(),
@@ -411,6 +591,9 @@ pub async fn session_send(
         view: view.clone(),
         finished: Arc::new(AtomicBool::new(false)),
         archived: Arc::new(Mutex::new(Vec::new())),
+        pending: Arc::new(Mutex::new(Vec::new())),
+        compacted: Arc::new(AtomicBool::new(false)),
+        compaction_before: Arc::new(Mutex::new(None)),
     };
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
@@ -489,41 +672,43 @@ async fn compact_session(
         .map_err(|error| format!("Could not read the session: {error}"))??
         .ok_or_else(|| "This session no longer exists.".to_string())?;
 
-    if session.messages.is_empty() {
+    let base = surface_messages(&session.events);
+    if base.is_empty() {
         return Ok((session, 0, 0, false));
     }
 
-    let before = context::estimate_tokens(&session.messages);
+    let before = context::estimate_tokens(&base);
     let (_handle, cancel) = CancelHandle::new();
     let next =
-        compaction::compact_messages(&reqwest::Client::new(), &config, &session.messages, &cancel)
-            .await?;
+        compaction::compact_messages(&reqwest::Client::new(), &config, &base, &cancel).await?;
     let Some(compacted) = next else {
         return Ok((session, before, before, false));
     };
-    let messages = compacted.messages;
+    let surface = compacted.messages;
+    let Some(summary) = surface
+        .iter()
+        .find(|message| store::is_checkpoint(message))
+        .cloned()
+    else {
+        return Ok((session, before, before, false));
+    };
 
-    let after = context::estimate_tokens(&messages);
-    let notice = json!({
-        "kind": "notice",
-        "tone": Tone::Muted,
-        "text": format!(
-            "Compacted context: {} → {} tokens. Earlier messages stay archived for history_read.",
-            format_tokens(before),
-            format_tokens(after)
-        ),
-    });
+    let after = context::estimate_tokens(&surface);
+    let shadowed_through = store::shadow_for(&session.events, &surface);
     let store = state.chat.store.clone();
     let id = session_id.to_string();
     let compacted = tauri::async_runtime::spawn_blocking(move || {
         store.apply_compaction(
             &id,
-            &messages,
-            &compacted.replaced,
-            &notice,
-            ContextUsage {
-                used: after,
-                window: config.context_window,
+            &store::CompactionRecord {
+                summary,
+                shadowed_through,
+                before,
+                after,
+                context: ContextUsage {
+                    used: after,
+                    window: config.context_window,
+                },
             },
             store::now_ms(),
         )
@@ -531,17 +716,6 @@ async fn compact_session(
     .await
     .map_err(|error| format!("Could not save the compacted context: {error}"))??;
     Ok((compacted, before, after, true))
-}
-
-#[tauri::command]
-pub async fn session_import(
-    state: State<'_, SharedState>,
-    entries: Vec<ImportEntry>,
-) -> Result<usize, String> {
-    let store = state.chat.store.clone();
-    tauri::async_runtime::spawn_blocking(move || store.import_sessions(&entries))
-        .await
-        .map_err(|error| format!("Could not import old sessions: {error}"))?
 }
 
 /// Cancel every live run, for a workspace switch or app exit.
@@ -664,13 +838,12 @@ fn build_user_turn(
     } else {
         json!({ "role": "user", "content": parts })
     };
-    let item = serde_json::to_value(NewItem::User {
-        text: text.to_string(),
-        attachments: (!sent.is_empty()).then_some(sent),
-    })
-    .map_err(|error| format!("Could not prepare the message: {error}"))?;
+    let mut display = json!({ "text": text });
+    if !sent.is_empty() {
+        display["attachments"] = json!(sent);
+    }
 
-    Ok((message, item, names))
+    Ok((message, display, names))
 }
 
 /// Inline preview for a spilled attachment: enough to recognize the file,
@@ -949,9 +1122,15 @@ pub struct RunContext {
     run_id: String,
     view: Arc<Mutex<SessionView>>,
     finished: Arc<AtomicBool>,
-    /// Originals replaced by automatic compaction during this run, persisted
-    /// with the final history.
+    /// Originals replaced by automatic compaction during this run, exposed to
+    /// `history_read` until the compaction record is durable.
     archived: Arc<Mutex<Vec<Value>>>,
+    /// Append-only events this run produced, in order.
+    pending: Arc<Mutex<Vec<EventPayload>>>,
+    /// Set once compaction replaced part of the model history.
+    compacted: Arc<AtomicBool>,
+    /// Prompt size before the first compaction in this run.
+    compaction_before: Arc<Mutex<Option<usize>>>,
 }
 
 impl RunContext {
@@ -981,6 +1160,49 @@ impl RunContext {
 
     pub fn archived(&self) -> Arc<Mutex<Vec<Value>>> {
         self.archived.clone()
+    }
+
+    pub fn mark_compacted(&self, before: usize) {
+        self.compacted.store(true, Ordering::SeqCst);
+        let mut recorded = self
+            .compaction_before
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if recorded.is_none() {
+            *recorded = Some(before);
+        }
+    }
+
+    pub fn record(&self, payload: EventPayload) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.push(payload);
+    }
+
+    /// Record a model-visible message plus its optional UI metadata.
+    pub fn record_message(&self, message: Value, display: Option<Value>) {
+        self.record(EventPayload::Message { message, display });
+    }
+
+    /// Record a model-only turn (tool images, reminders) that the UI hides.
+    pub fn record_hidden(&self, message: Value) {
+        self.record(EventPayload::Message {
+            message,
+            display: Some(json!({ "hidden": true })),
+        });
+    }
+
+    fn record_notice(&self, tone: Tone, text: impl Into<String>) {
+        self.record(EventPayload::Notice {
+            tone: match tone {
+                Tone::Error => "error",
+                Tone::Muted => "muted",
+            }
+            .into(),
+            text: text.into(),
+        });
     }
 
     /// Remember one compaction's originals. `finish` writes them in the same
@@ -1040,6 +1262,17 @@ impl RunContext {
 
     pub fn tool_start(&self, id: &str, name: &str, summary: &str, diffs: &[FileDiff]) {
         let started_at = store::now_ms() as u64;
+        self.record(EventPayload::Message {
+            message: json!({ "role": "tool", "tool_call_id": id, "content": "" }),
+            display: Some(json!({
+                "runId": self.run_id,
+                "name": name,
+                "summary": summary,
+                "ok": false,
+                "pending": true,
+                "diffs": diffs,
+            })),
+        });
         self.update_view(|view| {
             settle_streaming(&mut view.items);
             let item = NewItem::Tool(Box::new(ToolItem {
@@ -1078,6 +1311,50 @@ impl RunContext {
 
     pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) {
         let finished_at = store::now_ms() as u64;
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut found = false;
+            for payload in pending.iter_mut().rev() {
+                let EventPayload::Message { message, display } = payload else {
+                    continue;
+                };
+                let pending_tool = message.get("tool_call_id").and_then(Value::as_str) == Some(id)
+                    && display
+                        .as_ref()
+                        .and_then(|display| display.get("pending"))
+                        .and_then(Value::as_bool)
+                        == Some(true);
+                if !pending_tool {
+                    continue;
+                }
+                message["content"] = json!(output);
+                if let Some(meta) = display.as_mut().and_then(Value::as_object_mut) {
+                    meta["ok"] = json!(ok);
+                    meta.remove("pending");
+                    if diffs.is_empty() {
+                        meta.remove("diffs");
+                    } else {
+                        meta["diffs"] = json!(diffs);
+                    }
+                }
+                found = true;
+                break;
+            }
+            if !found {
+                drop(pending);
+                self.record(EventPayload::Message {
+                    message: json!({ "role": "tool", "tool_call_id": id, "content": output }),
+                    display: Some(json!({
+                        "runId": self.run_id,
+                        "ok": ok,
+                        "diffs": diffs,
+                    })),
+                });
+            }
+        }
         self.update_view(|view| {
             if let Some(item) = find_tool_item(&mut view.items, id) {
                 let status = if ok {
@@ -1221,12 +1498,15 @@ impl RunContext {
             match status {
                 "error" => {
                     let text = error.clone().unwrap_or_else(|| "The run failed.".into());
+                    self.record_notice(Tone::Error, text.clone());
                     view.items
                         .push(json!({ "kind": "notice", "tone": Tone::Error, "text": text }));
                 }
-                "stopped" => view
-                    .items
-                    .push(json!({ "kind": "notice", "tone": Tone::Muted, "text": "Stopped." })),
+                "stopped" => {
+                    self.record_notice(Tone::Muted, "Stopped.");
+                    view.items
+                        .push(json!({ "kind": "notice", "tone": Tone::Muted, "text": "Stopped." }));
+                }
                 _ => {}
             }
             view.running = false;
@@ -1235,19 +1515,35 @@ impl RunContext {
             view.clone()
         };
 
+        let compaction = if self.compacted.load(Ordering::SeqCst) {
+            messages
+                .iter()
+                .find(|message| store::is_checkpoint(message))
+                .map(|summary| store::CompactionEnd {
+                    summary: summary.clone(),
+                    surface: messages.clone(),
+                    before: self
+                        .compaction_before
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .unwrap_or(0),
+                    after: context::estimate_tokens(&messages),
+                })
+        } else {
+            None
+        };
         let end = RunEnd {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
             status,
             finished_at: store::now_ms(),
-            messages,
-            items: final_view.items.clone(),
-            archived: std::mem::take(
+            appended: std::mem::take(
                 &mut *self
-                    .archived
+                    .pending
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             ),
+            compaction,
             context: final_view.context,
             error: error.clone(),
         };
@@ -1337,9 +1633,10 @@ mod tests {
     use super::{
         ATTACHMENT_SPILL_BYTES, ChatState, IncomingAttachment, NewItem, RunHandle, SessionView,
         ToolItem, ToolStatus, build_user_turn, format_tokens, is_blocked, merge_stream,
-        session_title, settle_streaming, settle_unfinished_tools, trim_incomplete_tool_block,
+        project_events, session_title, settle_streaming, settle_unfinished_tools, surface_messages,
+        trim_incomplete_tool_block,
     };
-    use crate::store;
+    use crate::store::{self, Event, EventPayload};
     use crate::tools::CancelHandle;
 
     #[test]
@@ -1489,18 +1786,11 @@ mod tests {
         assert_eq!(item["runId"], "r1");
         assert_eq!(item["startedAt"], 5);
         assert!(item.get("output").is_none());
-
-        let user = serde_json::to_value(NewItem::User {
-            text: "hi".into(),
-            attachments: None,
-        })
-        .unwrap();
-        assert_eq!(user, json!({ "kind": "user", "text": "hi" }));
     }
 
     #[test]
     fn builds_user_content_and_display_items_for_attachments() {
-        let (message, item, names) = build_user_turn(
+        let (message, display, names) = build_user_turn(
             "look",
             &[
                 IncomingAttachment::Image {
@@ -1533,20 +1823,20 @@ mod tests {
             message["content"][2],
             json!({ "type": "text", "text": "Attached file notes.md:\n\nhi" })
         );
-        assert_eq!(item["kind"], "user");
+        assert_eq!(display["text"], "look");
         assert_eq!(
-            item["attachments"][0]["thumbnail"],
+            display["attachments"][0]["thumbnail"],
             "data:image/jpeg;base64,BBB"
         );
-        assert_eq!(item["attachments"][1]["name"], "notes.md");
+        assert_eq!(display["attachments"][1]["name"], "notes.md");
     }
 
     #[test]
     fn plain_text_keeps_the_string_content_shape() {
-        let (message, item, names) =
+        let (message, display, names) =
             build_user_turn("hello", &[], env!("CARGO_MANIFEST_DIR"), "run-1").unwrap();
         assert_eq!(message["content"], "hello");
-        assert!(item.get("attachments").is_none());
+        assert_eq!(display["text"], "hello");
         assert!(names.is_empty());
         assert!(build_user_turn("", &[], env!("CARGO_MANIFEST_DIR"), "run-1").is_err());
     }
@@ -1577,7 +1867,7 @@ mod tests {
             bytes: text.len() as u64,
             text: text.clone(),
         };
-        let (message, _item, names) =
+        let (message, _display, names) =
             build_user_turn("", &[file], root.to_str().unwrap(), "run-1").unwrap();
 
         let relative = Path::new(".oaklet/spill/run-1/1-notes.md.txt");
@@ -1682,5 +1972,307 @@ mod tests {
         assert_eq!(items[1]["status"], "ok");
         assert_eq!(items[2]["streaming"], false);
         assert!(!is_blocked(&items));
+    }
+
+    #[test]
+    fn projects_events_into_items_without_leaking_display_data() {
+        let events = vec![
+            Event {
+                seq: 1,
+                created_at: 1,
+                payload: EventPayload::Message {
+                    message: json!({
+                        "role": "user",
+                        "content": [
+                            { "type": "text", "text": "look" },
+                            { "type": "image_url", "image_url": { "url": "data:full" } },
+                        ],
+                    }),
+                    display: Some(json!({
+                        "text": "look",
+                        "attachments": [{
+                            "kind": "image",
+                            "name": "shot.png",
+                            "bytes": 10,
+                            "thumbnail": "data:thumb",
+                        }],
+                    })),
+                },
+            },
+            Event {
+                seq: 2,
+                created_at: 2,
+                payload: EventPayload::Message {
+                    message: json!({
+                        "role": "assistant",
+                        "content": "done",
+                        "reasoning_content": "thinking",
+                        "tool_calls": [{
+                            "id": "c1",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{}" },
+                        }],
+                    }),
+                    display: Some(json!({ "runId": "r1" })),
+                },
+            },
+            Event {
+                seq: 3,
+                created_at: 3,
+                payload: EventPayload::Message {
+                    message: json!({ "role": "tool", "tool_call_id": "c1", "content": "file body" }),
+                    display: Some(json!({
+                        "runId": "r1",
+                        "name": "read_file",
+                        "summary": "a.rs",
+                        "ok": false,
+                        "diffs": [{ "path": "a.rs", "oldText": null, "newText": "x" }],
+                    })),
+                },
+            },
+            Event {
+                seq: 4,
+                created_at: 4,
+                payload: EventPayload::Notice {
+                    tone: "muted".into(),
+                    text: "Stopped.".into(),
+                },
+            },
+            Event {
+                seq: 5,
+                created_at: 5,
+                payload: EventPayload::Message {
+                    message: json!({ "role": "user", "content": "hidden" }),
+                    display: Some(json!({ "hidden": true })),
+                },
+            },
+        ];
+
+        let items = project_events(&events);
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0]["kind"], "user");
+        assert_eq!(items[0]["text"], "look");
+        assert_eq!(items[0]["attachments"][0]["thumbnail"], "data:thumb");
+        assert_eq!(items[1]["kind"], "reasoning");
+        assert_eq!(items[2]["kind"], "assistant");
+        assert_eq!(items[2]["runId"], "r1");
+        assert_eq!(items[3]["kind"], "tool");
+        assert_eq!(items[3]["status"], "error");
+        assert_eq!(items[3]["summary"], "a.rs");
+        assert_eq!(items[3]["diffs"][0]["path"], "a.rs");
+        assert_eq!(items[4]["kind"], "notice");
+
+        let model = surface_messages(&events);
+        assert_eq!(model.len(), 4);
+        assert!(model.iter().all(|message| message.get("oaklet").is_none()));
+    }
+
+    #[test]
+    fn a_finished_run_projects_back_to_the_same_rows() {
+        let state = ChatState::in_memory();
+        state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+        let message = json!({ "role": "user", "content": "hi" });
+        state
+            .store
+            .begin_run(
+                "s1",
+                "r1",
+                &store::NewUserTurn {
+                    message: message.clone(),
+                    display: Some(json!({ "text": "hi" })),
+                    title: Some("hi".into()),
+                },
+                2,
+            )
+            .unwrap();
+        let saved = state
+            .store
+            .finish_run(&store::RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                status: "done",
+                finished_at: 3,
+                appended: vec![
+                    EventPayload::Message {
+                        message: json!({ "role": "assistant", "content": "hello" }),
+                        display: Some(json!({ "runId": "r1" })),
+                    },
+                    EventPayload::Message {
+                        message: json!({
+                            "role": "tool",
+                            "tool_call_id": "c1",
+                            "content": "output",
+                        }),
+                        display: Some(json!({
+                            "runId": "r1",
+                            "name": "run_command",
+                            "summary": "ls",
+                            "ok": true,
+                        })),
+                    },
+                ],
+                compaction: None,
+                context: Some(store::ContextUsage {
+                    used: 10,
+                    window: 100,
+                }),
+                error: None,
+            })
+            .unwrap();
+
+        let items = project_events(&saved.events);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["kind"], "user");
+        assert_eq!(items[1]["kind"], "assistant");
+        assert_eq!(items[2]["kind"], "tool");
+        assert_eq!(items[2]["status"], "ok");
+        assert_eq!(items[2]["output"], "output");
+    }
+
+    #[test]
+    fn a_second_turn_rebuilds_the_model_history_from_the_events() {
+        let state = ChatState::in_memory();
+        state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+        let first = json!({ "role": "user", "content": "one" });
+        state
+            .store
+            .begin_run(
+                "s1",
+                "r1",
+                &store::NewUserTurn {
+                    message: first,
+                    display: Some(json!({ "text": "one" })),
+                    title: Some("one".into()),
+                },
+                2,
+            )
+            .unwrap();
+        state
+            .store
+            .finish_run(&store::RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                status: "done",
+                finished_at: 3,
+                appended: vec![EventPayload::Message {
+                    message: json!({ "role": "assistant", "content": "first" }),
+                    display: None,
+                }],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+
+        let second = json!({ "role": "user", "content": "two" });
+        let session = state
+            .store
+            .begin_run(
+                "s1",
+                "r2",
+                &store::NewUserTurn {
+                    message: second,
+                    display: Some(json!({ "text": "two" })),
+                    title: None,
+                },
+                4,
+            )
+            .unwrap();
+
+        let model = surface_messages(&session.events);
+        assert_eq!(model.len(), 3);
+        assert_eq!(model[0]["content"], "one");
+        assert_eq!(model[1]["content"], "first");
+        assert_eq!(model[2]["content"], "two");
+    }
+
+    #[test]
+    fn a_compaction_shadows_history_but_keeps_the_rendered_transcript() {
+        let state = ChatState::in_memory();
+        state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+        state
+            .store
+            .begin_run(
+                "s1",
+                "r1",
+                &store::NewUserTurn {
+                    message: json!({ "role": "user", "content": "old" }),
+                    display: Some(json!({ "text": "old" })),
+                    title: Some("old".into()),
+                },
+                2,
+            )
+            .unwrap();
+        state
+            .store
+            .finish_run(&store::RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                status: "done",
+                finished_at: 3,
+                appended: vec![EventPayload::Message {
+                    message: json!({ "role": "assistant", "content": "old answer" }),
+                    display: None,
+                }],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        state
+            .store
+            .begin_run(
+                "s1",
+                "r2",
+                &store::NewUserTurn {
+                    message: json!({ "role": "user", "content": "new" }),
+                    display: Some(json!({ "text": "new" })),
+                    title: None,
+                },
+                4,
+            )
+            .unwrap();
+        let session = state
+            .store
+            .apply_compaction(
+                "s1",
+                &store::CompactionRecord {
+                    summary: json!({
+                        "role": "user",
+                        "content": "<compacted-summary>old turns</compacted-summary>",
+                    }),
+                    shadowed_through: 2,
+                    before: 100,
+                    after: 10,
+                    context: store::ContextUsage {
+                        used: 10,
+                        window: 100,
+                    },
+                },
+                5,
+            )
+            .unwrap();
+
+        let model = surface_messages(&session.events);
+        assert_eq!(model.len(), 2);
+        assert_eq!(
+            model[0]["content"],
+            "<compacted-summary>old turns</compacted-summary>"
+        );
+        assert_eq!(model[1]["content"], "new");
+
+        let items = project_events(&session.events);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0]["kind"], "user");
+        assert_eq!(items[1]["kind"], "assistant");
+        assert_eq!(items[2]["kind"], "user");
+        assert_eq!(items[3]["kind"], "notice");
+
+        assert_eq!(state.store.history_count("s1").unwrap(), 2);
+        let (history, total) = state.store.read_history("s1", 1, 10).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(history[0].1["content"], "old");
+        assert_eq!(history[1].1["content"], "old answer");
+        let _ = session;
     }
 }

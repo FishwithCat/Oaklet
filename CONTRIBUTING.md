@@ -127,23 +127,24 @@ pending-request state.
 ### Session storage
 
 Conversations live in `oaklet.db` in the app data directory (`0600` on Unix)
-instead of the webview's `localStorage`. The database holds the model-facing
-messages and the rendered transcript for every session, plus one row per run and
-its status. History is not capped at 20 sessions.
+instead of the webview's `localStorage`. Each session is one append-only
+`session_events` log: messages, notices, and compaction records. The model-facing
+history and the rendered transcript are projections of that log, so neither is
+stored a second time. The database also keeps one row per run and its status.
+History is not capped at 20 sessions.
 
-On upgrade, history saved by older builds in `localStorage` is imported once;
-the old keys are removed only after the backend accepts them. If the app closes
-while a run is working, the next start marks that run `interrupted`, appends a
-notice to the conversation, and leaves the session available to continue.
-Restarting still clears the open tabs (they are client state), but every session
-and transcript is restored from History.
+If the app closes while a run is working, the next start marks that run
+`interrupted`, appends a notice to the conversation, and leaves the session
+available to continue. Restarting still clears the open tabs (they are client
+state), but every session and transcript is restored from History.
 
 ## Context and cost controls
 
 Oaklet keeps long tool output to its head and tail. Near the context limit it
-first tries trimming each oversized tool result to at most 4,500 characters,
-archiving the originals. If that alone relieves the pressure, no summary model
-is called. Otherwise it asks the model to replace older history with a short
+first tries trimming each oversized tool result to at most 4,500 characters;
+the untrimmed originals stay in the event log. If that alone relieves the
+pressure, no summary model is called. Otherwise it asks the model to replace
+older history with a short
 checkpoint, using the history from before that trimming attempt. That summary
 request replays the system prompt, tool schemas, and
 older messages unchanged, then appends one instruction, so the provider can

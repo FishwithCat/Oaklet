@@ -106,7 +106,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 &mut replaced,
             )
             .await;
+            let before = outcome
+                .as_ref()
+                .ok()
+                .and_then(|before| *before)
+                .unwrap_or(0);
             if !replaced.is_empty() {
+                ctx.mark_compacted(before);
                 ctx.record_archived(&replaced);
                 ensure_history_tool(&mut tools, &ctx);
             }
@@ -194,7 +200,9 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             return;
         }
 
-        messages.push(assistant_message(&content, &reasoning, &calls));
+        let assistant = assistant_message(&content, &reasoning, &calls);
+        ctx.record_message(assistant.clone(), Some(json!({ "runId": ctx.run_id() })));
+        messages.push(assistant);
         ctx.context(meter.pressure(&messages), config.context_window);
         if calls.is_empty() {
             // The system prompt is rebuilt every turn; keep it out of the
@@ -333,11 +341,15 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // provider. Attach the batch's images as one user turn after all tool
         // results, so the conversation stays valid and the model can see them.
         if !tool_images.is_empty() {
-            messages.push(image_message(&tool_images));
+            let images = image_message(&tool_images);
+            ctx.record_hidden(images.clone());
+            messages.push(images);
         }
 
         for reminder in reminders {
-            messages.push(json!({ "role": "user", "content": reminder }));
+            let message = json!({ "role": "user", "content": reminder });
+            ctx.record_hidden(message.clone());
+            messages.push(message);
         }
     }
 }
@@ -381,16 +393,18 @@ async fn compact_before_request(
     messages: &mut Vec<Value>,
     meter: &mut Meter,
     archived: &mut Vec<Value>,
-) -> Result<(), String> {
+) -> Result<Option<usize>, String> {
     let trigger = compaction::trigger_at(config.context_window);
     let pressure = meter.prepare(messages);
     if pressure <= trigger {
-        return Ok(());
+        return Ok(None);
     }
 
+    let mut compacted_any = false;
     if let Some(compacted) =
         compaction::compact(client, config, messages, pressure, tools, cancel).await?
     {
+        compacted_any = true;
         note_compaction(pressure, estimate_tokens(&compacted.messages));
         archived.extend(compacted.replaced);
         *messages = compacted.messages;
@@ -405,6 +419,7 @@ async fn compact_before_request(
     if meter.pressure(messages) > trigger
         && let Some(compacted) = compaction::force(client, config, messages, tools, cancel).await?
     {
+        compacted_any = true;
         note_compaction(
             estimate_tokens(messages),
             estimate_tokens(&compacted.messages),
@@ -414,7 +429,7 @@ async fn compact_before_request(
         let _ = meter.prepare(messages);
     }
 
-    Ok(())
+    Ok(compacted_any.then_some(pressure))
 }
 
 /// Add `history_read` only once this chat has archived originals to read.
