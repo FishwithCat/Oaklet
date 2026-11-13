@@ -11,6 +11,16 @@ import { errorText } from "../../shared/error-text";
 import { statusInfo } from "../source-control/git-model";
 import { changeMarkers, fileTreeRows, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
 
+/** Show a load note only after a beat, so fast local reads never flash. */
+function LoadingNote({ label }: { label: string }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(true), 150);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return shown ? <p role="status" className="files-tree-status">{label}</p> : null;
+}
+
 export function FileTree({ workspace, active, refreshToken, changes, selected, busy, onOpen }: {
   workspace: string;
   active: boolean;
@@ -112,7 +122,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
   return (
     <nav className="files-browser" aria-label="Workspace files">
       {errors["."] && <p role="alert" className="files-error">{errors["."]}</p>}
-      {loading.has(".") && <p role="status" className="files-tree-status">Loading files…</p>}
+      {loading.has(".") && <LoadingNote label="Loading files…" />}
       <div role="tree" aria-label="Workspace files">
         {rows.map(({ entry, depth, position, siblings }, index) => {
           const open = entry.directory && expanded.has(entry.path);
@@ -154,7 +164,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
                 )}
                 {folderChanged && <span className="files-entry-dot" title="Contains changes" aria-hidden="true" />}
               </button>
-              {open && entry.path !== "." && loading.has(entry.path) && <p role="status" className="files-tree-status">Loading {entry.name}…</p>}
+              {open && entry.path !== "." && loading.has(entry.path) && <LoadingNote label={`Loading ${entry.name}…`} />}
               {open && entry.path !== "." && errors[entry.path] && <p role="alert" className="files-error">{errors[entry.path]}</p>}
               {open && !loading.has(entry.path) && !errors[entry.path] && directories[entry.path]?.length === 0 && <p className="files-tree-status" style={{ paddingLeft: 40 + depth * 16 }}>Empty folder</p>}
             </div>
