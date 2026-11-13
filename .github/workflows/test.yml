@@ -70,6 +70,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # tauri-build copies bundle resources into target/ on every build,
+      # including cargo test, so the helper's dependencies must be installed.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: architecture-helper/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: architecture-helper
+
       - uses: dtolnay/rust-toolchain@stable
         # clippy and rustfmt are included by default.
 
