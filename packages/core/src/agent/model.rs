@@ -201,9 +201,13 @@ pub(super) async fn stream_step(
     if !config.api_key.is_empty() {
         request = request.bearer_auth(&config.api_key);
     }
-    let response = request.send().await.map_err(|err| {
-        RequestError::stream(format!("Could not reach {}: {err}", config.base_url))
-    })?;
+    let response = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(RequestError::stream("Stopped.".into())),
+        response = request.send() => response.map_err(|err| {
+            RequestError::stream(format!("Could not reach {}: {err}", config.base_url))
+        })?,
+    };
 
     if !response.status().is_success() {
         let status = response.status();
