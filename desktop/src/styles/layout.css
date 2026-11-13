@@ -88,7 +88,14 @@
   flex-direction: column;
 }
 
-/* Empty chat: center the headline and composer together. */
+/* Empty chat: center the headline and composer together. The chat and composer
+   share the free space through their auto margins, so trimming the bottom of
+   this box lifts both by half of it — a true-center block reads low because
+   the composer is far heavier than the logo. */
+.main.empty-state {
+  padding-bottom: 40px;
+}
+
 .main.empty-state .chat {
   flex: none;
   margin-top: auto;
