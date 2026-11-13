@@ -316,6 +316,14 @@ export function ChatComposer({
                       <dd>New session</dd>
                     </div>
                   )}
+                  {!welcome && (
+                    <div className="shortcut">
+                      <dt>
+                        <kbd>⌘ X</kbd>
+                      </dt>
+                      <dd>Close tab</dd>
+                    </div>
+                  )}
                   <div className="shortcut">
                     <dt>
                       <kbd>⌘ R</kbd>

@@ -8,10 +8,12 @@ type KeyEvent = Pick<
   | "repeat"
   | "isComposing"
   | "defaultPrevented"
+  | "target"
 >;
 
 export type AgentShortcut =
   | "new-session"
+  | "close-session"
   | "new-terminal"
   | "history"
   | "stop";
@@ -29,6 +31,19 @@ export function isSendEnter(event: EnterEvent, composing: boolean): boolean {
     !event.shiftKey &&
     !event.isComposing &&
     !composing
+  );
+}
+
+/** A real selection means Cmd+X is a cut, not a tab close. */
+function hasTextSelection(target: EventTarget | null): boolean {
+  const field = target as {
+    selectionStart?: number | null;
+    selectionEnd?: number | null;
+  } | null;
+  return (
+    typeof field?.selectionStart === "number" &&
+    typeof field.selectionEnd === "number" &&
+    field.selectionStart !== field.selectionEnd
   );
 }
 
@@ -53,6 +68,9 @@ export function agentShortcut(
   }
 
   if (event.metaKey && !event.ctrlKey && key === "n") return "new-session";
+  if (event.metaKey && !event.ctrlKey && key === "x") {
+    return hasTextSelection(event.target) ? null : "close-session";
+  }
   if (event.metaKey && !event.ctrlKey && key === "r") return "history";
   if (event.ctrlKey && !event.metaKey && key === "c" && running) return "stop";
   // Escape stops like Ctrl+C, unless it is cancelling IME input or a popover

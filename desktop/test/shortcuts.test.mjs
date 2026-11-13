@@ -51,6 +51,57 @@ test("Command+R opens session history only in the chat view", () => {
   );
 });
 
+test("Command+X closes the active chat tab unless text is selected", () => {
+  assert.equal(
+    agentShortcut(press({ key: "x", metaKey: true }), "chat", false),
+    "close-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "x", metaKey: true }), "chat", true),
+    "close-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "x", metaKey: true }), "terminal", false),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "x", ctrlKey: true }), "chat", false),
+    null,
+  );
+  assert.equal(
+    agentShortcut(
+      press({ key: "x", metaKey: true, shiftKey: true }),
+      "chat",
+      false,
+    ),
+    null,
+  );
+  assert.equal(
+    agentShortcut(
+      press({
+        key: "x",
+        metaKey: true,
+        target: { selectionStart: 1, selectionEnd: 4 },
+      }),
+      "chat",
+      false,
+    ),
+    null,
+  );
+  assert.equal(
+    agentShortcut(
+      press({
+        key: "x",
+        metaKey: true,
+        target: { selectionStart: 2, selectionEnd: 2 },
+      }),
+      "chat",
+      false,
+    ),
+    "close-session",
+  );
+});
+
 test("Control+C stops a running session without hijacking the terminal or copy", () => {
   assert.equal(
     agentShortcut(press({ key: "c", ctrlKey: true }), "chat", true),

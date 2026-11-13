@@ -103,6 +103,8 @@ function App() {
       event.preventDefault();
       if (action === "new-session") {
         newChat();
+      } else if (action === "close-session") {
+        session.closeTab(session.activeTabId);
       } else if (action === "new-terminal") {
         terminalRef.current?.addTab();
       } else if (action === "history") {
