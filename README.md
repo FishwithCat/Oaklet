@@ -197,19 +197,16 @@ data, never as instructions.
 
 ## Web search
 
-With a usable key for the selected provider — DeepSeek falls back to the model
-API key — the agent also gets `web_search`. It sends one query to the configured
-provider and requests up to 10 results with title, URL, excerpt, and date,
+With a usable key — the search key, or the model API key when the search key is
+empty — the agent also gets `web_search`. It sends one query to the configured
+endpoint and requests up to 10 results with title, URL, excerpt, and date,
 within 20 seconds. It asks for no approval: it sends only the query, never
 workspace content.
 
-**Settings → Web Search → Provider** picks DeepSeek or Exa. DeepSeek
-reuses the model API key, so search works with any model provider as long as
-that key is a DeepSeek key. Exa needs its own key from
-[dashboard.exa.ai](https://dashboard.exa.ai/api-keys); Oaklet never sends the
-model key to Exa. **Search URL** overrides the provider endpoint, and an empty
-value falls back to the provider default. Without a key for the selected
-provider the tool is not registered, so the model never sees it.
+**Settings → Web Search** sets the key and endpoint. The endpoint defaults to
+the DeepSeek Search API and must speak that API. An empty search key sends the
+model key to whatever host the endpoint names, so point it only at a host you
+trust. Without a key the tool is not registered, so the model never sees it.
 
 `web_fetch` is always available and does not need a search key. It returns up
 to 200,000 characters and reduces HTML to readable text.

@@ -16,10 +16,8 @@ import {
   setServerEnabled,
 } from "./mcp-settings";
 import {
-  SEARCH_PROVIDERS,
-  defaultSearchUrl,
+  DEFAULT_SEARCH_URL,
   type AppConfig,
-  type SearchProvider,
 } from "./config";
 
 type SettingsTab = "model" | "web" | "commands" | "mcp";
@@ -195,7 +193,7 @@ export function SettingsPanel({
                 ? "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine."
                 : "Choose the OpenAI-compatible model provider Oaklet should use."
               : tab === "web"
-                ? "Choose the provider, key, and endpoint the web_search tool uses."
+                ? "Choose the key and endpoint the web_search tool uses."
                 : tab === "commands"
                   ? "Choose whether the agent asks before running commands."
                   : "Connect MCP servers and choose which ones the agent can use."}
@@ -361,56 +359,10 @@ export function SettingsPanel({
                 tabIndex={0}
               >
                 <div className="field">
-                  <label htmlFor="search-provider">Provider</label>
-                  <select
-                    id="search-provider"
-                    value={draft.searchProvider}
-                    onChange={(event) => {
-                      const searchProvider = event.target.value as SearchProvider;
-                      setDraft((current) => ({
-                        ...current,
-                        searchProvider,
-                        searchUrl: defaultSearchUrl(searchProvider),
-                      }));
-                    }}
-                  >
-                    {SEARCH_PROVIDERS.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="field">
-                  <label htmlFor="search-api-key">Search API key</label>
-                  <input
-                    id="search-api-key"
-                    type="password"
-                    autoComplete="off"
-                    placeholder={
-                      draft.searchProvider === "exa" ? "Required" : "Optional"
-                    }
-                    value={draft.searchApiKey}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        searchApiKey: event.target.value,
-                      }))
-                    }
-                  />
-                  <p className="field-hint">
-                    {draft.searchProvider === "exa"
-                      ? "Required for Exa. Create a key at dashboard.exa.ai. The model API key is never sent to Exa."
-                      : "Optional. Empty reuses the model API key above."}
-                  </p>
-                </div>
-
-                <div className="field">
                   <label htmlFor="search-url">Search URL</label>
                   <input
                     id="search-url"
-                    placeholder={defaultSearchUrl(draft.searchProvider)}
+                    placeholder={DEFAULT_SEARCH_URL}
                     value={draft.searchUrl}
                     onChange={(event) =>
                       setDraft((current) => ({
@@ -420,8 +372,28 @@ export function SettingsPanel({
                     }
                   />
                   <p className="field-hint">
-                    Optional endpoint override. Empty uses the provider
-                    default.
+                    Used by web_search. Empty defaults to the DeepSeek Search
+                    API. The endpoint must speak the DeepSeek search API.
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="search-api-key">Search API key</label>
+                  <input
+                    id="search-api-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="Optional"
+                    value={draft.searchApiKey}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        searchApiKey: event.target.value,
+                      }))
+                    }
+                  />
+                  <p className="field-hint">
+                    Optional. Empty reuses the model API key.
                   </p>
                 </div>
               </section>
