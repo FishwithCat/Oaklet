@@ -161,6 +161,7 @@ function App() {
           activeRunId={session.activeRunId}
           context={session.context}
           onSend={session.send}
+          onStop={session.stop}
           onCompact={session.compact}
           onApproval={session.respondToApproval}
           onSendToTerminal={(text) => {

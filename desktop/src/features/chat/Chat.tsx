@@ -53,6 +53,7 @@ export function Chat({
   activeRunId,
   context,
   onSend,
+  onStop,
   onCompact,
   onApproval,
   onSendToTerminal,
@@ -70,6 +71,7 @@ export function Chat({
   activeRunId: string | null;
   context: ContextUsage | null;
   onSend: (text: string, attachments: Attachment[]) => boolean;
+  onStop: () => void;
   onCompact: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
@@ -209,6 +211,7 @@ export function Chat({
         )
       }
       onSubmit={submit}
+      onStop={onStop}
       onCompact={onCompact}
     />
   );

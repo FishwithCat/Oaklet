@@ -40,6 +40,18 @@ button.primary:hover:not(:disabled) {
   border-color: var(--accent-hover);
 }
 
+button.stop {
+  border-color: transparent;
+  background: transparent;
+  color: var(--red);
+}
+
+button.stop:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  color: color-mix(in srgb, var(--red) 78%, black);
+}
+
 button.ghost {
   border-color: transparent;
   color: var(--muted);

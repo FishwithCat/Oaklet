@@ -13,7 +13,7 @@ import {
   FlowerpotRegular,
   QuestionRegular,
 } from "@mingcute/react/core-regular";
-import { SendFilled } from "@mingcute/react/core-filled";
+import { PauseFilled, SendFilled } from "@mingcute/react/core-filled";
 import { isSendEnter } from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
 import {
@@ -87,6 +87,7 @@ export function ChatComposer({
   onAddAttachments,
   onRemoveAttachment,
   onSubmit,
+  onStop,
   onCompact,
 }: {
   ref?: Ref<ChatComposerHandle>;
@@ -102,6 +103,7 @@ export function ChatComposer({
   onAddAttachments: (attachments: Attachment[]) => void;
   onRemoveAttachment: (index: number) => void;
   onSubmit: (attachments: Attachment[]) => boolean;
+  onStop: () => void;
   onCompact: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
@@ -358,20 +360,31 @@ export function ChatComposer({
               </div>
             )}
           </span>
-          <button
-            type="submit"
-            className="primary icon-button"
-            disabled={
-              running ||
-              compacting ||
-              reading ||
-              (!value.trim() && attachments.length === 0)
-            }
-            aria-label={compacting ? "Compacting context" : "Send"}
-            title={compacting ? "Compacting context…" : "Send"}
-          >
-            <SendFilled size={16} />
-          </button>
+          {running ? (
+            <button
+              type="button"
+              className="stop icon-button"
+              onClick={onStop}
+              aria-label="Stop"
+              title="Stop"
+            >
+              <PauseFilled size={14} />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="primary icon-button"
+              disabled={
+                compacting ||
+                reading ||
+                (!value.trim() && attachments.length === 0)
+              }
+              aria-label={compacting ? "Compacting context" : "Send"}
+              title={compacting ? "Compacting context…" : "Send"}
+            >
+              <SendFilled size={16} />
+            </button>
+          )}
         </div>
       </form>
     </div>
