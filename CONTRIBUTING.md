@@ -143,6 +143,40 @@ If the app closes while a run is working, the next start marks that run
 available to continue. Restarting still clears the open tabs (they are client
 state), but every session and transcript is restored from History.
 
+### Schema migrations
+
+Schema changes are SQL files in `packages/core/migrations/`, named
+`V<number>__<description>.sql`. `V0__baseline.sql` is the baseline and must
+match a fresh database. `build.rs` scans the directory at compile time,
+rejects malformed names or duplicate versions, and embeds every file with
+`include_str!`; `store/migrations.rs` applies pending files at startup, one
+transaction per migration.
+
+`schema_migrations` records the applied version, name, FNV-1a checksum, and
+timestamp. Startup rejects a database whose applied migration was edited or is
+missing from the build, and refuses a database newer than the binary. The
+history table is authoritative; `PRAGMA user_version` only mirrors the latest
+version for diagnostics.
+
+To add a migration:
+
+1. Create `V<N>__<description>.sql` with the next integer, for example
+   `V1__add_pinned.sql`.
+2. Put only the forward change in the file. Never edit or renumber an applied
+   migration; fix it with a new migration.
+3. Rebuild and run `cargo test` from `packages/core`. The store tests cover a
+   fresh V0, a modified checksum, a newer database, and a pre-V0 refusal.
+
+The runner does not read migrations from disk at runtime, and there is no
+external migration CLI. Each migration runs with `foreign_keys = ON`; a SQLite
+table rebuild that needs the 12-step procedure must adjust the runner first.
+
+The runner never drops tables. A pre-V0 database has data but no
+`schema_migrations` table; startup refuses it with a clear error. Move or
+delete `oaklet.db` (and any `-wal`/`-shm` files) from the app data directory
+before running this build. There is no automatic migration from the pre-V0
+layout.
+
 ## Context and cost controls
 
 Oaklet keeps long tool output to its head and tail. Near the context limit it
