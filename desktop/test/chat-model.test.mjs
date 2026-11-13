@@ -4,6 +4,7 @@ import {
   contextTier,
   formatContextPercent,
   formatContextUsage,
+  formatModelId,
   formatTokens,
   formatWorkdir,
   isAtBottom,
@@ -167,6 +168,14 @@ test("the context plant stays visible for restored sessions without usage", () =
     shouldShowContextGauge({ used: 1600, window: 262144 }, false),
     true,
   );
+});
+
+test("the composer model label keeps only the last provider segment", () => {
+  assert.equal(formatModelId("zai-org/GLM-5.3-Flash"), "GLM-5.3-Flash");
+  assert.equal(formatModelId("deepseek-flash"), "deepseek-flash");
+  assert.equal(formatModelId("openrouter/anthropic/claude"), "claude");
+  assert.equal(formatModelId("provider/"), "provider/");
+  assert.equal(formatModelId(""), "");
 });
 
 test("the thread only counts as stuck at the true bottom", () => {

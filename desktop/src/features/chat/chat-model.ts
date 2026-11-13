@@ -59,6 +59,13 @@ export function formatWorkdir(workspace: string, home: string): string {
     : workspace;
 }
 
+/** Drop a provider prefix from a model id: "zai-org/GLM-5.3-Flash" -> "GLM-5.3-Flash". */
+export function formatModelId(model: string): string {
+  const id = model.trim();
+  const slash = id.lastIndexOf("/");
+  return slash === -1 || slash === id.length - 1 ? id : id.slice(slash + 1);
+}
+
 export type ContextTier = "normal" | "elevated" | "high" | "critical";
 
 /** Plant color for the context gauge, stepping up at 30%, 60%, and 80%. */

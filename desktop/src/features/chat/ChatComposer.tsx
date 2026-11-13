@@ -21,7 +21,7 @@ import {
   readAttachment,
   type Attachment,
 } from "./attachments";
-import { contextTier, formatContextUsage } from "./chat-model";
+import { contextTier, formatContextUsage, formatModelId } from "./chat-model";
 import type { ContextUsage } from "./session-model";
 
 export type ChatComposerHandle = {
@@ -81,6 +81,7 @@ export function ChatComposer({
   compacting,
   context,
   showContextGauge,
+  model,
   welcome,
   attachments,
   onChange,
@@ -97,6 +98,7 @@ export function ChatComposer({
   compacting: boolean;
   context: ContextUsage | null;
   showContextGauge: boolean;
+  model: string;
   welcome?: boolean;
   attachments: Attachment[];
   onChange: (value: string) => void;
@@ -113,6 +115,7 @@ export function ChatComposer({
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
+  const modelLabel = formatModelId(model);
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -281,92 +284,98 @@ export function ChatComposer({
           }}
         />
         <div className="composer-footer">
-          <span className="shortcut-trigger-wrap">
-            <button
-              ref={helpButtonRef}
-              type="button"
-              className="shortcut-trigger"
-              onMouseEnter={() => setHelpOpen(true)}
-              onMouseLeave={() => setHelpOpen(false)}
-              onFocus={() => setHelpOpen(true)}
-              onBlur={() => setHelpOpen(false)}
-              onClick={() => setHelpOpen(true)}
-              aria-label="Keyboard shortcuts"
-              aria-expanded={helpOpen}
-              aria-controls="shortcuts-help"
-            >
-              <QuestionRegular size={11} />
-              Shortcuts
-            </button>
-            {helpOpen && (
-              <div
-                className="shortcuts-popover"
-                id="shortcuts-help"
-                ref={helpPopoverRef}
-                role="dialog"
+          <span className="composer-meta">
+            <span className="composer-model" title={`Model: ${model}`}>
+              <span className="sr-only">Model: </span>
+              {modelLabel}
+            </span>
+            <span className="shortcut-trigger-wrap">
+              <button
+                ref={helpButtonRef}
+                type="button"
+                className="shortcut-trigger"
+                onMouseEnter={() => setHelpOpen(true)}
+                onMouseLeave={() => setHelpOpen(false)}
+                onFocus={() => setHelpOpen(true)}
+                onBlur={() => setHelpOpen(false)}
+                onClick={() => setHelpOpen(true)}
                 aria-label="Keyboard shortcuts"
+                aria-expanded={helpOpen}
+                aria-controls="shortcuts-help"
               >
-                <h3>Shortcuts</h3>
-                <dl>
-                  {!welcome && (
+                <QuestionRegular size={11} />
+                Shortcuts
+              </button>
+              {helpOpen && (
+                <div
+                  className="shortcuts-popover"
+                  id="shortcuts-help"
+                  ref={helpPopoverRef}
+                  role="dialog"
+                  aria-label="Keyboard shortcuts"
+                >
+                  <h3>Shortcuts</h3>
+                  <dl>
+                    {!welcome && (
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌘ N</kbd>
+                        </dt>
+                        <dd>New session</dd>
+                      </div>
+                    )}
+                    {!welcome && (
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌘ X</kbd>
+                        </dt>
+                        <dd>Close tab</dd>
+                      </div>
+                    )}
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌘ N</kbd>
+                        <kbd>⌘ R</kbd>
                       </dt>
-                      <dd>New session</dd>
+                      <dd>Search history</dd>
                     </div>
-                  )}
-                  {!welcome && (
+                    {!welcome && (
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌘ F</kbd>
+                        </dt>
+                        <dd>Find in chat</dd>
+                      </div>
+                    )}
+                    {running && (
+                      <div className="shortcut">
+                        <dt>
+                          <kbd>⌃ C</kbd>
+                        </dt>
+                        <dd>Stop run</dd>
+                      </div>
+                    )}
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌘ X</kbd>
+                        <kbd>↵</kbd>
                       </dt>
-                      <dd>Close tab</dd>
+                      <dd>Send</dd>
                     </div>
-                  )}
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⌘ R</kbd>
-                    </dt>
-                    <dd>Search history</dd>
-                  </div>
-                  {!welcome && (
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌘ F</kbd>
+                        <kbd>⇧ ↵</kbd>
                       </dt>
-                      <dd>Find in chat</dd>
+                      <dd>New line</dd>
                     </div>
-                  )}
-                  {running && (
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌃ C</kbd>
+                        <kbd>⌘ V</kbd>
                       </dt>
-                      <dd>Stop run</dd>
+                      <dd>Paste image or file</dd>
                     </div>
-                  )}
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>↵</kbd>
-                    </dt>
-                    <dd>Send</dd>
-                  </div>
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⇧ ↵</kbd>
-                    </dt>
-                    <dd>New line</dd>
-                  </div>
-                  <div className="shortcut">
-                    <dt>
-                      <kbd>⌘ V</kbd>
-                    </dt>
-                    <dd>Paste image or file</dd>
-                  </div>
-                </dl>
-              </div>
-            )}
+                  </dl>
+                </div>
+              )}
+            </span>
           </span>
           {running ? (
             <button

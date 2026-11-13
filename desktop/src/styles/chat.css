@@ -563,6 +563,24 @@
   gap: 12px;
 }
 
+.composer-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.composer-model {
+  max-width: min(50vw, 260px);
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .context-meter {
   position: absolute;
   top: 9px;

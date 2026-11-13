@@ -164,6 +164,7 @@ function App() {
           compacting={session.compacting}
           activeRunId={session.activeRunId}
           context={session.context}
+          model={config.model}
           onSend={session.send}
           onStop={session.stop}
           onCompact={session.compact}

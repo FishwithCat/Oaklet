@@ -55,6 +55,7 @@ export function Chat({
   compacting,
   activeRunId,
   context,
+  model,
   onSend,
   onStop,
   onCompact,
@@ -77,6 +78,7 @@ export function Chat({
   compacting: boolean;
   activeRunId: string | null;
   context: ContextUsage | null;
+  model: string;
   onSend: (text: string, attachments: Attachment[]) => boolean;
   onStop: () => void;
   onCompact: () => void;
@@ -276,6 +278,7 @@ export function Chat({
       compacting={compacting}
       context={context}
       showContextGauge={shouldShowContextGauge(context, items.length > 0)}
+      model={model}
       welcome={welcome}
       attachments={attachments}
       onChange={updateDraft}
