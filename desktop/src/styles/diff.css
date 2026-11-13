@@ -1,0 +1,122 @@
+/* Shared diff rows, used by the source-control patch view and chat cards. */
+.diff-line {
+  --diff-num-width: 38px;
+  display: flex;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.diff-line.add {
+  background: var(--palette-soft);
+}
+
+.diff-line.del {
+  background: var(--danger-bg);
+}
+
+.diff-line.meta {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Chat cards sit in a narrow sidebar, so their long lines wrap instead of
+   scrolling sideways. */
+.diff-line.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-num {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  width: var(--diff-num-width);
+  padding: 0 6px;
+  border-right: 1px solid var(--border);
+  background: inherit;
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  cursor: pointer;
+  user-select: none;
+}
+
+.diff-num.new {
+  left: var(--diff-num-width);
+}
+
+.diff-num:hover {
+  color: var(--text);
+}
+
+.diff-num.copied {
+  color: var(--green);
+}
+
+.diff-num.blank {
+  cursor: default;
+}
+
+.diff-sign {
+  position: sticky;
+  left: calc(var(--diff-num-width) * 2);
+  z-index: 1;
+  flex: none;
+  width: 16px;
+  border-right: 1px solid var(--border);
+  background: inherit;
+  color: var(--muted);
+  text-align: center;
+  user-select: none;
+}
+
+/* Without gutters the sign is just a prefix, not a sticky column. */
+.diff-line:not(.numbered) .diff-sign {
+  position: static;
+  border-right: 0;
+}
+
+.diff-line.add .diff-sign {
+  color: var(--green);
+}
+
+.diff-line.del .diff-sign {
+  color: var(--red);
+}
+
+.diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 12px;
+}
+
+/* In a narrow panel the old line number is dead weight: keep the current-file
+   number, hover the row for the old/new pair. */
+@container (max-width: 480px) {
+  .diff-num.old {
+    display: none;
+  }
+
+  .diff-num.new {
+    left: 0;
+  }
+
+  /* A deletion has no new number: show its old number in the one gutter. */
+  .diff-line:has(.diff-num.new:empty) .diff-num.new {
+    display: none;
+  }
+
+  .diff-line:has(.diff-num.new:empty) .diff-num.old {
+    display: block;
+    left: 0;
+  }
+
+  .diff-sign {
+    left: var(--diff-num-width);
+  }
+}

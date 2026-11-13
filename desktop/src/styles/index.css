@@ -5,6 +5,7 @@
 @import "./files.css";
 @import "./chat.css";
 @import "./terminal.css";
+@import "./diff.css";
 @import "./process.css";
 @import "./architecture.css";
 @import "./source-control.css";

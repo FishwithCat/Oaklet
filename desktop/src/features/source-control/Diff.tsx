@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { DownSmallRegular } from "@mingcute/react/core-regular";
+import { DiffLineView } from "../../shared/DiffLineView";
 import { pageHunks, parseDiff } from "./git-diff";
 
 export function Diff({
@@ -66,23 +67,12 @@ export function Diff({
                 <div className="diff-lines">
                   <div className="diff-lines-inner">
                     {hunk.lines.map((line, lineIndex) => (
-                      <div
-                        className={`diff-line ${line.kind}`}
+                      <DiffLineView
                         key={lineIndex}
-                      >
-                        <span className="diff-num">{line.oldLine ?? ""}</span>
-                        <span className="diff-num">{line.newLine ?? ""}</span>
-                        <span className="diff-sign">
-                          {line.kind === "add"
-                            ? "+"
-                            : line.kind === "del"
-                              ? "-"
-                              : " "}
-                        </span>
-                        <span className="diff-text">
-                          {line.text === "" ? " " : line.text}
-                        </span>
-                      </div>
+                        line={line}
+                        path={file.path}
+                        numbers
+                      />
                     ))}
                   </div>
                 </div>

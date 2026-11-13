@@ -572,6 +572,7 @@
   /* Keep the scrollbar in the layout: WebKit paints an `auto` scrollbar on
      top of the next hunk header. */
   overflow-x: scroll;
+  container-type: inline-size;
   background: var(--panel);
 }
 
@@ -580,71 +581,6 @@
   flex-direction: column;
   width: max-content;
   min-width: 100%;
-}
-
-.diff-line {
-  display: flex;
-  background: var(--panel);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.55;
-  white-space: pre;
-}
-
-.diff-line.add {
-  background: var(--palette-soft);
-}
-
-.diff-line.del {
-  background: var(--danger-bg);
-}
-
-.diff-line.meta {
-  color: var(--muted);
-  font-style: italic;
-}
-
-.diff-num {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  flex: none;
-  width: 40px;
-  padding: 0 7px;
-  border-right: 1px solid var(--border);
-  color: color-mix(in srgb, var(--muted) 72%, transparent);
-  background: inherit;
-  text-align: right;
-  user-select: none;
-}
-
-.diff-num + .diff-num {
-  left: 40px;
-}
-
-.diff-sign {
-  position: sticky;
-  left: 80px;
-  z-index: 1;
-  flex: none;
-  width: 16px;
-  border-right: 1px solid var(--border);
-  color: var(--muted);
-  background: inherit;
-  text-align: center;
-  user-select: none;
-}
-
-.diff-line.add .diff-sign {
-  color: var(--green);
-}
-
-.diff-line.del .diff-sign {
-  color: var(--red);
-}
-
-.diff-text {
-  padding-right: 12px;
 }
 
 .diff-binary {

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { FileDiff } from "./process-model";
+import { DiffLineView } from "../../shared/DiffLineView";
 import { buildDiffRows } from "./tool-diff";
 
 /** Body rows shown before a long diff folds into a "show more" control. */
@@ -36,16 +37,7 @@ export function DiffCard({ diffs }: { diffs: readonly FileDiff[] }) {
               </div>
             );
           }
-          return (
-            <div className={`tool-diff-line ${row.kind}`} key={index}>
-              <span className="tool-diff-sign" aria-hidden="true">
-                {row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "}
-              </span>
-              <span className="tool-diff-text">
-                {row.text === "" ? " " : row.text}
-              </span>
-            </div>
-          );
+          return <DiffLineView key={index} line={row} wrap />;
         })}
       </div>
       {hidden > 0 && (
