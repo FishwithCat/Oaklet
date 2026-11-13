@@ -48,6 +48,9 @@ export function Chat({
   onNewTab,
   onCloseTab,
   items,
+  firstSeq,
+  hasMore,
+  loadingOlder,
   running,
   compacting,
   activeRunId,
@@ -55,6 +58,7 @@ export function Chat({
   onSend,
   onStop,
   onCompact,
+  onLoadOlder,
   onApproval,
   onSendToTerminal,
 }: {
@@ -66,6 +70,9 @@ export function Chat({
   onNewTab: () => void;
   onCloseTab: (id: string) => void;
   items: Item[];
+  firstSeq: number | null;
+  hasMore: boolean;
+  loadingOlder: boolean;
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
@@ -73,6 +80,7 @@ export function Chat({
   onSend: (text: string, attachments: Attachment[]) => boolean;
   onStop: () => void;
   onCompact: () => void;
+  onLoadOlder: () => Promise<boolean>;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
 }) {
@@ -82,11 +90,19 @@ export function Chat({
   const composerRef = useRef<ChatComposerHandle>(null);
   const stickToBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
+  const [historyAnchor, setHistoryAnchor] = useState<{
+    height: number;
+    top: number;
+    firstSeq: number;
+    tabId: string;
+    anchorSeq: number | null;
+    anchorTop: number | null;
+  } | null>(null);
   const draftsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
   // The welcome screen is the blank first tab: no tabs, find or selection.
-  const welcome = tabs.length <= 1 && items.length === 0;
+  const welcome = tabs.length <= 1 && items.length === 0 && !hasMore;
   const { selectionAction, selectionButtonRef, clearSelection } =
     useSelectionAction({ active: active && !welcome, containerRef: chatRef });
 
@@ -106,6 +122,7 @@ export function Chat({
     setInput(draftsRef.current.get(activeTabId) ?? "");
     setAttachments(attachmentsRef.current.get(activeTabId) ?? []);
     clearSelection();
+    setHistoryAnchor(null);
     stickToBottomRef.current = true;
     pinToBottom();
   }, [activeTabId]);
@@ -116,6 +133,37 @@ export function Chat({
       pinToBottom();
     }
   }, [items, compacting]);
+
+  // A prepend keeps the row the user was reading under the same viewport
+  // position; only a window that actually grew older consumes the anchor.
+  useLayoutEffect(() => {
+    if (
+      historyAnchor === null ||
+      historyAnchor.tabId !== activeTabId ||
+      firstSeq === null ||
+      firstSeq >= historyAnchor.firstSeq
+    ) {
+      return;
+    }
+    const element = chatRef.current;
+    if (!element) return;
+    const anchored =
+      historyAnchor.anchorSeq === null
+        ? null
+        : element.querySelector<HTMLElement>(
+            `[data-seq="${historyAnchor.anchorSeq}"]`,
+          );
+    const anchoredTop = anchored?.getBoundingClientRect().top ?? null;
+    if (historyAnchor.anchorTop !== null && anchoredTop !== null) {
+      element.scrollTop += anchoredTop - historyAnchor.anchorTop;
+    } else {
+      element.scrollTop =
+        element.scrollHeight - historyAnchor.height + historyAnchor.top;
+    }
+    lastScrollTopRef.current = element.scrollTop;
+    stickToBottomRef.current = false;
+    setHistoryAnchor(null);
+  }, [activeTabId, firstSeq, historyAnchor, items]);
 
   useImperativeHandle(
     ref,
@@ -177,6 +225,33 @@ export function Chat({
     updateAttachments([]);
     stickToBottomRef.current = true;
     return true;
+  }
+
+  async function loadEarlier() {
+    const element = chatRef.current;
+    if (
+      !element ||
+      !hasMore ||
+      loadingOlder ||
+      compacting ||
+      firstSeq === null ||
+      historyAnchor !== null
+    ) {
+      return;
+    }
+    stickToBottomRef.current = false;
+    const first = element.querySelector<HTMLElement>("[data-seq]");
+    const anchorSeq =
+      first?.dataset.seq === undefined ? null : Number(first.dataset.seq);
+    setHistoryAnchor({
+      height: element.scrollHeight,
+      top: element.scrollTop,
+      firstSeq,
+      tabId: activeTabId,
+      anchorSeq,
+      anchorTop: first?.getBoundingClientRect().top ?? null,
+    });
+    if (!(await onLoadOlder())) setHistoryAnchor(null);
   }
 
   const showTabs = items.length > 0 || tabs.length > 1;
@@ -300,6 +375,17 @@ export function Chat({
         onScroll={onScroll}
         onWheel={onWheel}
       >
+        {hasMore && (
+          <div className="load-older">
+            <button
+              type="button"
+              disabled={loadingOlder || compacting}
+              onClick={loadEarlier}
+            >
+              {loadingOlder ? "Loading earlier…" : "Load earlier"}
+            </button>
+          </div>
+        )}
         {items.length === 0 ? (
           empty
         ) : (

@@ -61,6 +61,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
 - **Stop** cancels the model request, a running command, or a pending approval.
+- Long transcripts open on the latest page; scroll up and choose **Load earlier**
+  to bring in older turns without reading the whole log.
 - The plant in the composer's top-left corner estimates the next request against
   the context window and turns from green to yellow to red. Hover it for the
   percentage and token counts; click it while idle to fold older turns into a

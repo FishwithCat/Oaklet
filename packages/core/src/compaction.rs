@@ -1100,6 +1100,7 @@ mod tests {
                 .finish_run(&RunEnd {
                     session_id: "s1".into(),
                     run_id: "seed".into(),
+                    start_seq: 1,
                     status: "done",
                     finished_at: 1,
                     appended: messages[1..]

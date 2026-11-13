@@ -3,7 +3,8 @@
 //! `session_events` is the only conversation store: an append-only log of
 //! messages, notices, and compaction records. The model-facing history and the
 //! rendered transcript are both projections of that log, so neither is written
-//! a second time and a turn only appends rows.
+//! a second time and a turn only appends rows. The UI reads bounded windows;
+//! a run start reads only the post-compaction model tail.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const SCHEMA_VERSION: i64 = 5;
+
+/// Events in one UI window. The model surface never uses this page size.
+pub const PAGE_EVENTS: usize = 200;
 
 const SESSION_COLUMNS: &str = "id, workspace, title, turns, created_at, updated_at, \
      context_used, context_window";
@@ -90,12 +94,44 @@ pub struct ContextUsage {
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,
-    pub workspace: String,
     pub title: String,
     pub turns: usize,
     pub updated_at: i64,
     pub context: Option<ContextUsage>,
     pub events: Vec<Event>,
+}
+
+/// A session's metadata without its event log.
+#[derive(Clone, Debug)]
+pub struct SessionMeta {
+    pub id: String,
+    pub workspace: String,
+    pub title: String,
+    pub turns: usize,
+    pub updated_at: i64,
+    pub context: Option<ContextUsage>,
+}
+
+/// One contiguous slice of a session log, newest window or run delta.
+#[derive(Clone, Debug)]
+pub struct SessionWindow {
+    pub id: String,
+    pub title: String,
+    pub turns: usize,
+    pub updated_at: i64,
+    pub context: Option<ContextUsage>,
+    pub events: Vec<Event>,
+    /// Whether events exist before the first event in this window.
+    pub has_more: bool,
+}
+
+/// A started run: the new UI window, its first event, and the model history
+/// that preceded it. The history is read inside the append transaction.
+#[derive(Clone, Debug)]
+pub struct RunStart {
+    pub window: SessionWindow,
+    pub start_seq: i64,
+    pub prior_messages: Vec<Value>,
 }
 
 /// A lightweight row for the history palette.
@@ -123,6 +159,8 @@ pub struct NewUserTurn {
 pub struct RunEnd {
     pub session_id: String,
     pub run_id: String,
+    /// Seq of the user event appended by `begin_run`.
+    pub start_seq: i64,
     pub status: &'static str,
     pub finished_at: i64,
     pub appended: Vec<EventPayload>,
@@ -153,15 +191,26 @@ pub struct CompactionRecord {
     pub context: ContextUsage,
 }
 
-fn decode_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>, String> {
+fn decode_event(seq: i64, raw: &str, created_at: i64) -> Result<Event, String> {
+    let payload = serde_json::from_str(raw)
+        .map_err(|_| "A transcript event could not be read.".to_string())?;
+    Ok(Event {
+        seq,
+        payload,
+        created_at,
+    })
+}
+
+fn read_events(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<Event>, String> {
     let mut statement = conn
-        .prepare(
-            "SELECT seq, payload, created_at FROM session_events \
-             WHERE session_id = ?1 ORDER BY seq",
-        )
+        .prepare(sql)
         .map_err(|error| format!("Could not read the transcript: {error}"))?;
     let rows = statement
-        .query_map([session_id], |row| {
+        .query_map(params, |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -173,15 +222,95 @@ fn decode_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>, Stri
     for row in rows {
         let (seq, raw, created_at) =
             row.map_err(|error| format!("Could not read the transcript: {error}"))?;
-        let payload = serde_json::from_str(&raw)
-            .map_err(|_| "A transcript event could not be read.".to_string())?;
-        events.push(Event {
-            seq,
-            payload,
-            created_at,
-        });
+        events.push(decode_event(seq, &raw, created_at)?);
     }
     Ok(events)
+}
+
+fn decode_events(conn: &Connection, session_id: &str) -> Result<Vec<Event>, String> {
+    read_events(
+        conn,
+        "SELECT seq, payload, created_at FROM session_events \
+         WHERE session_id = ?1 ORDER BY seq",
+        &[&session_id],
+    )
+}
+
+/// A page is cut before it is aligned, so a turn with more than one page still
+/// starts where the page starts; every smaller turn starts on its user message.
+fn align_page(events: &mut Vec<Event>) {
+    let Some(index) = events.iter().position(is_visible_user_event) else {
+        return;
+    };
+    // Keep notices directly above the turn (compaction markers, interruption
+    // errors); drop a partial assistant/tool block instead.
+    let mut start = index;
+    while start > 0
+        && matches!(
+            events[start - 1].payload,
+            EventPayload::Notice { .. } | EventPayload::Compaction { .. }
+        )
+    {
+        start -= 1;
+    }
+    if start > 0 {
+        events.drain(0..start);
+    }
+}
+
+fn is_visible_user_event(event: &Event) -> bool {
+    let EventPayload::Message { message, display } = &event.payload else {
+        return false;
+    };
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && !display
+            .as_ref()
+            .and_then(|display| display.get("hidden"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        && !is_checkpoint(message)
+}
+
+fn read_page(
+    conn: &Connection,
+    session_id: &str,
+    before_seq: Option<i64>,
+    limit: usize,
+) -> Result<Vec<Event>, String> {
+    let limit = limit.max(1);
+    let fetch = limit.saturating_add(1).min(i64::MAX as usize) as i64;
+    let mut events = if let Some(before) = before_seq {
+        read_events(
+            conn,
+            "SELECT seq, payload, created_at FROM session_events \
+             WHERE session_id = ?1 AND seq < ?2 ORDER BY seq DESC LIMIT ?3",
+            &[&session_id, &before, &fetch],
+        )?
+    } else {
+        read_events(
+            conn,
+            "SELECT seq, payload, created_at FROM session_events \
+             WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2",
+            &[&session_id, &fetch],
+        )?
+    };
+    events.reverse();
+    if events.len() > limit {
+        events.remove(0);
+    }
+    if events.first().is_some_and(|event| event.seq > 1) {
+        align_page(&mut events);
+    }
+    Ok(events)
+}
+
+fn read_from(conn: &Connection, session_id: &str, start_seq: i64) -> Result<Vec<Event>, String> {
+    read_events(
+        conn,
+        "SELECT seq, payload, created_at FROM session_events \
+         WHERE session_id = ?1 AND seq >= ?2 ORDER BY seq",
+        &[&session_id, &start_seq],
+    )
 }
 
 fn next_seq(conn: &Connection, session_id: &str) -> Result<i64, String> {
@@ -243,10 +372,9 @@ fn read_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     ))
 }
 
-fn to_session(conn: &Connection, row: SessionRow) -> Result<Session, String> {
+fn to_meta(row: SessionRow) -> SessionMeta {
     let (id, workspace, title, turns, _created_at, updated_at, used, window) = row;
-    let events = decode_events(conn, &id)?;
-    Ok(Session {
+    SessionMeta {
         id,
         workspace,
         title,
@@ -259,18 +387,78 @@ fn to_session(conn: &Connection, row: SessionRow) -> Result<Session, String> {
             }),
             _ => None,
         },
+    }
+}
+
+fn to_session(conn: &Connection, row: SessionRow) -> Result<Session, String> {
+    let meta = to_meta(row);
+    let events = decode_events(conn, &meta.id)?;
+    Ok(Session {
+        id: meta.id,
+        title: meta.title,
+        turns: meta.turns,
+        updated_at: meta.updated_at,
+        context: meta.context,
         events,
     })
 }
 
-/// The seq of the latest compaction's summary boundary, if the session has one.
-fn compacted_through(events: &[Event]) -> Option<i64> {
-    events.iter().rev().find_map(|event| match &event.payload {
+fn latest_compaction(conn: &Connection, session_id: &str) -> Result<Option<(Value, i64)>, String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM session_events \
+             WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'compaction' \
+             ORDER BY seq DESC LIMIT 1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the transcript: {error}"))?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    match decode_event(0, &raw, 0)?.payload {
         EventPayload::Compaction {
-            shadowed_through, ..
-        } => Some(*shadowed_through),
-        _ => None,
-    })
+            summary,
+            shadowed_through,
+            ..
+        } => Ok(Some((summary, shadowed_through))),
+        _ => Ok(None),
+    }
+}
+
+fn surface_messages_with(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<Vec<Value>>, String> {
+    if Store::get_meta_with(conn, session_id)?.is_none() {
+        return Ok(None);
+    }
+    let mut messages = Vec::new();
+    let mut start = 0;
+    if let Some((summary, through)) = latest_compaction(conn, session_id)? {
+        messages.push(summary);
+        start = through;
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT payload FROM session_events \
+             WHERE session_id = ?1 AND seq > ?2 \
+               AND json_extract(payload, '$.type') = 'message' \
+             ORDER BY seq",
+        )
+        .map_err(|error| format!("Could not read the transcript: {error}"))?;
+    let rows = statement
+        .query_map(params![session_id, start], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not read the transcript: {error}"))?;
+    for row in rows {
+        let raw = row.map_err(|error| format!("Could not read the transcript: {error}"))?;
+        let EventPayload::Message { message, .. } = decode_event(0, &raw, 0)?.payload else {
+            continue;
+        };
+        messages.push(message);
+    }
+    Ok(Some(messages))
 }
 
 /// A compaction checkpoint is user-visible history, not conversation.
@@ -375,26 +563,77 @@ impl Store {
         row.map(|row| to_session(conn, row)).transpose()
     }
 
+    fn get_meta_with(conn: &Connection, id: &str) -> Result<Option<SessionMeta>, String> {
+        conn.query_row(
+            &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
+            [id],
+            read_session_row,
+        )
+        .optional()
+        .map(|row| row.map(to_meta))
+        .map_err(|error| format!("Could not read the session: {error}"))
+    }
+
+    fn get_window_with(
+        conn: &Connection,
+        id: &str,
+        before_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Option<SessionWindow>, String> {
+        let Some(meta) = Self::get_meta_with(conn, id)? else {
+            return Ok(None);
+        };
+        let events = read_page(conn, id, before_seq, limit)?;
+        let has_more = events.first().is_some_and(|event| event.seq > 1);
+        Ok(Some(SessionWindow {
+            id: meta.id,
+            title: meta.title,
+            turns: meta.turns,
+            updated_at: meta.updated_at,
+            context: meta.context,
+            events,
+            has_more,
+        }))
+    }
+
     pub fn get_session(&self, id: &str) -> Result<Option<Session>, String> {
         let conn = self.connection()?;
         Self::get_with(&conn, id)
     }
 
+    /// Metadata for one session, without reading its event log.
+    pub fn session_meta(&self, id: &str) -> Result<Option<SessionMeta>, String> {
+        let conn = self.connection()?;
+        Self::get_meta_with(&conn, id)
+    }
+
+    /// One UI page, ending just before `before_seq` when supplied.
+    pub fn get_session_window(
+        &self,
+        id: &str,
+        before_seq: Option<i64>,
+        limit: usize,
+    ) -> Result<Option<SessionWindow>, String> {
+        let conn = self.connection()?;
+        Self::get_window_with(&conn, id, before_seq, limit)
+    }
+
     /// Number of messages a compaction summary replaced.
     pub fn history_count(&self, session_id: &str) -> Result<usize, String> {
         let conn = self.connection()?;
-        let Some(session) = Self::get_with(&conn, session_id)? else {
+        let Some((_, through)) = latest_compaction(&conn, session_id)? else {
             return Ok(0);
         };
-        let Some(through) = compacted_through(&session.events) else {
-            return Ok(0);
-        };
-        Ok(session
-            .events
-            .iter()
-            .filter(|event| event.seq <= through)
-            .filter(|event| matches!(event.payload, EventPayload::Message { .. }))
-            .count())
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_events \
+                 WHERE session_id = ?1 AND seq <= ?2 \
+                   AND json_extract(payload, '$.type') = 'message'",
+                params![session_id, through],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not read the transcript: {error}"))?;
+        Ok(count.max(0) as usize)
     }
 
     /// One 1-based page of messages replaced by compaction.
@@ -405,29 +644,43 @@ impl Store {
         limit: usize,
     ) -> Result<(Vec<(i64, Value)>, usize), String> {
         let conn = self.connection()?;
-        let Some(session) = Self::get_with(&conn, session_id)? else {
+        let Some((_, through)) = latest_compaction(&conn, session_id)? else {
             return Ok((Vec::new(), 0));
         };
-        let Some(through) = compacted_through(&session.events) else {
-            return Ok((Vec::new(), 0));
-        };
-        let replaced: Vec<(i64, Value)> = session
-            .events
-            .iter()
-            .filter(|event| event.seq <= through)
-            .filter_map(|event| match &event.payload {
-                EventPayload::Message { message, .. } => Some((event.seq, message.clone())),
-                _ => None,
-            })
-            .collect();
-        let total = replaced.len();
+        let total: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_events \
+                 WHERE session_id = ?1 AND seq <= ?2 \
+                   AND json_extract(payload, '$.type') = 'message'",
+                params![session_id, through],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not read the transcript: {error}"))?;
         let start = offset.max(1) - 1;
-        let page = replaced
-            .into_iter()
-            .skip(start)
-            .take(limit.max(1))
-            .collect();
-        Ok((page, total))
+        let mut statement = conn
+            .prepare(
+                "SELECT seq, payload FROM session_events \
+                 WHERE session_id = ?1 AND seq <= ?2 \
+                   AND json_extract(payload, '$.type') = 'message' \
+                 ORDER BY seq LIMIT ?3 OFFSET ?4",
+            )
+            .map_err(|error| format!("Could not read the transcript: {error}"))?;
+        let rows = statement
+            .query_map(
+                params![session_id, through, limit.max(1) as i64, start as i64],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|error| format!("Could not read the transcript: {error}"))?;
+        let mut page = Vec::new();
+        for row in rows {
+            let (seq, raw) =
+                row.map_err(|error| format!("Could not read the transcript: {error}"))?;
+            let EventPayload::Message { message, .. } = decode_event(seq, &raw, 0)?.payload else {
+                continue;
+            };
+            page.push((seq, message));
+        }
+        Ok((page, total.max(0) as usize))
     }
 
     pub fn create_session(&self, id: &str, workspace: &str, now: i64) -> Result<Session, String> {
@@ -472,7 +725,7 @@ impl Store {
         run_id: &str,
         turn: &NewUserTurn,
         now: i64,
-    ) -> Result<Session, String> {
+    ) -> Result<RunStart, String> {
         let mut conn = self.connection()?;
         let tx = conn
             .transaction()
@@ -493,6 +746,11 @@ impl Store {
         } else {
             current_title
         };
+        // Read the prior model surface in the same transaction that appends
+        // the user turn, so a concurrent compaction cannot slip between them.
+        let prior_messages = surface_messages_with(&tx, session_id)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
+        let start_seq = next_seq(&tx, session_id)?;
         append_events(
             &tx,
             session_id,
@@ -515,12 +773,17 @@ impl Store {
         tx.commit()
             .map_err(|error| format!("Could not start the run: {error}"))?;
 
-        Self::get_with(&conn, session_id)?
-            .ok_or_else(|| "This session no longer exists.".to_string())
+        let window = Self::get_window_with(&conn, session_id, None, PAGE_EVENTS)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
+        Ok(RunStart {
+            window,
+            start_seq,
+            prior_messages,
+        })
     }
 
     /// Append the finished turn and its run status in one transaction.
-    pub fn finish_run(&self, end: &RunEnd) -> Result<Session, String> {
+    pub fn finish_run(&self, end: &RunEnd) -> Result<SessionWindow, String> {
         let mut conn = self.connection()?;
         let tx = conn
             .transaction()
@@ -564,8 +827,19 @@ impl Store {
         tx.commit()
             .map_err(|error| format!("Could not finish the run: {error}"))?;
 
-        Self::get_with(&conn, &end.session_id)?
-            .ok_or_else(|| "This session no longer exists.".to_string())
+        let meta = Self::get_meta_with(&conn, &end.session_id)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
+        let events = read_from(&conn, &end.session_id, end.start_seq)?;
+        let has_more = events.first().is_some_and(|event| event.seq > 1);
+        Ok(SessionWindow {
+            id: meta.id,
+            title: meta.title,
+            turns: meta.turns,
+            updated_at: meta.updated_at,
+            context: meta.context,
+            events,
+            has_more,
+        })
     }
 
     /// Append one compaction record and save the gauge it produced.
@@ -574,7 +848,7 @@ impl Store {
         session_id: &str,
         record: &CompactionRecord,
         now: i64,
-    ) -> Result<Session, String> {
+    ) -> Result<SessionWindow, String> {
         let mut conn = self.connection()?;
         let tx = conn
             .transaction()
@@ -615,7 +889,7 @@ impl Store {
         tx.commit()
             .map_err(|error| format!("Could not save the compacted context: {error}"))?;
 
-        Self::get_with(&conn, session_id)?
+        Self::get_window_with(&conn, session_id, None, PAGE_EVENTS)?
             .ok_or_else(|| "This session no longer exists.".to_string())
     }
 
@@ -799,22 +1073,28 @@ mod tests {
         let first = store
             .begin_run("s1", "r1", &turn("hello", Some("hello")), 2)
             .unwrap();
-        assert_eq!(first.title, "hello");
-        assert_eq!(first.turns, 1);
-        assert_eq!(first.events.len(), 1);
-        assert_eq!(first.events[0].seq, 1);
+        assert_eq!(first.start_seq, 1);
+        assert!(first.prior_messages.is_empty());
+        assert_eq!(first.window.title, "hello");
+        assert_eq!(first.window.turns, 1);
+        assert_eq!(first.window.events.len(), 1);
+        assert_eq!(first.window.events[0].seq, 1);
         assert!(matches!(
-            first.events[0].payload,
+            first.window.events[0].payload,
             EventPayload::Message { .. }
         ));
 
         let second = store
             .begin_run("s1", "r2", &turn("again", Some("again")), 3)
             .unwrap();
-        assert_eq!(second.title, "hello");
-        assert_eq!(second.turns, 2);
+        assert_eq!(second.start_seq, 2);
+        assert_eq!(second.prior_messages.len(), 1);
+        assert_eq!(second.prior_messages[0]["content"], "hello");
+        assert_eq!(second.window.title, "hello");
+        assert_eq!(second.window.turns, 2);
         assert_eq!(
             second
+                .window
                 .events
                 .iter()
                 .map(|event| event.seq)
@@ -834,6 +1114,7 @@ mod tests {
             .finish_run(&RunEnd {
                 session_id: "s1".into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 9,
                 appended: vec![EventPayload::Message {
@@ -911,6 +1192,7 @@ mod tests {
             .finish_run(&RunEnd {
                 session_id: "s1".into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 3,
                 appended: vec![EventPayload::Message {
@@ -932,6 +1214,7 @@ mod tests {
             .finish_run(&RunEnd {
                 session_id: "s1".into(),
                 run_id: "r2".into(),
+                start_seq: 3,
                 status: "done",
                 finished_at: 5,
                 appended: vec![EventPayload::Message {
@@ -956,7 +1239,10 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(session.events.len(), 5);
+        assert_eq!(session.events.len(), 3);
+        assert_eq!(session.events[0].seq, 3);
+        assert_eq!(session.events[2].seq, 5);
+        assert!(session.has_more);
         assert_eq!(
             session.events.last().unwrap().payload,
             EventPayload::Compaction {
@@ -974,6 +1260,190 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(history[0].1["content"], "old");
         assert_eq!(history[1].1["content"], "old answer");
+    }
+
+    #[test]
+    fn reads_turn_aligned_windows_backwards() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        for (index, text) in ["one", "two", "three"].into_iter().enumerate() {
+            let start = index as i64 * 2 + 1;
+            store
+                .begin_run("s1", &format!("r{index}"), &turn(text, None), start)
+                .unwrap();
+            store
+                .finish_run(&RunEnd {
+                    session_id: "s1".into(),
+                    run_id: format!("r{index}"),
+                    start_seq: start,
+                    status: "done",
+                    finished_at: start + 1,
+                    appended: vec![EventPayload::Message {
+                        message: json!({ "role": "assistant", "content": text }),
+                        display: None,
+                    }],
+                    compaction: None,
+                    context: None,
+                    error: None,
+                })
+                .unwrap();
+        }
+
+        let latest = store.get_session_window("s1", None, 2).unwrap().unwrap();
+        assert_eq!(
+            latest
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [5, 6]
+        );
+        assert!(latest.has_more);
+
+        let middle = store.get_session_window("s1", Some(5), 2).unwrap().unwrap();
+        assert_eq!(
+            middle
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert!(middle.has_more);
+
+        let oldest = store.get_session_window("s1", Some(3), 2).unwrap().unwrap();
+        assert_eq!(
+            oldest
+                .events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(!oldest.has_more);
+
+        let empty = store.get_session_window("s1", Some(1), 2).unwrap().unwrap();
+        assert!(empty.events.is_empty());
+        assert!(!empty.has_more);
+    }
+
+    #[test]
+    fn a_window_keeps_notices_above_its_first_turn() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store.begin_run("s1", "r1", &turn("old", None), 2).unwrap();
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                start_seq: 1,
+                status: "done",
+                finished_at: 3,
+                appended: vec![
+                    EventPayload::Message {
+                        message: json!({ "role": "assistant", "content": "old answer" }),
+                        display: None,
+                    },
+                    EventPayload::Notice {
+                        tone: "muted".into(),
+                        text: "interrupted".into(),
+                    },
+                ],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
+
+        let page = store.get_session_window("s1", Some(5), 2).unwrap().unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert!(matches!(
+            page.events[0].payload,
+            EventPayload::Notice { .. }
+        ));
+    }
+
+    #[test]
+    fn reads_only_the_model_surface_after_compaction() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store.begin_run("s1", "r1", &turn("old", None), 2).unwrap();
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                start_seq: 1,
+                status: "done",
+                finished_at: 3,
+                appended: vec![EventPayload::Message {
+                    message: json!({ "role": "assistant", "content": "old answer" }),
+                    display: None,
+                }],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
+        let summary = json!({
+            "role": "user",
+            "content": "<compacted-summary>old turns</compacted-summary>",
+        });
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r2".into(),
+                start_seq: 3,
+                status: "done",
+                finished_at: 5,
+                appended: vec![EventPayload::Message {
+                    message: json!({ "role": "assistant", "content": "new answer" }),
+                    display: None,
+                }],
+                compaction: Some(CompactionEnd {
+                    summary: summary.clone(),
+                    surface: vec![
+                        summary.clone(),
+                        json!({ "role": "user", "content": "new" }),
+                        json!({ "role": "assistant", "content": "new answer" }),
+                    ],
+                    before: 100,
+                    after: 10,
+                }),
+                context: None,
+                error: None,
+            })
+            .unwrap();
+
+        {
+            let conn = store.connection().unwrap();
+            let messages = super::surface_messages_with(&conn, "s1").unwrap().unwrap();
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages[0], summary);
+            assert_eq!(messages[1]["content"], "new");
+            assert_eq!(messages[2]["content"], "new answer");
+            assert!(!messages.iter().any(|message| message["content"] == "old"));
+            assert!(
+                super::surface_messages_with(&conn, "missing")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        let later = store
+            .begin_run("s1", "r3", &turn("later", None), 6)
+            .unwrap();
+        assert_eq!(later.start_seq, 6);
+        assert_eq!(later.prior_messages.len(), 3);
+        assert_eq!(later.prior_messages[0], summary);
+        assert_eq!(later.prior_messages[1]["content"], "new");
     }
 
     #[test]

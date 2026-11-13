@@ -156,6 +156,9 @@ function App() {
           onNewTab={session.newTab}
           onCloseTab={session.closeTab}
           items={session.items}
+          firstSeq={session.firstSeq}
+          hasMore={session.hasMore}
+          loadingOlder={session.loadingOlder}
           running={session.running}
           compacting={session.compacting}
           activeRunId={session.activeRunId}
@@ -163,6 +166,7 @@ function App() {
           onSend={session.send}
           onStop={session.stop}
           onCompact={session.compact}
+          onLoadOlder={session.loadOlder}
           onApproval={session.respondToApproval}
           onSendToTerminal={(text) => {
             setView("terminal");

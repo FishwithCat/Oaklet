@@ -271,6 +271,7 @@ mod tests {
             .finish_run(&RunEnd {
                 session_id: session.into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 2,
                 appended: messages

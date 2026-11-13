@@ -8,6 +8,8 @@ import {
   applyDeltas,
   applyToolResult,
   applyToolStart,
+  mergeWindow,
+  prependWindow,
   settleRun,
   tabStatus,
   toChatTabInfo,
@@ -20,6 +22,8 @@ const session = (overrides = {}) => ({
   updatedAt: 1,
   turns: 0,
   items: [],
+  firstSeq: null,
+  hasMore: false,
   context: null,
   running: true,
   blocked: false,
@@ -267,4 +271,90 @@ test("settleRun settles streaming and unfinished tools when the session is lost"
     text: "save failed",
   });
   assert.equal(appendNotice(settled, "muted", "later").items.length, 4);
+});
+
+test("mergeWindow replaces the suffix and keeps older loaded pages", () => {
+  const current = session({
+    firstSeq: 1,
+    hasMore: true,
+    items: [
+      { kind: "user", text: "old", seq: 1 },
+      { kind: "assistant", text: "old answer", streaming: false, seq: 2 },
+      { kind: "user", text: "new", seq: 3 },
+      { kind: "assistant", text: "draft", streaming: true },
+    ],
+  });
+  const incoming = session({
+    firstSeq: 3,
+    hasMore: true,
+    items: [
+      { kind: "user", text: "new", seq: 3 },
+      { kind: "assistant", text: "final", streaming: false, seq: 4 },
+    ],
+  });
+
+  const merged = mergeWindow(current, incoming);
+  assert.deepEqual(
+    merged.items.map((item) => item.text),
+    ["old", "old answer", "new", "final"],
+  );
+  assert.equal(merged.firstSeq, 1);
+  assert.equal(merged.hasMore, true);
+});
+
+test("mergeWindow takes the incoming cursor when it replaces the whole window", () => {
+  const merged = mergeWindow(
+    session({
+      firstSeq: 5,
+      hasMore: true,
+      items: [{ kind: "user", text: "new", seq: 5 }],
+    }),
+    session({
+      firstSeq: 1,
+      hasMore: false,
+      items: [{ kind: "user", text: "start", seq: 1 }],
+    }),
+  );
+
+  assert.deepEqual(
+    merged.items.map((item) => item.text),
+    ["start"],
+  );
+  assert.equal(merged.firstSeq, 1);
+  assert.equal(merged.hasMore, false);
+});
+
+test("prependWindow only moves the cursor farther back", () => {
+  const current = session({
+    firstSeq: 5,
+    hasMore: true,
+    items: [{ kind: "user", text: "new", seq: 5 }],
+  });
+  const older = session({
+    firstSeq: 3,
+    hasMore: false,
+    items: [{ kind: "user", text: "old", seq: 3 }],
+  });
+  const merged = prependWindow(current, older);
+
+  assert.deepEqual(
+    merged.items.map((item) => item.text),
+    ["old", "new"],
+  );
+  assert.equal(merged.firstSeq, 3);
+  assert.equal(merged.hasMore, false);
+  assert.equal(prependWindow(merged, older), merged);
+
+  const overlapping = prependWindow(current, session({
+    firstSeq: 3,
+    hasMore: true,
+    items: [
+      { kind: "user", text: "old", seq: 3 },
+      { kind: "user", text: "new", seq: 5 },
+    ],
+  }));
+  assert.deepEqual(
+    overlapping.items.map((item) => item.text),
+    ["old", "new"],
+  );
 });

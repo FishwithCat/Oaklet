@@ -3,7 +3,7 @@
 //! Commands in this module are the only way the frontend reads or changes chat
 //! state. A live run keeps its authoritative [`SessionView`] in memory, so a
 //! second client can hydrate through `session_get` while tokens are streaming;
-//! the database is written once when the run ends.
+//! the user turn is appended when the run starts and the rest when it ends.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -32,8 +32,9 @@ const ATTACHMENT_TAIL_CHARS: usize = 2_000;
 const INTERRUPTED_NOTICE: &str = "The app closed while this run was working. \
     Send another message to continue.";
 
-/// What the UI needs to render one conversation. Model-facing `messages` stay
-/// in Rust so long base64 image history never crosses IPC on every turn.
+/// One window of what the UI needs to render a conversation. Model-facing
+/// `messages` stay in Rust so long base64 image history never crosses IPC on
+/// every turn.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
@@ -42,6 +43,10 @@ pub struct SessionView {
     pub updated_at: i64,
     pub turns: usize,
     pub items: Vec<Value>,
+    /// Seq of the oldest event in this window, or `None` for an empty session.
+    pub first_seq: Option<i64>,
+    /// Whether older events exist before `first_seq`.
+    pub has_more: bool,
     pub context: Option<ContextUsage>,
     pub running: bool,
     pub blocked: bool,
@@ -226,9 +231,9 @@ impl ChatState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn view(&self, session: Session) -> SessionView {
-        let compacting = self.live().compacting.contains(&session.id);
-        view_from_session(session, compacting)
+    fn view(&self, window: store::SessionWindow) -> SessionView {
+        let compacting = self.live().compacting.contains(&window.id);
+        view_from_window(window, compacting)
     }
 
     fn live_view(&self, session_id: &str) -> Option<SessionView> {
@@ -267,13 +272,34 @@ impl ChatState {
 }
 
 fn view_from_session(session: Session, compacting: bool) -> SessionView {
+    let first_seq = session.events.first().map(|event| event.seq);
     SessionView {
         id: session.id,
         title: session.title,
         updated_at: session.updated_at,
         turns: session.turns,
         items: project_events(&session.events),
+        first_seq,
+        has_more: first_seq.is_some_and(|seq| seq > 1),
         context: session.context,
+        running: false,
+        blocked: false,
+        compacting,
+        active_run_id: None,
+    }
+}
+
+fn view_from_window(window: store::SessionWindow, compacting: bool) -> SessionView {
+    let first_seq = window.events.first().map(|event| event.seq);
+    SessionView {
+        id: window.id,
+        title: window.title,
+        updated_at: window.updated_at,
+        turns: window.turns,
+        items: project_events(&window.events),
+        first_seq,
+        has_more: window.has_more,
+        context: window.context,
         running: false,
         blocked: false,
         compacting,
@@ -320,11 +346,13 @@ fn project_events(events: &[Event]) -> Vec<Value> {
         match &event.payload {
             EventPayload::Notice { tone, text } => items.push(json!({
                 "kind": "notice",
+                "seq": event.seq,
                 "tone": tone,
                 "text": text,
             })),
             EventPayload::Compaction { before, after, .. } => items.push(json!({
                 "kind": "notice",
+                "seq": event.seq,
                 "tone": "muted",
                 "text": format!(
                     "Compacted context: {} → {} tokens. Earlier messages stay readable with history_read.",
@@ -352,6 +380,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                             .map(str::to_string)
                             .unwrap_or_else(|| item_text(message.get("content")));
                         let mut item = json!({ "kind": "user", "text": text });
+                        item["seq"] = json!(event.seq);
                         if let Some(attachments) = display
                             .as_ref()
                             .and_then(|display| display.get("attachments"))
@@ -369,6 +398,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                         if !reasoning.is_empty() {
                             items.push(json!({
                                 "kind": "reasoning",
+                                "seq": event.seq,
                                 "runId": run_id,
                                 "text": reasoning,
                                 "streaming": false,
@@ -387,6 +417,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                         if !content.is_empty() {
                             items.push(json!({
                                 "kind": "assistant",
+                                "seq": event.seq,
                                 "runId": run_id,
                                 "text": content,
                                 "streaming": false,
@@ -413,6 +444,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                         let pending = display_flag(display.as_ref(), "pending");
                         let mut item = json!({
                             "kind": "tool",
+                            "seq": event.seq,
                             "runId": run_id,
                             "id": id,
                             "name": name,
@@ -477,7 +509,7 @@ pub async fn session_create(
         tauri::async_runtime::spawn_blocking(move || store.create_session(&id, &workspace, now))
             .await
             .map_err(|error| format!("Could not create the session: {error}"))??;
-    Ok(state.chat.view(session))
+    Ok(view_from_session(session, false))
 }
 
 #[tauri::command]
@@ -493,16 +525,24 @@ pub async fn session_list(
 }
 
 #[tauri::command]
-pub async fn session_get(state: State<'_, SharedState>, id: String) -> Result<SessionView, String> {
-    if let Some(view) = state.chat.live_view(&id) {
+pub async fn session_get(
+    state: State<'_, SharedState>,
+    id: String,
+    before_seq: Option<i64>,
+) -> Result<SessionView, String> {
+    if before_seq.is_none()
+        && let Some(view) = state.chat.live_view(&id)
+    {
         return Ok(view);
     }
     let store = state.chat.store.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || store.get_session(&id))
-        .await
-        .map_err(|error| format!("Could not read the session: {error}"))??
-        .ok_or_else(|| "This session no longer exists.".to_string())?;
-    Ok(state.chat.view(session))
+    let window = tauri::async_runtime::spawn_blocking(move || {
+        store.get_session_window(&id, before_seq, store::PAGE_EVENTS)
+    })
+    .await
+    .map_err(|error| format!("Could not read the session: {error}"))??
+    .ok_or_else(|| "This session no longer exists.".to_string())?;
+    Ok(state.chat.view(window))
 }
 
 #[tauri::command]
@@ -521,11 +561,11 @@ pub async fn session_send(
     let store = state.chat.store.clone();
     let load_id = session_id.clone();
     let lookup = store.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || lookup.get_session(&load_id))
+    let meta = tauri::async_runtime::spawn_blocking(move || lookup.session_meta(&load_id))
         .await
         .map_err(|error| format!("Could not read the session: {error}"))??
         .ok_or_else(|| "This session no longer exists.".to_string())?;
-    if session.workspace != config.workspace {
+    if meta.workspace != config.workspace {
         return Err("Switch back to this chat's workspace to continue it.".into());
     }
 
@@ -533,7 +573,7 @@ pub async fn session_send(
     let run_id = state.next_id();
     let (message, display, attachment_names) =
         build_user_turn(&text, &attachments, &config.workspace, &run_id)?;
-    let title = if session.turns == 0 {
+    let title = if meta.turns == 0 {
         let title = session_title(&text, &attachment_names);
         (!title.is_empty()).then_some(title)
     } else {
@@ -549,28 +589,22 @@ pub async fn session_send(
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
-    let (view, messages) = {
+    let (view, start_seq, messages) = {
         let mut live = state.chat.live();
         if live.compacting.contains(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
             return Err("This chat is already working.".into());
         }
-        let updated = store.begin_run(&session_id, &run_id, &turn, store::now_ms())?;
-        let items = project_events(&updated.events);
-        let view = SessionView {
-            id: updated.id,
-            title: updated.title,
-            updated_at: updated.updated_at,
-            turns: updated.turns,
-            items,
-            context: updated.context,
-            running: true,
-            blocked: false,
-            compacting: false,
-            active_run_id: Some(run_id.clone()),
-        };
-        let messages = surface_messages(&updated.events);
+        let started = store.begin_run(&session_id, &run_id, &turn, store::now_ms())?;
+        // `prior_messages` is the surface before this user turn, read in the
+        // same transaction that appended it. Trim an incomplete tool block
+        // before adding the new turn so the request stays valid.
+        let mut messages = trim_incomplete_tool_block(started.prior_messages);
+        messages.push(turn.message.clone());
+        let mut view = view_from_window(started.window, false);
+        view.running = true;
+        view.active_run_id = Some(run_id.clone());
         let view = Arc::new(Mutex::new(view));
         live.runs.insert(
             run_id.clone(),
@@ -580,7 +614,7 @@ pub async fn session_send(
                 view: view.clone(),
             },
         );
-        (view, messages)
+        (view, started.start_seq, messages)
     };
 
     let ctx = RunContext {
@@ -588,6 +622,7 @@ pub async fn session_send(
         state: state.inner().clone(),
         session_id,
         run_id: run_id.clone(),
+        start_seq,
         view: view.clone(),
         finished: Arc::new(AtomicBool::new(false)),
         archived: Arc::new(Mutex::new(Vec::new())),
@@ -659,7 +694,7 @@ pub async fn session_compact(
 async fn compact_session(
     state: &SharedState,
     session_id: &str,
-) -> Result<(Session, usize, usize, bool), String> {
+) -> Result<(store::SessionWindow, usize, usize, bool), String> {
     let config = state
         .config
         .lock()
@@ -674,7 +709,7 @@ async fn compact_session(
 
     let base = surface_messages(&session.events);
     if base.is_empty() {
-        return Ok((session, 0, 0, false));
+        return Ok((load_window(state, session_id).await?, 0, 0, false));
     }
 
     let before = context::estimate_tokens(&base);
@@ -682,7 +717,7 @@ async fn compact_session(
     let next =
         compaction::compact_messages(&reqwest::Client::new(), &config, &base, &cancel).await?;
     let Some(compacted) = next else {
-        return Ok((session, before, before, false));
+        return Ok((load_window(state, session_id).await?, before, before, false));
     };
     let surface = compacted.messages;
     let Some(summary) = surface
@@ -690,7 +725,7 @@ async fn compact_session(
         .find(|message| store::is_checkpoint(message))
         .cloned()
     else {
-        return Ok((session, before, before, false));
+        return Ok((load_window(state, session_id).await?, before, before, false));
     };
 
     let after = context::estimate_tokens(&surface);
@@ -716,6 +751,20 @@ async fn compact_session(
     .await
     .map_err(|error| format!("Could not save the compacted context: {error}"))??;
     Ok((compacted, before, after, true))
+}
+
+async fn load_window(
+    state: &SharedState,
+    session_id: &str,
+) -> Result<store::SessionWindow, String> {
+    let store = state.chat.store.clone();
+    let id = session_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.get_session_window(&id, None, store::PAGE_EVENTS)
+    })
+    .await
+    .map_err(|error| format!("Could not read the session: {error}"))??
+    .ok_or_else(|| "This session no longer exists.".to_string())
 }
 
 /// Cancel every live run, for a workspace switch or app exit.
@@ -1120,6 +1169,7 @@ pub struct RunContext {
     state: SharedState,
     session_id: String,
     run_id: String,
+    start_seq: i64,
     view: Arc<Mutex<SessionView>>,
     finished: Arc<AtomicBool>,
     /// Originals replaced by automatic compaction during this run, exposed to
@@ -1535,6 +1585,7 @@ impl RunContext {
         let end = RunEnd {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
+            start_seq: self.start_seq,
             status,
             finished_at: store::now_ms(),
             appended: std::mem::take(
@@ -1634,7 +1685,7 @@ mod tests {
         ATTACHMENT_SPILL_BYTES, ChatState, IncomingAttachment, NewItem, RunHandle, SessionView,
         ToolItem, ToolStatus, build_user_turn, format_tokens, is_blocked, merge_stream,
         project_events, session_title, settle_streaming, settle_unfinished_tools, surface_messages,
-        trim_incomplete_tool_block,
+        trim_incomplete_tool_block, view_from_session,
     };
     use crate::store::{self, Event, EventPayload};
     use crate::tools::CancelHandle;
@@ -1656,6 +1707,8 @@ mod tests {
                 "status": "awaiting",
                 "summary": "ls",
             })],
+            first_seq: None,
+            has_more: false,
             context: None,
             running: true,
             blocked: true,
@@ -1685,7 +1738,7 @@ mod tests {
         assert!(summaries[0].running);
         assert!(summaries[0].blocked);
 
-        let idle = state.view(session);
+        let idle = view_from_session(session, false);
         assert!(!idle.running);
     }
 
@@ -1756,6 +1809,8 @@ mod tests {
             updated_at: 7,
             turns: 2,
             items: Vec::new(),
+            first_seq: None,
+            has_more: false,
             context: None,
             running: false,
             blocked: false,
@@ -1766,6 +1821,8 @@ mod tests {
         assert_eq!(value["updatedAt"], 7);
         assert_eq!(value["activeRunId"], serde_json::Value::Null);
         assert_eq!(value["context"], serde_json::Value::Null);
+        assert_eq!(value["firstSeq"], serde_json::Value::Null);
+        assert_eq!(value["hasMore"], false);
 
         let item = serde_json::to_value(NewItem::Tool(Box::new(ToolItem {
             run_id: "r1".into(),
@@ -2090,6 +2147,7 @@ mod tests {
             .finish_run(&store::RunEnd {
                 session_id: "s1".into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 3,
                 appended: vec![
@@ -2152,6 +2210,7 @@ mod tests {
             .finish_run(&store::RunEnd {
                 session_id: "s1".into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 3,
                 appended: vec![EventPayload::Message {
@@ -2179,7 +2238,7 @@ mod tests {
             )
             .unwrap();
 
-        let model = surface_messages(&session.events);
+        let model = surface_messages(&session.window.events);
         assert_eq!(model.len(), 3);
         assert_eq!(model[0]["content"], "one");
         assert_eq!(model[1]["content"], "first");
@@ -2208,6 +2267,7 @@ mod tests {
             .finish_run(&store::RunEnd {
                 session_id: "s1".into(),
                 run_id: "r1".into(),
+                start_seq: 1,
                 status: "done",
                 finished_at: 3,
                 appended: vec![EventPayload::Message {

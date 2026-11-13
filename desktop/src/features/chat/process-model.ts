@@ -11,6 +11,7 @@ export type FileDiff = {
 
 export type ReasoningItem = {
   kind: "reasoning";
+  seq?: number;
   runId: string;
   text: string;
   streaming: boolean;
@@ -18,6 +19,7 @@ export type ReasoningItem = {
 
 export type ToolItem = {
   kind: "tool";
+  seq?: number;
   runId: string;
   id: string;
   name: string;

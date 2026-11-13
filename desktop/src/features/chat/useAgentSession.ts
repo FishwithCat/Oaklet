@@ -13,6 +13,8 @@ import {
   applyDeltas,
   applyToolResult,
   applyToolStart,
+  mergeWindow,
+  prependWindow,
   settleRun,
   toChatTabInfo,
   withItems,
@@ -53,6 +55,7 @@ export function useAgentSession({
   const [allowAll, setAllowAll] = useState(false);
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [compacting, setCompacting] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const sessionsRef = useRef(sessions);
   const openTabsRef = useRef(openTabs);
@@ -60,6 +63,7 @@ export function useAgentSession({
   const workspaceRef = useRef(workspace);
   const tabCountRef = useRef(0);
   const compactingRef = useRef(false);
+  const loadingOlderRef = useRef(false);
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
 
@@ -190,7 +194,7 @@ export function useAgentSession({
     ) {
       const tab = sessionsRef.current[sessionId];
       if (!tab) return;
-      putSession(session ?? settleRun(tab, notice));
+      putSession(session ? mergeWindow(tab, session) : settleRun(tab, notice));
       refreshHistory();
       onWorkspaceRefreshRef.current();
     }
@@ -346,7 +350,7 @@ export function useAgentSession({
         if (!current || !current.running) return;
         // The run finished before the command response; its view is final.
         if (!session.running) {
-          putSession(session);
+          putSession(mergeWindow(current, session));
           return;
         }
         putSession({
@@ -373,7 +377,13 @@ export function useAgentSession({
 
   function compact() {
     const tab = sessionsRef.current[activeTabIdRef.current];
-    if (!tab || tab.running || compactingRef.current || tab.turns === 0) {
+    if (
+      !tab ||
+      tab.running ||
+      compactingRef.current ||
+      loadingOlderRef.current ||
+      tab.turns === 0
+    ) {
       return;
     }
 
@@ -383,8 +393,9 @@ export function useAgentSession({
     invoke<CompactResult>("session_compact", { sessionId: tab.id })
       .then(({ session, compacted }) => {
         if (workspaceRef.current !== workspaceAtStart) return;
-        if (!sessionsRef.current[tab.id]) return;
-        putSession(session);
+        const current = sessionsRef.current[tab.id];
+        if (!current) return;
+        putSession(mergeWindow(current, session));
         if (!compacted) {
           updateSession(tab.id, (view) =>
             appendNotice(view, "muted", "Nothing older to compact yet."),
@@ -433,6 +444,53 @@ export function useAgentSession({
       addTab(view);
     } catch (error) {
       if (workspaceRef.current === workspaceAtStart) showError(errorText(error));
+    }
+  }
+
+  /** Pull one older transcript page and prepend it to the open tab. */
+  async function loadOlder(): Promise<boolean> {
+    const id = activeTabIdRef.current;
+    const tab = sessionsRef.current[id];
+    if (
+      !tab ||
+      !tab.hasMore ||
+      tab.firstSeq === null ||
+      loadingOlderRef.current ||
+      compactingRef.current
+    ) {
+      return false;
+    }
+    const workspaceAtStart = workspaceRef.current;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const older = await invoke<SessionView>("session_get", {
+        id,
+        beforeSeq: tab.firstSeq,
+      });
+      if (workspaceRef.current !== workspaceAtStart) return false;
+      const current = sessionsRef.current[id];
+      if (
+        !current ||
+        older.firstSeq === null ||
+        (current.firstSeq !== null && older.firstSeq >= current.firstSeq)
+      ) {
+        return false;
+      }
+      const next = prependWindow(current, older);
+      if (next === current) return false;
+      putSession(next);
+      return true;
+    } catch (error) {
+      if (workspaceRef.current === workspaceAtStart) {
+        updateSession(id, (view) =>
+          appendNotice(view, "error", errorText(error)),
+        );
+      }
+      return false;
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
     }
   }
 
@@ -489,6 +547,9 @@ export function useAgentSession({
 
   return {
     items: activeTab?.items ?? [],
+    firstSeq: activeTab?.firstSeq ?? null,
+    hasMore: activeTab?.hasMore ?? false,
+    loadingOlder,
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
     compacting: compacting || (activeTab?.compacting ?? false),
@@ -504,6 +565,7 @@ export function useAgentSession({
     stop,
     compact,
     restore,
+    loadOlder,
     respondToApproval,
     revokeAllowAll,
     reloadAllowance: loadAllowance,

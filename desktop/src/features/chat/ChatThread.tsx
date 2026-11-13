@@ -32,7 +32,12 @@ export function ChatThread({
         if (block.kind === "process") {
           return (
             <ProcessGroup
-              key={`process-${block.start}`}
+              key={
+                block.items[0]?.seq === undefined
+                  ? `process-local-${block.start}`
+                  : `process-${block.items[0].seq}`
+              }
+              seq={block.items[0]?.seq}
               items={block.items}
               live={
                 running &&
@@ -47,7 +52,15 @@ export function ChatThread({
         const item = block.item;
         if (item.kind === "user") {
           return (
-            <div className="msg user" key={`user-${block.index}`}>
+            <div
+              className="msg user"
+              key={
+                item.seq === undefined
+                  ? `user-local-${block.index}`
+                  : `user-${item.seq}`
+              }
+              data-seq={item.seq}
+            >
               <div className="bubble">
                 {item.attachments && item.attachments.length > 0 && (
                   <div className="bubble-attachments">
@@ -81,7 +94,15 @@ export function ChatThread({
         }
         if (item.kind === "assistant") {
           return (
-            <div className="msg assistant" key={`assistant-${block.index}`}>
+            <div
+              className="msg assistant"
+              key={
+                item.seq === undefined
+                  ? `assistant-local-${block.index}`
+                  : `assistant-${item.seq}`
+              }
+              data-seq={item.seq}
+            >
               <div className="bubble">
                 <MarkdownText text={item.text} />
                 {item.streaming && <span className="caret" />}
@@ -91,7 +112,15 @@ export function ChatThread({
         }
         if (item.kind !== "notice") return null;
         return (
-          <div className={`notice ${item.tone}`} key={`notice-${block.index}`}>
+          <div
+            className={`notice ${item.tone}`}
+            key={
+              item.seq === undefined
+                ? `notice-local-${block.index}`
+                : `notice-${item.seq}`
+            }
+            data-seq={item.seq}
+          >
             {item.text}
           </div>
         );

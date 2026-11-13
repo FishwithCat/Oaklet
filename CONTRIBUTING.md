@@ -133,6 +133,11 @@ history and the rendered transcript are projections of that log, so neither is
 stored a second time. The database also keeps one row per run and its status.
 History is not capped at 20 sessions.
 
+The transcript opens on the latest event window and loads older pages by
+`before_seq` as the reader scrolls up. A chat turn never loads the whole log:
+it reads the latest compaction summary plus the messages after that boundary,
+so compaction bounds request work as well as prompt tokens.
+
 If the app closes while a run is working, the next start marks that run
 `interrupted`, appends a notice to the conversation, and leaves the session
 available to continue. Restarting still clears the open tabs (they are client

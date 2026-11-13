@@ -225,10 +225,12 @@ function ToolRow({
 }
 
 export function ProcessGroup({
+  seq,
   items,
   live,
   onApproval,
 }: {
+  seq?: number;
   items: readonly ProcessItem[];
   live: boolean;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
@@ -254,7 +256,7 @@ export function ProcessGroup({
   }, [blocked]);
 
   return (
-    <div className="process">
+    <div className="process" data-seq={seq}>
       <button
         type="button"
         className="process-head"

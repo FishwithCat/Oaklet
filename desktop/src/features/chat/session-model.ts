@@ -10,6 +10,10 @@ export type SessionView = {
   updatedAt: number;
   turns: number;
   items: Item[];
+  /** Seq of the oldest event in this window, or null for an empty session. */
+  firstSeq: number | null;
+  /** Whether events exist before `firstSeq`. */
+  hasMore: boolean;
   context: ContextUsage | null;
   running: boolean;
   blocked: boolean;
@@ -49,6 +53,74 @@ export function withItems(tab: SessionView, items: Item[]): SessionView {
     blocked: items.some(
       (item) => item.kind === "tool" && item.status === "awaiting",
     ),
+  };
+}
+
+/**
+ * Merge a newer window into the items already on screen. Items before the
+ * incoming window (older pages the user loaded) stay; items at or after it are
+ * replaced by the fresh projection. Local streaming rows have no seq and are
+ * dropped once the persisted window supplies their settled form.
+ */
+export function mergeWindow(
+  current: SessionView,
+  incoming: SessionView,
+): SessionView {
+  const first = incoming.firstSeq;
+  const items =
+    first === null
+      ? current.items
+      : [
+          ...current.items.filter(
+            (item) => item.seq !== undefined && item.seq < first,
+          ),
+          ...incoming.items,
+        ];
+  const firstSeq =
+    current.firstSeq === null
+      ? first
+      : first === null
+        ? current.firstSeq
+        : Math.min(current.firstSeq, first);
+  const hasMore =
+    first === null
+      ? current.hasMore
+      : current.firstSeq !== null && current.firstSeq < first
+        ? current.hasMore
+        : incoming.hasMore;
+  return { ...withItems(incoming, items), firstSeq, hasMore };
+}
+
+/** Prepend an older page; returns the same view when it is not older. */
+export function prependWindow(
+  current: SessionView,
+  older: SessionView,
+): SessionView {
+  if (
+    older.firstSeq === null ||
+    (current.firstSeq !== null && older.firstSeq >= current.firstSeq)
+  ) {
+    return current;
+  }
+  const boundary = current.firstSeq;
+  const olderItems =
+    boundary === null
+      ? older.items
+      : older.items.filter(
+          (item) => item.seq === undefined || item.seq < boundary,
+        );
+  if (olderItems.length === 0) {
+    return {
+      ...current,
+      firstSeq: older.firstSeq,
+      hasMore: older.hasMore,
+    };
+  }
+  return {
+    ...current,
+    items: [...olderItems, ...current.items],
+    firstSeq: older.firstSeq,
+    hasMore: older.hasMore,
   };
 }
 

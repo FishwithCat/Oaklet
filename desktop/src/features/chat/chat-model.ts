@@ -1,11 +1,12 @@
 import type { ProcessItem } from "./process-model";
 import type { SentAttachment } from "./attachments";
 
-export type Item =
+export type Item = (
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
   | { kind: "assistant"; runId?: string; text: string; streaming: boolean }
   | ProcessItem
-  | { kind: "notice"; text: string; tone: "error" | "muted" };
+  | { kind: "notice"; text: string; tone: "error" | "muted" }
+) & { seq?: number };
 
 /**
  * Put a generated request into the composer without discarding a draft the
