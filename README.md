@@ -12,9 +12,11 @@ runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 
 Download the latest `.dmg` from
 [Releases](https://github.com/FishwithCat/Oaklet/releases/latest), open it, and
-drag Oaklet into Applications. The build is universal (Apple Silicon and Intel)
-and ad-hoc signed rather than notarized, so macOS warns on the first launch.
-Open it once, then allow it:
+drag Oaklet into Applications. If no build is available there, build from source
+instead (see [CONTRIBUTING.md](CONTRIBUTING.md)). The build is universal
+(Apple Silicon and Intel); without a Developer ID certificate it is ad-hoc
+signed rather than notarized, so macOS warns on the first launch. Open it once,
+then allow it:
 
 - **macOS 15 or newer**: **System Settings → Privacy & Security → Open Anyway**.
 - **macOS 14 or earlier**: right-click Oaklet and choose **Open**.
@@ -25,8 +27,9 @@ Or clear the quarantine flag from Terminal:
 xattr -dr com.apple.quarantine /Applications/Oaklet.app
 ```
 
-The Architecture view needs Node.js 22.22.3 or newer on `PATH`; the rest of
-Oaklet does not.
+The Architecture view and the `likec4_mcp` tool need Node.js 22.22.3 or newer.
+Oaklet finds it on `PATH`, in common install locations, or via `OAKLET_NODE`;
+the rest of Oaklet works without it.
 
 ## Quick start
 
@@ -35,19 +38,21 @@ Oaklet does not.
 2. Open **Settings**, use the **Model** tab, enter an API key, and choose a Base
    URL and model. DeepSeek is the default.
 3. Describe a change and send it. The agent reads and edits files, runs commands
-   after your approval, and streams the result into the chat.
+   (without an approval card by default), and streams the result into the chat.
 
 To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Chat
 
 - Multiple tabs, each titled by its first prompt and with its own conversation
-  and draft. **⌘N** opens a tab and **⌘R** restores a saved session. Sessions
-  and runs live in the backend, so they survive a restart and keep streaming
-  while you switch tabs.
+  and draft. **⌘N** opens a tab and **⌘R** opens History while idle, where you
+  can restore a saved session. Sessions live in the backend, so they survive a
+  restart; a live run keeps streaming while you switch tabs, but quitting
+  Oaklet stops it and the next start marks it interrupted.
 - Paste screenshots or text files into the composer. Images are downscaled and
   sent as image parts, so the configured model must accept image input; text
-  files are inlined up to 200 KB.
+  files up to 200 KB are accepted, and files above 16 KB are saved under
+  `.oaklet/spill` with only a head/tail preview inlined.
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
   expandable process rows. `write_file`, `edit_file`, and `apply_patch` show an
   inline diff card with the applied changes and their added/removed line counts.
@@ -64,14 +69,15 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The agent has `read_file`, `read_image`, `write_file`, `edit_file`,
 `apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,
-`job_output`, `job_kill`, and `web_fetch`; depending on your setup it also has
-`likec4_mcp`, `skill`, MCP server tools, `web_search`, and, after compaction,
+`job_output`, `job_kill`, `web_fetch`, and `likec4_mcp`; depending on your setup
+it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `history_read`.
 
 ## Workspace views
 
 **Terminal** is backed by real PTYs: multiple tabs, interactive shells, colors,
-job control (`Ctrl+C`), and full scrollback, starting in the workspace.
+job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
+workspace.
 
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
 can be previewed, and **⌘S** saves.
@@ -86,9 +92,9 @@ at a time, and paginate at 200 lines.
 views. **Generate architecture** and **Update with agent** put an editable prompt
 in the composer without discarding your draft; the normal chat flow still sends,
 approves, and can cancel it. Viewing an existing model never calls the model
-provider. The view re-reads when activated or refreshed and keeps the last valid
-diagram, marked stale, while new sources are invalid. It does not watch the
-filesystem.
+provider. The view re-reads when activated, on **Refresh**, and after an agent
+run finishes or fails; it keeps the last valid diagram, marked stale, while new
+sources are invalid. It does not watch the filesystem.
 
 ## Settings
 
@@ -191,12 +197,13 @@ data, never as instructions.
 
 ## Web search
 
-With a search key in Settings, the agent also gets `web_search`. It sends one
-query to the configured provider and returns up to 10 results with title, URL,
-excerpt, and date, within 20 seconds. It asks for no approval: it sends only the
-query, never workspace content.
+With a usable key for the selected provider — DeepSeek falls back to the model
+API key — the agent also gets `web_search`. It sends one query to the configured
+provider and requests up to 10 results with title, URL, excerpt, and date,
+within 20 seconds. It asks for no approval: it sends only the query, never
+workspace content.
 
-**Settings → Web Search → Provider** picks DeepSeek Search or Exa. DeepSeek
+**Settings → Web Search → Provider** picks DeepSeek or Exa. DeepSeek
 reuses the model API key, so search works with any model provider as long as
 that key is a DeepSeek key. Exa needs its own key from
 [dashboard.exa.ai](https://dashboard.exa.ai/api-keys); Oaklet never sends the
