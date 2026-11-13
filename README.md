@@ -240,6 +240,10 @@ Initial MVP. Open chat tabs and drafts are in memory (a restart clears them;
 every session remains in History), there is no multi-device server, and chat
 code blocks have no syntax highlighting.
 
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
 ## Contributing
 
 Development setup, tests, packaging, and architecture notes are in

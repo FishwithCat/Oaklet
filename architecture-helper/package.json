@@ -1,6 +1,7 @@
 {
   "name": "oaklet-architecture-helper",
   "private": true,
+  "license": "Apache-2.0",
   "version": "0.1.0",
   "type": "module",
   "description": "Pinned LikeC4 preview compiler and MCP bridge for Oaklet.",
