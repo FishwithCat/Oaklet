@@ -34,6 +34,8 @@
   --warning-border: color-mix(in srgb, var(--yellow) 30%, transparent);
   --find-match: #ffe9a8;
   --find-match-active: #ffc247;
+  --diff-add-bg: var(--palette-soft);
+  --diff-del-bg: var(--danger-bg);
   --success-bg: color-mix(in srgb, var(--green) 9%, var(--panel));
   --danger-bg: color-mix(in srgb, var(--red) 8%, var(--panel));
   --hover-overlay: color-mix(in srgb, var(--text) 8%, transparent);
@@ -95,6 +97,8 @@
   --warning-border: color-mix(in srgb, var(--yellow) 32%, transparent);
   --find-match: #6b5620;
   --find-match-active: #8a6a1f;
+  --diff-add-bg: #213d28;
+  --diff-del-bg: #42242a;
   --success-bg: color-mix(in srgb, var(--green) 10%, var(--panel));
   --danger-bg: color-mix(in srgb, var(--red) 12%, var(--panel));
   --hover-overlay: color-mix(in srgb, var(--text) 9%, transparent);

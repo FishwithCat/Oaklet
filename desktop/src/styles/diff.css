@@ -11,11 +11,11 @@
 }
 
 .diff-line.add {
-  background: var(--palette-soft);
+  background: var(--diff-add-bg);
 }
 
 .diff-line.del {
-  background: var(--danger-bg);
+  background: var(--diff-del-bg);
 }
 
 .diff-line.meta {
@@ -48,6 +48,10 @@
 
 .diff-num.new {
   left: var(--diff-num-width);
+}
+
+[data-theme="dark"] .diff-num {
+  color: color-mix(in srgb, var(--muted) 88%, transparent);
 }
 
 .diff-num:hover {
