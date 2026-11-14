@@ -60,3 +60,64 @@
   --terminal-bright-cyan: #307b7b;
   --terminal-bright-white: var(--bg);
 }
+
+/* Dark theme: only the tokens change, so every component follows. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --palette-primary: #9ed29d;
+  --palette-secondary: #6f9f6d;
+  --palette-tertiary: #3d623c;
+  --palette-soft: #1e2f1c;
+
+  --bg: #0f140e;
+  --panel: #141a13;
+  --panel-2: #1b2419;
+  --panel-muted: #171e16;
+  --panel-muted-strong: #1f281e;
+  --panel-muted-border: #2b352a;
+  --panel-muted-border-strong: #3d4a3b;
+  --border: #273126;
+  --border-strong: #465442;
+  --text: #e3eadf;
+  --muted: #9bab98;
+  --accent: var(--palette-primary);
+  --accent-hover: color-mix(in srgb, var(--palette-primary) 82%, #fff);
+  --on-accent: #101a0e;
+  --accent-soft: color-mix(in srgb, var(--palette-primary) 12%, transparent);
+  --accent-border: color-mix(in srgb, var(--palette-primary) 32%, transparent);
+  --accent-border-strong: color-mix(in srgb, var(--palette-primary) 52%, transparent);
+  --accent-surface-hover: color-mix(in srgb, var(--palette-primary) 20%, transparent);
+  --focus-ring: var(--accent);
+  --green: var(--accent);
+  --red: #e58a92;
+  --yellow: #e0bd6a;
+  --warning-bg: color-mix(in srgb, var(--yellow) 10%, var(--panel));
+  --warning-border: color-mix(in srgb, var(--yellow) 32%, transparent);
+  --find-match: #6b5620;
+  --find-match-active: #8a6a1f;
+  --success-bg: color-mix(in srgb, var(--green) 10%, var(--panel));
+  --danger-bg: color-mix(in srgb, var(--red) 12%, var(--panel));
+  --hover-overlay: color-mix(in srgb, var(--text) 9%, transparent);
+  --subtle-overlay: color-mix(in srgb, var(--text) 5%, transparent);
+  --shadow-color: color-mix(in srgb, #000 55%, transparent);
+  --backdrop: color-mix(in srgb, #000 62%, transparent);
+  --brand-gradient: linear-gradient(135deg, var(--palette-soft), var(--palette-tertiary), var(--palette-secondary));
+
+  --terminal-selection: #2e442a;
+  --terminal-black: #4a5747;
+  --terminal-red: #e58a92;
+  --terminal-green: #9ed29d;
+  --terminal-yellow: #e0bd6a;
+  --terminal-blue: #8fb4dd;
+  --terminal-magenta: #cf9cc8;
+  --terminal-cyan: #83c7c7;
+  --terminal-white: #dbe5d6;
+  --terminal-bright-black: #8a9987;
+  --terminal-bright-red: #f0a2a9;
+  --terminal-bright-green: #b6e0b5;
+  --terminal-bright-yellow: #efd08a;
+  --terminal-bright-blue: #a9c7e8;
+  --terminal-bright-magenta: #e0b5da;
+  --terminal-bright-cyan: #9dd9d9;
+  --terminal-bright-white: #f4f8f1;
+}

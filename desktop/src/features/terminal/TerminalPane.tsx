@@ -10,6 +10,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { commandForTerminal } from "./terminal-command";
+import { useResolvedTheme } from "../settings/theme";
 
 type TerminalOutput = { id: string; sequence: number; data: number[] };
 type TerminalExit = { id: string; code: number | null };
@@ -70,6 +71,7 @@ export function TerminalPane({
   const openedRef = useRef(false);
   const readyRef = useRef(false);
   const pendingRef = useRef<string[]>([]);
+  const theme = useResolvedTheme();
 
   function flushPending() {
     const sessionId = sessionIdRef.current;
@@ -250,6 +252,10 @@ export function TerminalPane({
     });
     return () => cancelAnimationFrame(frame);
   }, [active]);
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = getTerminalTheme();
+  }, [theme]);
 
   useImperativeHandle(
     ref,

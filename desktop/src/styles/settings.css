@@ -70,6 +70,12 @@
   font-size: 12.5px;
 }
 
+.theme-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .error-text {
   margin: 0 0 12px;
   color: var(--red);

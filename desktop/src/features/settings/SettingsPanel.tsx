@@ -19,8 +19,9 @@ import {
   DEFAULT_SEARCH_URL,
   type AppConfig,
 } from "./config";
+import { applyTheme, type Theme } from "./theme";
 
-type SettingsTab = "model" | "web" | "commands" | "mcp";
+type SettingsTab = "model" | "web" | "commands" | "mcp" | "appearance";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -41,6 +42,13 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "web", label: "Web Search" },
   { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
+  { id: "appearance", label: "Appearance" },
+];
+
+const THEMES: { id: Theme; label: string; hint: string }[] = [
+  { id: "light", label: "Light", hint: "Always use the light palette." },
+  { id: "dark", label: "Dark", hint: "Always use the dark palette." },
+  { id: "auto", label: "Auto", hint: "Follow the system appearance." },
 ];
 
 function toDraft(config: AppConfig): SettingsDraft {
@@ -77,6 +85,7 @@ export function SettingsPanel({
     web: null,
     commands: null,
     mcp: null,
+    appearance: null,
   });
 
   useEffect(() => {
@@ -92,6 +101,12 @@ export function SettingsPanel({
     setTesting(false);
     setTestStatus(null);
   }, [draft.baseUrl, draft.apiKey, draft.model]);
+
+  // Theme changes preview immediately; leaving the panel restores the saved one.
+  useEffect(() => {
+    applyTheme(draft.theme);
+    return () => applyTheme(config.theme);
+  }, [draft.theme, config.theme]);
 
   function onTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
     const index = TABS.findIndex((item) => item.id === tab);
@@ -196,7 +211,9 @@ export function SettingsPanel({
                 ? "Choose the key and endpoint the web_search tool uses."
                 : tab === "commands"
                   ? "Choose whether the agent asks before running commands."
-                  : "Connect MCP servers and choose which ones the agent can use."}
+                  : tab === "mcp"
+                    ? "Connect MCP servers and choose which ones the agent can use."
+                    : "Choose how Oaklet looks. Auto follows your system appearance."}
           </p>
         </div>
 
@@ -426,7 +443,7 @@ export function SettingsPanel({
                   </span>
                 </label>
               </section>
-            ) : (
+            ) : tab === "mcp" ? (
               <section
                 id="settings-panel-mcp"
                 role="tabpanel"
@@ -452,6 +469,40 @@ export function SettingsPanel({
                     })
                   }
                 />
+              </section>
+            ) : (
+              <section
+                id="settings-panel-appearance"
+                role="tabpanel"
+                aria-labelledby="settings-tab-appearance"
+                tabIndex={0}
+              >
+                <div
+                  className="theme-options"
+                  role="radiogroup"
+                  aria-label="Theme"
+                >
+                  {THEMES.map((option) => (
+                    <label key={option.id} className="settings-check">
+                      <input
+                        type="radio"
+                        name="theme"
+                        value={option.id}
+                        checked={draft.theme === option.id}
+                        onChange={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            theme: option.id,
+                          }))
+                        }
+                      />
+                      <span>
+                        <strong>{option.label}</strong>
+                        <span className="field-hint">{option.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
               </section>
             )}
           </div>

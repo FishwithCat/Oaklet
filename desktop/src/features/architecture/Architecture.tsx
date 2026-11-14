@@ -18,6 +18,7 @@ import {
 import { buildArchitecturePrompt } from "./architecture-prompt";
 import { rootLabel } from "./architecture-model";
 import { useArchitectureModel } from "./useArchitectureModel";
+import { useResolvedTheme } from "../settings/theme";
 
 export default function Architecture({
   active,
@@ -51,6 +52,7 @@ export default function Architecture({
     busy,
     viewSelectable,
   } = useArchitectureModel({ active, workspace, refreshToken, onRefresh });
+  const theme = useResolvedTheme();
 
   const modelState = useMemo(() => {
     if (!currentLoad?.model) return { model: null, error: "" };
@@ -212,7 +214,7 @@ export default function Architecture({
               key={`${currentLoad?.sourceDigest}:${selectedViewId}`}
               viewId={selectedViewId ?? ""}
               layoutType="auto"
-              colorScheme="light"
+              colorScheme={theme}
               background="dots"
               pannable
               zoomable

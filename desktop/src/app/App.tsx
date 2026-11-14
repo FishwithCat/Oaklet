@@ -6,6 +6,7 @@ import { formatWorkdir } from "../features/chat/chat-model";
 import { SessionHistory } from "../features/chat/SessionHistory";
 import { useAgentSession } from "../features/chat/useAgentSession";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
+import { applyTheme } from "../features/settings/theme";
 import { SkillsPopup } from "../features/skills/SkillsPopup";
 import { SourceControl } from "../features/source-control/SourceControl";
 import { useGitChanges } from "../features/source-control/useGitChanges";
@@ -59,6 +60,16 @@ function App() {
     document.title = title;
     getCurrentWindow().setTitle(title).catch(() => {});
   }, [config, home]);
+
+  useEffect(() => {
+    if (!config) return;
+    applyTheme(config.theme);
+    if (config.theme !== "auto") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("auto");
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [config]);
 
   const { changes, changesError, unstaged } = useGitChanges({
     enabled: config !== null,

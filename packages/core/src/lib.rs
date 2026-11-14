@@ -77,6 +77,9 @@ pub struct AppConfig {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// UI theme: `light`, `dark`, or `auto` (follow the OS).
+    #[serde(default = "default_theme")]
+    pub theme: String,
     /// Model for compaction summaries. Empty reuses `model` so the summary
     /// request can hit the same provider prefix cache.
     #[serde(default)]
@@ -202,6 +205,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_theme() -> String {
+    "auto".into()
+}
+
 fn is_true(value: &bool) -> bool {
     *value
 }
@@ -221,6 +228,7 @@ impl Default for AppConfig {
             base_url: default_base_url(),
             api_key: String::new(),
             model: default_model(),
+            theme: default_theme(),
             summary_model: String::new(),
             context_window: default_context_window(),
             search_url: default_search_url(),
@@ -362,6 +370,10 @@ fn save_config(state: State<'_, SharedState>, mut config: AppConfig) -> Result<A
     config.base_url = config.base_url.trim().trim_end_matches('/').to_string();
     config.api_key = config.api_key.trim().to_string();
     config.model = config.model.trim().to_string();
+    config.theme = match config.theme.trim() {
+        theme @ ("light" | "dark" | "auto") => theme.to_string(),
+        _ => default_theme(),
+    };
     config.summary_model = config.summary_model.trim().to_string();
     config.search_api_key = config.search_api_key.trim().to_string();
     config.search_url = config.search_url.trim().trim_end_matches('/').to_string();
@@ -804,6 +816,12 @@ mod tests {
     fn configs_saved_before_allow_all_commands_default_to_allowed() {
         let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
         assert!(config.allow_all_commands);
+    }
+
+    #[test]
+    fn configs_saved_before_theme_default_to_auto() {
+        let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert_eq!(config.theme, "auto");
     }
 
     #[test]
