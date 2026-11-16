@@ -107,7 +107,7 @@ async fn fetch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let body = read_limited(response).await?;
+    let body = read_limited(response, MAX_BODY_BYTES).await?;
     let decoded = String::from_utf8_lossy(&body);
 
     if !status.is_success() {
@@ -141,13 +141,18 @@ async fn fetch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
     ))
 }
 
-async fn read_limited(response: reqwest::Response) -> Result<Vec<u8>, ToolError> {
+/// Read at most `max_bytes` from a response, so a hostile or broken server
+/// cannot make a tool buffer an unbounded body.
+pub(super) async fn read_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ToolError> {
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk
             .map_err(|error| ToolError::Failed(format!("Could not read response: {error}")))?;
-        let remaining = MAX_BODY_BYTES.saturating_sub(body.len());
+        let remaining = max_bytes.saturating_sub(body.len());
         if chunk.len() > remaining {
             body.extend_from_slice(&chunk[..remaining]);
             break;

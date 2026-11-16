@@ -4,6 +4,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::web_fetch::read_limited;
 use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 /// Default endpoint; the `searchUrl` setting overrides it.
@@ -11,6 +12,9 @@ pub(crate) const DEFAULT_ENDPOINT: &str = "https://api.deepseek.com/v1/tools/sea
 /// Results requested per search, within the service's 1-50 range.
 const RESULT_COUNT: u32 = 10;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
+/// Search responses are small; this only stops a broken endpoint from
+/// streaming until the process runs out of memory.
+const MAX_SEARCH_BYTES: usize = 2_000_000;
 /// Per-source excerpt budget, so ten results stay well inside the tool output cap.
 const EXCERPT_MAX_CHARS: usize = 1_200;
 
@@ -126,10 +130,10 @@ impl WebSearch {
         };
 
         let status = response.status();
-        let body = response
-            .text()
+        let body = read_limited(response, MAX_SEARCH_BYTES)
             .await
-            .map_err(|error| format!("Could not read the search response: {error}"))?;
+            .map_err(|error| error.to_string())?;
+        let body = String::from_utf8_lossy(&body);
         if !status.is_success() {
             let hint = if matches!(status.as_u16(), 401 | 403) {
                 " Check the search API key in Settings."

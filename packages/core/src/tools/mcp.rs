@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+use super::web_fetch::read_limited;
 use super::{Tool, ToolContext, ToolError, ToolOutput, cap};
 use crate::{McpServerConfig, McpTransport};
 
@@ -597,10 +598,13 @@ impl HttpClient {
         let response = self.send(body, protocol, initialized).await?;
         let status = response.status();
         if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
+            let detail = read_limited(response, MAX_MESSAGE_BYTES)
+                .await
+                .unwrap_or_default();
+            let detail = String::from_utf8_lossy(&detail);
             return Err(format!(
                 "MCP server returned {status}: {}",
-                cap(detail, 2_000)
+                cap(detail.into_owned(), 2_000)
             ));
         }
         if status == reqwest::StatusCode::ACCEPTED {
@@ -615,9 +619,10 @@ impl HttpClient {
         if is_event_stream {
             read_sse_response(response, id).await
         } else {
-            let value: Value = response
-                .json()
+            let body = read_limited(response, MAX_MESSAGE_BYTES)
                 .await
+                .map_err(|error| error.to_string())?;
+            let value: Value = serde_json::from_slice(&body)
                 .map_err(|error| format!("Invalid MCP response: {error}"))?;
             response_result(value, id)?.ok_or_else(|| {
                 "MCP server returned a response for a different request.".to_string()
@@ -634,10 +639,13 @@ impl HttpClient {
         let response = self.send(body, protocol, initialized).await?;
         if !response.status().is_success() {
             let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
+            let detail = read_limited(response, MAX_MESSAGE_BYTES)
+                .await
+                .unwrap_or_default();
+            let detail = String::from_utf8_lossy(&detail);
             return Err(format!(
                 "MCP server rejected notification ({status}): {}",
-                cap(detail, 2_000)
+                cap(detail.into_owned(), 2_000)
             ));
         }
         Ok(())
