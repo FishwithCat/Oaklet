@@ -182,7 +182,7 @@ server 版本的返回顺序变化，会让 tools 数组变化，从而打断 pr
 `trim_tool_outputs` 用 `FORCE_TOOL_OUTPUT_MARKER` 替换中段时，可能把原来 12k 裁剪时写入的
 spill 路径一起切掉。虽然原文已归档、`history_read` 能找回，但模型看不到路径，会先尝试重跑命令。
 
-建议：如果原文里已有 spill 标记（`.oaklet/spill/` 路径），把它提取出来，附在 force marker
+建议：如果原文里已有 spill 标记（旧版 `.oaklet/spill/`，新版应用数据目录下的 spill 路径），把它提取出来，附在 force marker
 后面；否则写一句 `[original available via history_read]`。这是一个小改动，但能减少一次无效重跑。
 
 ### 3.6 P3：并行只读工具 / 子代理

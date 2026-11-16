@@ -29,6 +29,8 @@ pub type SharedState = Arc<AppState>;
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
+    /// App-owned directory for oversized model-facing text.
+    pub spill_root: PathBuf,
     pub approvals: Mutex<HashMap<String, PendingApproval>>,
     pub chat: chat::ChatState,
     /// Canonical workspace where `run_command` approvals were waived for this
@@ -721,6 +723,8 @@ pub fn run() {
                 config.workspace = canonical.to_string_lossy().into_owned();
             }
             let data_dir = app.path().app_data_dir()?;
+            let spill_root = data_dir.join("spill");
+            spill::cleanup(&spill_root, spill::RETENTION);
             let chat = chat::ChatState::open(&data_dir.join("oaklet.db"))
                 .map_err(std::io::Error::other)?;
             let command_allow_all = config
@@ -729,6 +733,7 @@ pub fn run() {
             app.manage(Arc::new(AppState {
                 config: Mutex::new(config),
                 config_path,
+                spill_root,
                 approvals: Mutex::new(HashMap::new()),
                 chat,
                 command_allow_all: Mutex::new(command_allow_all),

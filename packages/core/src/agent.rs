@@ -63,7 +63,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         workspace,
         cancel: cancel.clone(),
         jobs: ctx.jobs(),
-        run_id: ctx.run_id().to_string(),
+        session_id: ctx.session_id().to_string(),
+        spill_root: ctx.state().spill_root.clone(),
     };
 
     let model_sources = {

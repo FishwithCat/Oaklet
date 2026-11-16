@@ -53,7 +53,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Paste screenshots or text files into the composer. Images are downscaled and
   sent as image parts, so the configured model must accept image input; text
   files up to 200 KB are accepted, and files above 16 KB are saved under
-  `.oaklet/spill` with only a head/tail preview inlined.
+  the app data directory's `spill` folder with only a head/tail preview
+  inlined. Spill files older than 30 days are removed at startup.
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
   expandable process rows. `write_file`, `edit_file`, and `apply_patch` show an
   inline diff card with the applied changes and their added/removed line counts.

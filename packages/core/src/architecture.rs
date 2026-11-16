@@ -536,6 +536,7 @@ mod tests {
         Arc::new(crate::AppState {
             config: std::sync::Mutex::new(crate::AppConfig::default()),
             config_path: PathBuf::new(),
+            spill_root: PathBuf::new(),
             approvals: std::sync::Mutex::new(std::collections::HashMap::new()),
             chat: crate::chat::ChatState::in_memory(),
             command_allow_all: std::sync::Mutex::new(None),

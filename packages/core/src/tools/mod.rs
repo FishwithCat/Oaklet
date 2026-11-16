@@ -52,7 +52,7 @@ const SPILL_MARKER_POINTER: &str = ") saved to: ";
 const SPILL_MARKER_TAIL: &str = ". Use read_file with offset and limit to page through it.]";
 const SPILL_RECOVERY_HEAD: &str =
     "[... tool output trimmed for context recovery; full output saved to: ";
-/// The spill writer's workspace-relative paths are far shorter than this.
+/// Absolute spill locators are far shorter than this.
 const SPILL_POINTER_MAX_CHARS: usize = 512;
 
 /// Extract the path from a complete, Oaklet-generated spill marker.
@@ -71,14 +71,21 @@ pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
             let Some((path, _)) = after_pointer.split_once(SPILL_MARKER_TAIL) else {
                 continue;
             };
-            if (path.starts_with(".oaklet/spill/") || path.starts_with(".oaklet\\spill\\"))
-                && path.chars().count() <= SPILL_POINTER_MAX_CHARS
-            {
+            if is_spill_path(path) && path.chars().count() <= SPILL_POINTER_MAX_CHARS {
                 return Some(path);
             }
         }
     }
     None
+}
+
+/// Whether `path` looks like this app's spill locator: either the old
+/// workspace-relative convention or the current absolute app-data path.
+fn is_spill_path(path: &str) -> bool {
+    path.starts_with(".oaklet/spill/")
+        || path.starts_with(".oaklet\\spill\\")
+        || path.contains("/spill/session-")
+        || path.contains("\\spill\\session-")
 }
 
 /// One image returned by a tool. `data_url` is a complete `data:` URL so the
@@ -270,8 +277,10 @@ pub struct ToolContext {
     pub cancel: Cancel,
     /// Background jobs owned by the app process, shared across runs.
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
-    /// Session run that owns spill files and, later, recall metadata.
-    pub run_id: String,
+    /// Session that owns spill files.
+    pub session_id: String,
+    /// App-owned spill directory, outside the workspace.
+    pub spill_root: PathBuf,
 }
 
 impl ToolContext {
@@ -284,8 +293,8 @@ impl ToolContext {
         let spilled = (tool != TOOL_SPILL_SKIP)
             .then(|| {
                 spill::save(
-                    self.workspace.root(),
-                    &self.run_id,
+                    &self.spill_root,
+                    &self.session_id,
                     &format!("{tool}-{call_id}"),
                     &text,
                 )
@@ -296,7 +305,7 @@ impl ToolContext {
                 "\n\n{SPILL_MARKER_HEAD}{} lines, {} bytes{SPILL_MARKER_POINTER}{}{SPILL_MARKER_TAIL}\n\n",
                 spilled.lines,
                 spilled.bytes,
-                spilled.relative.display()
+                spilled.path.display()
             ),
             None => TOOL_OUTPUT_MARKER.to_string(),
         };
@@ -598,7 +607,8 @@ pub(crate) mod test_support {
                 workspace,
                 cancel,
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
-                run_id: "run-test".into(),
+                session_id: "run-test".into(),
+                spill_root: root.join("spill"),
             },
             root,
             handle,
@@ -810,14 +820,15 @@ mod tests {
             .execute(&ctx, &Allow, "wordy", "call-7", json!({}))
             .await;
 
-        let relative = std::path::Path::new(".oaklet/spill/run-test/wordy-call-7.txt");
+        let path = spill_pointer(&outcome.output).unwrap().to_string();
+        assert!(std::path::Path::new(&path).starts_with(&ctx.spill_root));
         assert_eq!(
-            std::fs::read_to_string(root.join(relative)).unwrap(),
+            std::fs::read_to_string(&path).unwrap(),
             full,
             "spill file keeps the complete output"
         );
         assert!(outcome.ok);
-        assert!(outcome.output.contains(&relative.display().to_string()));
+        assert!(outcome.output.contains(&path));
         assert!(
             outcome
                 .output
@@ -840,7 +851,7 @@ mod tests {
                 &Allow,
                 "read_file",
                 "call-8",
-                json!({ "path": relative.to_str().unwrap(), "offset": 3, "limit": 2 }),
+                json!({ "path": path, "offset": 3, "limit": 2 }),
             )
             .await;
         assert!(read.ok);
@@ -857,14 +868,14 @@ mod tests {
             .await;
 
         assert!(outcome.output.contains(TOOL_OUTPUT_MARKER));
-        assert!(!root.join(".oaklet/spill").exists());
+        assert!(!ctx.spill_root.exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
     async fn an_unwritable_spill_falls_back_to_the_plain_marker() {
         let (ctx, root, _handle) = context("spill-fail");
-        std::fs::write(root.join(".oaklet"), "not a directory").unwrap();
+        std::fs::write(&ctx.spill_root, "not a directory").unwrap();
         let registry = wordy("wordy", "w".repeat(TOOL_OUTPUT_THRESHOLD_CHARS + 1));
         let outcome = registry
             .execute(&ctx, &Allow, "wordy", "call-1", json!({}))
@@ -884,6 +895,12 @@ mod tests {
         );
 
         assert_eq!(spill_pointer(&text), Some(path));
+
+        let absolute = "/Users/me/Library/Application Support/com.oaklet.desktop/spill/session-0123456789abcdef/out.txt";
+        let text = format!(
+            "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}{absolute}{SPILL_MARKER_TAIL}"
+        );
+        assert_eq!(spill_pointer(&text), Some(absolute));
 
         let not_a_spill = format!(
             "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}build/report.html{SPILL_MARKER_TAIL}"

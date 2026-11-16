@@ -180,7 +180,8 @@ mod tests {
             workspace,
             cancel,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
-            run_id: "run-test".into(),
+            session_id: "run-test".into(),
+            spill_root: std::env::temp_dir().join("oaklet-likec4-spill"),
         };
         let tool = LikeC4 {
             node: Some(node),

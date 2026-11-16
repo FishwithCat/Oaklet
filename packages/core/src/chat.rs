@@ -574,7 +574,7 @@ pub async fn session_send(
     let text = text.trim().to_string();
     let run_id = state.next_id();
     let (message, display, attachment_names) =
-        build_user_turn(&text, &attachments, &config.workspace, &run_id)?;
+        build_user_turn(&text, &attachments, &state.spill_root, &session_id)?;
     let title = if meta.turns == 0 {
         let title = session_title(&text, &attachment_names);
         (!title.is_empty()).then_some(title)
@@ -806,8 +806,8 @@ fn resolve_approvals(state: &AppState, run_id: &str) {
 fn build_user_turn(
     text: &str,
     attachments: &[IncomingAttachment],
-    workspace: &str,
-    run_id: &str,
+    spill_root: &Path,
+    session_id: &str,
 ) -> Result<(Value, Value, Vec<String>), String> {
     if text.is_empty() && attachments.is_empty() {
         return Err("A message is required.".into());
@@ -863,8 +863,8 @@ fn build_user_turn(
                 let spilled = (file_text.len() > ATTACHMENT_SPILL_BYTES)
                     .then(|| {
                         spill::save(
-                            Path::new(workspace),
-                            run_id,
+                            spill_root,
+                            session_id,
                             &format!("{}-{name}", index + 1),
                             file_text,
                         )
@@ -911,7 +911,7 @@ fn attachment_preview(name: &str, text: &str, spilled: &spill::Spilled) -> Strin
         "Attached file {name}: full text ({} lines, {} bytes) saved to {}. Use read_file with offset and limit to page through it.\n\n",
         spilled.lines,
         spilled.bytes,
-        spilled.relative.display()
+        spilled.path.display()
     );
     out.push_str(&preview.head);
     if preview.omitted_lines > 0 || preview.clipped {
@@ -1866,7 +1866,7 @@ mod tests {
                     text: "hi".into(),
                 },
             ],
-            env!("CARGO_MANIFEST_DIR"),
+            Path::new(env!("CARGO_MANIFEST_DIR")),
             "run-1",
         )
         .unwrap();
@@ -1895,11 +1895,11 @@ mod tests {
     #[test]
     fn plain_text_keeps_the_string_content_shape() {
         let (message, display, names) =
-            build_user_turn("hello", &[], env!("CARGO_MANIFEST_DIR"), "run-1").unwrap();
+            build_user_turn("hello", &[], Path::new(env!("CARGO_MANIFEST_DIR")), "run-1").unwrap();
         assert_eq!(message["content"], "hello");
         assert_eq!(display["text"], "hello");
         assert!(names.is_empty());
-        assert!(build_user_turn("", &[], env!("CARGO_MANIFEST_DIR"), "run-1").is_err());
+        assert!(build_user_turn("", &[], Path::new(env!("CARGO_MANIFEST_DIR")), "run-1").is_err());
     }
 
     #[test]
@@ -1909,12 +1909,14 @@ mod tests {
             bytes: 1,
             text: "x".repeat(200_001),
         };
-        assert!(build_user_turn("", &[file], env!("CARGO_MANIFEST_DIR"), "run-1").is_err());
+        assert!(
+            build_user_turn("", &[file], Path::new(env!("CARGO_MANIFEST_DIR")), "run-1").is_err()
+        );
     }
 
     #[test]
     fn spills_oversized_text_attachments_with_a_preview() {
-        let root = crate::tools::test_support::temp_root("attachment-spill");
+        let spill_root = crate::tools::test_support::temp_root("attachment-spill");
         let head: Vec<String> = (1..=100).map(|line| format!("line {line}")).collect();
         let tail: Vec<String> = (500..=540).map(|line| format!("line {line}")).collect();
         let text = format!(
@@ -1929,17 +1931,23 @@ mod tests {
             text: text.clone(),
         };
         let (message, _display, names) =
-            build_user_turn("", &[file], root.to_str().unwrap(), "run-1").unwrap();
+            build_user_turn("", &[file], &spill_root, "run-1").unwrap();
 
-        let relative = Path::new(".oaklet/spill/run-1/1-notes.md.txt");
+        let directory = std::fs::read_dir(&spill_root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let path = directory.join("1-notes.md.txt");
         assert_eq!(
-            std::fs::read_to_string(root.join(relative)).unwrap(),
+            std::fs::read_to_string(&path).unwrap(),
             text,
             "spill file keeps the complete attachment"
         );
         let body = message["content"][0]["text"].as_str().unwrap();
         assert_eq!(names, vec!["notes.md"]);
-        assert!(body.contains(&relative.display().to_string()));
+        assert!(body.contains(&path.display().to_string()));
         assert!(body.contains(&format!("{} lines", text.lines().count())));
         assert!(body.contains(&format!("{} bytes", text.len())));
         assert!(body.contains("line 1"));
@@ -1947,21 +1955,21 @@ mod tests {
         assert!(body.contains("lines omitted"));
         assert!(!body.contains(&"x".repeat(1_000)));
         assert!(body.chars().count() < 10_000);
-        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&spill_root).ok();
     }
 
     #[test]
     fn attachment_spill_failure_keeps_the_inline_text() {
         let root = crate::tools::test_support::temp_root("attachment-spill-fail");
-        std::fs::write(root.join(".oaklet"), "not a directory").unwrap();
+        let spill_root = root.join("spill");
+        std::fs::write(&spill_root, "not a directory").unwrap();
         let text = "x".repeat(ATTACHMENT_SPILL_BYTES + 1);
         let file = IncomingAttachment::File {
             name: "notes.txt".into(),
             bytes: text.len() as u64,
             text: text.clone(),
         };
-        let (message, _item, _names) =
-            build_user_turn("", &[file], root.to_str().unwrap(), "run-1").unwrap();
+        let (message, _item, _names) = build_user_turn("", &[file], &spill_root, "run-1").unwrap();
 
         assert_eq!(
             message["content"][0]["text"],

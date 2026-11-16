@@ -223,7 +223,8 @@ mod tests {
             workspace,
             cancel,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
-            run_id: "run-test".into(),
+            session_id: "run-test".into(),
+            spill_root: root.join("spill"),
         };
 
         let task = tokio::spawn(async move {

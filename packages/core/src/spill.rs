@@ -1,55 +1,65 @@
 //! Recoverable spill storage for oversized model-facing text.
 //!
 //! Tool output and pasted attachments are written under
-//! `<workspace>/.oaklet/spill/<run_id>/` before their inline copy is trimmed,
-//! so the model can read the full text back with `read_file`. Every failure
-//! returns `None` and leaves callers on their previous behavior: dropping the
-//! only copy is worse than an over-long message.
+//! `<app data>/spill/session-<hash>/` before their inline copy is trimmed, so
+//! the model can read the full text back with `read_file`. The root lives
+//! outside the workspace: spill files are an app artifact, not project files.
+//! Every failure returns `None` and leaves callers on their previous behavior:
+//! dropping the only copy is worse than an over-long message.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Longest sanitized path segment; well under common 255-byte limits.
 const MAX_SEGMENT_CHARS: usize = 96;
 
+/// Spill files older than this are removed by the startup sweep.
+pub(crate) const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// A file written by the spill writer.
 #[derive(Clone, Debug)]
 pub(crate) struct Spilled {
-    /// Workspace-relative location, as shown to the model.
-    pub relative: PathBuf,
+    /// Absolute location, as shown to the model.
+    pub path: PathBuf,
     /// Line count of the complete text.
     pub lines: usize,
     /// UTF-8 byte length of the complete text.
     pub bytes: usize,
 }
 
-/// Write `content` to `<root>/.oaklet/spill/<run_id>/<suggested>.txt`.
+/// Write `content` to `<root>/session-<hash>/<suggested>.txt`.
 ///
 /// The file is created exclusively with owner-only permissions, so a planted
 /// symlink cannot redirect the write. Name collisions get a numeric suffix.
-pub(crate) fn save(root: &Path, run_id: &str, suggested: &str, content: &str) -> Option<Spilled> {
-    let base = Path::new(".oaklet").join("spill");
-    let directory = base.join(segment(run_id));
-    let absolute_base = root.join(&base);
-    let absolute_dir = root.join(&directory);
-    // Reject a symlinked `.oaklet` or `spill` before creating anything below it.
-    if !inside_workspace(root, &absolute_base) {
+pub(crate) fn save(
+    root: &Path,
+    session_id: &str,
+    suggested: &str,
+    content: &str,
+) -> Option<Spilled> {
+    fs::create_dir_all(root).ok()?;
+    let directory = root.join(session_directory(session_id));
+    fs::create_dir_all(&directory).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(root, fs::Permissions::from_mode(0o700));
+        let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+    }
+    // Reject a planted session-directory symlink before writing through it.
+    let canonical_root = root.canonicalize().ok()?;
+    if !directory.canonicalize().ok()?.starts_with(&canonical_root) {
         return None;
     }
-    fs::create_dir_all(&absolute_dir).ok()?;
-    if !absolute_dir.canonicalize().ok()?.starts_with(root) {
-        return None;
-    }
-    ignore_in_git(&absolute_base);
 
     for suffix in 0..100 {
         let stem = match suffix {
             0 => segment(suggested),
             _ => format!("{}-{suffix}", segment(suggested)),
         };
-        let relative = directory.join(format!("{stem}.txt"));
-        let path = root.join(&relative);
+        let path = directory.join(format!("{stem}.txt"));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -65,7 +75,7 @@ pub(crate) fn save(root: &Path, run_id: &str, suggested: &str, content: &str) ->
                     return None;
                 }
                 return Some(Spilled {
-                    relative,
+                    path,
                     lines: content.lines().count(),
                     bytes: content.len(),
                 });
@@ -77,33 +87,65 @@ pub(crate) fn save(root: &Path, run_id: &str, suggested: &str, content: &str) ->
     None
 }
 
-/// Whether the nearest existing ancestor of `target` resolves inside `root`.
-/// This catches a symlinked `.oaklet` before `create_dir_all` follows it.
-fn inside_workspace(root: &Path, target: &Path) -> bool {
-    let mut ancestor = target;
-    while ancestor.symlink_metadata().is_err() {
-        match ancestor.parent() {
-            Some(parent) => ancestor = parent,
-            None => return false,
+/// Delete spill files older than `retention` and prune empty session
+/// directories. Best effort: runs once at startup, before any run can write.
+pub(crate) fn cleanup(root: &Path, retention: Duration) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(is_session_directory) {
+            continue;
+        }
+        // `file_type` does not follow symlinks; a planted `session-*` link is
+        // left untouched instead of being descended into.
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(entry.path()) else {
+            continue;
+        };
+        let mut empty = true;
+        for file in files.flatten() {
+            if !file.file_type().is_ok_and(|kind| kind.is_file()) {
+                empty = false;
+                continue;
+            }
+            let Ok(modified) = file.metadata().and_then(|metadata| metadata.modified()) else {
+                empty = false;
+                continue;
+            };
+            // A future timestamp is not older than the cutoff; keep it.
+            if now.duration_since(modified).unwrap_or_default() < retention {
+                empty = false;
+                continue;
+            }
+            if fs::remove_file(file.path()).is_err() {
+                empty = false;
+            }
+        }
+        if empty {
+            let _ = fs::remove_dir(entry.path());
         }
     }
-    ancestor
-        .canonicalize()
-        .map(|real| real.starts_with(root))
-        .unwrap_or(false)
 }
 
-/// Keep spill artifacts out of the user's `git status`, best effort.
-fn ignore_in_git(directory: &Path) {
-    let path = directory.join(".gitignore");
-    if path.exists() {
-        return;
+/// Stable session directory name. FNV-1a keeps it identical across processes
+/// and releases without adding a hashing dependency.
+fn session_directory(session_id: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in session_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    let _ = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(b"*\n"));
+    format!("session-{hash:016x}")
+}
+
+/// Whether `name` is one of this module's session directories.
+fn is_session_directory(name: &str) -> bool {
+    name.strip_prefix("session-")
+        .is_some_and(|hash| hash.len() == 16 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 /// One filesystem-safe path segment: no separators, no `.`/`..`, bounded.
@@ -184,8 +226,10 @@ fn clip_tail(text: &str, max_chars: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{preview, save, segment};
+    use super::{RETENTION, cleanup, preview, save, segment, session_directory};
     use crate::tools::test_support::temp_root;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn sanitizes_path_segments() {
@@ -198,45 +242,97 @@ mod tests {
     }
 
     #[test]
-    fn saves_under_the_run_directory_and_reports_size() {
+    fn saves_under_the_session_directory_and_reports_size() {
         let root = temp_root("spill-save");
         let text = "first\nsecond\nthird";
         let spilled = save(&root, "run-1", "run_command-call_9", text).unwrap();
 
-        assert_eq!(
-            spilled.relative,
-            std::path::Path::new(".oaklet/spill/run-1/run_command-call_9.txt")
+        assert!(
+            spilled
+                .path
+                .starts_with(root.join(session_directory("run-1")))
         );
+        assert_eq!(spilled.path.file_name().unwrap(), "run_command-call_9.txt");
         assert_eq!(spilled.lines, 3);
         assert_eq!(spilled.bytes, text.len());
-        assert_eq!(
-            std::fs::read_to_string(root.join(&spilled.relative)).unwrap(),
-            text
-        );
+        assert_eq!(std::fs::read_to_string(&spilled.path).unwrap(), text);
 
         // A second save with the same name does not overwrite the first.
         let second = save(&root, "run-1", "run_command-call_9", "other").unwrap();
-        assert_ne!(second.relative, spilled.relative);
-        assert_eq!(
-            std::fs::read_to_string(root.join(&spilled.relative)).unwrap(),
-            text
-        );
+        assert_ne!(second.path, spilled.path);
+        assert_eq!(std::fs::read_to_string(&spilled.path).unwrap(), text);
+
+        // The app's spill root and files are private to the current user.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&root), 0o700);
+            assert_eq!(mode(&spilled.path), 0o600);
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
-    fn refuses_a_spill_directory_that_escapes_the_workspace() {
+    fn keeps_session_directories_stable_across_saves() {
+        let root = temp_root("spill-session");
+        let first = save(&root, "run-1", "a", "x").unwrap();
+        let second = save(&root, "run-1", "b", "y").unwrap();
+        assert_eq!(first.path.parent(), second.path.parent());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_a_session_directory_that_escapes_the_root() {
         let root = temp_root("spill-escape");
         let outside = temp_root("spill-outside");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, root.join(".oaklet")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(session_directory("run-1"))).unwrap();
 
         #[cfg(unix)]
         assert!(save(&root, "run-1", "output", "x").is_none());
         #[cfg(unix)]
-        assert!(!outside.join("spill").exists());
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn cleanup_expires_old_files_and_prunes_their_directory() {
+        let root = temp_root("spill-cleanup");
+        let old = save(&root, "old-session", "a", "old").unwrap();
+        let fresh = save(&root, "fresh-session", "b", "fresh").unwrap();
+        age(&old.path, 40);
+        cleanup(&root, RETENTION);
+
+        assert!(!old.path.exists());
+        assert!(!old.path.parent().unwrap().exists());
+        assert!(fresh.path.exists());
+        assert!(fresh.path.parent().unwrap().exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn cleanup_leaves_symlinked_session_directories_alone() {
+        let root = temp_root("spill-cleanup-link");
+        let outside = temp_root("spill-cleanup-outside");
+        let victim = outside.join("keep.txt");
+        std::fs::write(&victim, "keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join(session_directory("evil"))).unwrap();
+
+        cleanup(&root, RETENTION);
+
+        #[cfg(unix)]
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    fn age(path: &Path, days: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60))
+            .unwrap();
     }
 
     #[test]

@@ -111,14 +111,14 @@ impl Tool for ReadFile {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 text file from the workspace. Large files can be paged with offset and limit."
+        "Read a UTF-8 text file from the workspace or an Oaklet spill file. Large files can be paged with offset and limit."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path, relative to the workspace." },
+                "path": { "type": "string", "description": "File path, relative to the workspace, or the absolute spill path from a tool result." },
                 "offset": { "type": "integer", "description": "First line to read, 1-based. Defaults to 1." },
                 "limit": { "type": "integer", "description": "Maximum number of lines to read. Defaults to 400." }
             },
@@ -145,8 +145,11 @@ impl Tool for ReadFile {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let workspace = ctx.workspace.clone();
+        let spill_root = ctx.spill_root.clone();
         Box::pin(async move {
-            match tokio::task::spawn_blocking(move || read_file(&workspace, args)).await {
+            match tokio::task::spawn_blocking(move || read_file(&workspace, &spill_root, args))
+                .await
+            {
                 Ok(result) => result.map(ToolOutput::text),
                 Err(error) => Err(ToolError::Failed(format!("Read task failed: {error}"))),
             }
@@ -162,9 +165,23 @@ struct ReadFileArgs {
     limit: Option<usize>,
 }
 
-fn read_file(workspace: &Workspace, args: Value) -> Result<String, ToolError> {
+fn read_file(workspace: &Workspace, spill_root: &Path, args: Value) -> Result<String, ToolError> {
     let args: ReadFileArgs = parse_args(args)?;
-    let path = workspace.resolve(&args.path)?;
+    let path = match workspace.resolve(&args.path) {
+        Ok(path) => path,
+        // Spill files live outside the workspace; allow only paths under the
+        // app's spill root so the marker's retrieval instruction works.
+        Err(error) => {
+            let root = spill_root.canonicalize().map_err(|_| error.clone())?;
+            let real = Path::new(&args.path)
+                .canonicalize()
+                .map_err(|_| error.clone())?;
+            if !Path::new(&args.path).is_absolute() || !real.starts_with(&root) {
+                return Err(error.into());
+            }
+            real
+        }
+    };
     let meta = std::fs::metadata(&path).map_err(|error| format!("Cannot read file: {error}"))?;
     if meta.is_dir() {
         return Err(ToolError::Failed(
@@ -522,6 +539,7 @@ mod tests {
 
         let page = read_file(
             &ctx.workspace,
+            &ctx.spill_root,
             json!({ "path": "src/hello.txt", "offset": 2, "limit": 1 }),
         )
         .unwrap();
@@ -612,11 +630,45 @@ mod tests {
     #[test]
     fn rejects_unknown_and_missing_arguments() {
         let (ctx, root, _handle) = context("args");
-        let unknown = read_file(&ctx.workspace, json!({ "path": "x", "nope": 1 })).unwrap_err();
+        let unknown = read_file(
+            &ctx.workspace,
+            &ctx.spill_root,
+            json!({ "path": "x", "nope": 1 }),
+        )
+        .unwrap_err();
         assert!(unknown.to_string().contains("unknown field"));
-        let missing = read_file(&ctx.workspace, json!({})).unwrap_err();
+        let missing = read_file(&ctx.workspace, &ctx.spill_root, json!({})).unwrap_err();
         assert!(missing.to_string().contains("missing field"));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_spill_files_but_not_other_paths_outside_the_workspace() {
+        let (ctx, root, _handle) = context("spill-read");
+        let outside = crate::tools::test_support::temp_root("spill-read-outside");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "secret").unwrap();
+
+        let error = read_file(
+            &ctx.workspace,
+            &ctx.spill_root,
+            json!({ "path": secret.to_str().unwrap() }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outside the workspace"));
+
+        let spilled = crate::spill::save(&ctx.spill_root, "session", "out", "spill text").unwrap();
+        let text = read_file(
+            &ctx.workspace,
+            &ctx.spill_root,
+            json!({ "path": spilled.path.to_str().unwrap() }),
+        )
+        .unwrap();
+        assert_eq!(text, "spill text");
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&ctx.spill_root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     #[test]
