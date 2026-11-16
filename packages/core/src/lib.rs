@@ -15,6 +15,7 @@ mod terminal;
 mod tools;
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -353,13 +354,41 @@ fn write_config(path: &Path, config: &AppConfig) -> Result<(), String> {
     }
     let text = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Could not encode config: {e}"))?;
-    std::fs::write(path, text).map_err(|e| format!("Could not write config: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = path.with_file_name(format!(".config-{}-{stamp}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| format!("Could not create config temp file: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("Could not protect config temp file: {e}"))?;
+        }
+        file.write_all(text.as_bytes())
+            .map_err(|e| format!("Could not write config: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("Could not flush config: {e}"))?;
+        drop(file);
+        std::fs::rename(&temporary, path).map_err(|e| format!("Could not publish config: {e}"))?;
+        #[cfg(unix)]
+        if let Some(dir) = path.parent()
+            && let Ok(dir) = std::fs::File::open(dir)
+        {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
-    Ok(())
+    result
 }
 
 #[tauri::command]
@@ -795,7 +824,27 @@ mod tests {
 
     use super::{
         AppConfig, McpServerConfig, McpTransport, auto_approves_command, normalize_mcp_servers,
+        read_config, write_config,
     };
+
+    #[test]
+    fn writes_config_atomically_with_owner_only_permissions() {
+        let root = crate::tools::test_support::temp_root("config-atomic");
+        let path = root.join("config.json");
+        write_config(&path, &AppConfig::default()).unwrap();
+
+        assert!(read_config(&path).is_some());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn configs_saved_before_search_gets_the_deepseek_endpoint() {
