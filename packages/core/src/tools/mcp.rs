@@ -100,9 +100,7 @@ pub async fn discover(
                 Ok(cached)
             }
             Ok(Err(error)) => Err(format!("MCP server \"{name}\" failed: {error}")),
-            Err(_) => Err(format!(
-                "MCP server \"{name}\" timed out during startup."
-            )),
+            Err(_) => Err(format!("MCP server \"{name}\" timed out during startup.")),
         };
         outcomes[index] = Some(outcome);
     }
@@ -1065,7 +1063,10 @@ rl.on("line", (line) => {
         let (second, warnings) = discover(&servers, workspace.root()).await;
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(second.len(), 1);
-        assert_eq!(std::fs::read_to_string(&started).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&started).unwrap().lines().count(),
+            1
+        );
 
         let (ctx, tool_root, _handle) = context("mcp-cache-call");
         let outcome = second[0].execute(&ctx, json!({})).await.unwrap();
