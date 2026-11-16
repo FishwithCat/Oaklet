@@ -33,8 +33,9 @@ the rest of Oaklet works without it.
 
 ## Quick start
 
-1. Click the folder icon in the sidebar and choose a workspace. File tools stay
-   inside it.
+1. Click the folder icon in the sidebar and choose a workspace. It opens in its
+   own window; repeat to work on another project side by side. File tools stay
+   inside each window's workspace.
 2. Open **Settings**, use the **Model** tab, enter an API key, and choose a Base
    URL and model. DeepSeek is the default.
 3. Describe a change and send it. The agent reads and edits files, runs commands
@@ -50,6 +51,11 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   the backend, so they survive a restart; a live run keeps streaming while you
   switch tabs, but quitting Oaklet stops it and the next start marks it
   interrupted.
+- Each window belongs to one workspace. Opening the same folder again focuses
+  its existing window instead of creating a second one. A second app launch
+  focuses the last active window; `oaklet --workspace <path>` opens or focuses
+  that workspace. Closing a workspace window stops its runs, terminals,
+  background jobs, and cached MCP servers.
 - Paste screenshots or text files into the composer. Images are downscaled and
   sent as image parts, so the configured model must accept image input; text
   files up to 200 KB are accepted, and files above 16 KB are saved under
@@ -79,6 +85,12 @@ it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `history_read`.
 
 ## Workspace views
+
+Each workspace window has its own Chat tabs, Terminal tabs, Files editor, Git
+view, Architecture view, and Skills scan. They all use that window's folder;
+another window can be on a different project at the same time. Oaklet is still
+one application instance and one SQLite database, so settings and history are
+shared while sessions remain grouped by workspace.
 
 **Terminal** is backed by real PTYs: multiple tabs, interactive shells, colors,
 job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
@@ -117,7 +129,7 @@ Open **Settings** in the sidebar. Changes apply to the next run.
 | Search API key                | none (DeepSeek falls back to API key)      |
 | Search URL                    | provider default                           |
 | MCP servers                   | none                                       |
-| Workspace                     | your home directory                        |
+| Workspace                     | the last opened workspace                  |
 
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a local setup with
@@ -230,8 +242,8 @@ to 200,000 characters and reduces HTML to readable text.
 - `web_fetch` reads any HTTP(S) URL and returns bounded text. It can reach
   localhost and private addresses, so treat fetched content as untrusted data.
 - **Allow all in workspace** on an approval card stops prompting in that
-  workspace for the rest of the app session. The sidebar leaf revokes that
-  session grant. Grants never apply to file tools or another workspace, and
+  window's workspace for the rest of the app session. The sidebar leaf revokes
+  that grant. Grants never apply to file tools or another workspace, and
   commands can still touch files outside the workspace, so allow them only in a
   project you trust.
 - Commands typed in the terminal run immediately in the workspace, without

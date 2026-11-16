@@ -117,6 +117,12 @@ the final session view. The UI is a render cache: it never stores conversation
 state or executes files or commands itself. Open tabs, drafts, and the active
 tab are client UI state.
 
+Each webview window is bound to one canonical workspace in `WindowRegistry`.
+Window-scoped commands derive that workspace from the calling window instead of
+trusting a path from the frontend. Agent runs inherit their session's workspace,
+and events, background jobs, terminals, MCP clients, and architecture loads are
+scoped to that workspace or window.
+
 `packages/core/src/agent.rs` is the turn coordinator: it owns the request/tool
 loop, context preflight, and tool-batch sequencing. Its private submodules each
 own one responsibility: `agent/model.rs` performs a single streamed completion
