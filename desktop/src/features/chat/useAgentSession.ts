@@ -54,7 +54,9 @@ export function useAgentSession({
   const [activeTabId, setActiveTabId] = useState("");
   const [allowAll, setAllowAll] = useState(false);
   const [history, setHistory] = useState<SessionSummary[]>([]);
-  const [compacting, setCompacting] = useState(false);
+  const [compactingIds, setCompactingIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadOlderError, setLoadOlderError] = useState<{
     id: string;
@@ -66,8 +68,7 @@ export function useAgentSession({
   const activeTabIdRef = useRef(activeTabId);
   const workspaceRef = useRef(workspace);
   const tabCountRef = useRef(0);
-  const compactingRef = useRef(false);
-  const compactingIdRef = useRef<string | null>(null);
+  const compactingIdsRef = useRef(new Set<string>());
   const loadingOlderRef = useRef(false);
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
@@ -327,7 +328,14 @@ export function useAgentSession({
     if ((!trimmed && attachments.length === 0) || !enabled) return false;
 
     const tab = sessionsRef.current[activeTabIdRef.current];
-    if (!tab || tab.running || compactingRef.current) return false;
+    if (
+      !tab ||
+      tab.running ||
+      tab.compacting ||
+      compactingIdsRef.current.has(tab.id)
+    ) {
+      return false;
+    }
 
     const workspaceAtSend = workspaceRef.current;
     const previous = tab;
@@ -385,13 +393,12 @@ export function useAgentSession({
 
   function compact() {
     const tab = sessionsRef.current[activeTabIdRef.current];
-    if (compactingRef.current) {
-      const id = compactingIdRef.current;
-      if (id) void invoke("session_compact_cancel", { sessionId: id });
+    if (!tab) return;
+    if (compactingIdsRef.current.has(tab.id) || tab.compacting) {
+      void invoke("session_compact_cancel", { sessionId: tab.id });
       return;
     }
     if (
-      !tab ||
       tab.running ||
       loadingOlderRef.current ||
       tab.turns === 0
@@ -399,9 +406,8 @@ export function useAgentSession({
       return;
     }
 
-    compactingRef.current = true;
-    compactingIdRef.current = tab.id;
-    setCompacting(true);
+    compactingIdsRef.current.add(tab.id);
+    setCompactingIds(new Set(compactingIdsRef.current));
     const workspaceAtStart = workspaceRef.current;
     invoke<CompactResult>("session_compact", { sessionId: tab.id })
       .then(({ session, compacted }) => {
@@ -428,9 +434,8 @@ export function useAgentSession({
         }
       })
       .finally(() => {
-        compactingRef.current = false;
-        compactingIdRef.current = null;
-        setCompacting(false);
+        compactingIdsRef.current.delete(tab.id);
+        setCompactingIds(new Set(compactingIdsRef.current));
       });
   }
 
@@ -475,7 +480,8 @@ export function useAgentSession({
       !tab.hasMore ||
       tab.firstSeq === null ||
       loadingOlderRef.current ||
-      compactingRef.current
+      tab.compacting ||
+      compactingIdsRef.current.has(id)
     ) {
       return false;
     }
@@ -573,7 +579,8 @@ export function useAgentSession({
       loadOlderError?.id === resolvedActiveId ? loadOlderError.text : "",
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
-    compacting: compacting || (activeTab?.compacting ?? false),
+    compacting:
+      compactingIds.has(resolvedActiveId) || (activeTab?.compacting ?? false),
     tabs,
     activeTabId: resolvedActiveId,
     context: activeTab?.context ?? null,
