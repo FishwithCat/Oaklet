@@ -9,9 +9,12 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  width: 100%;
   height: 26px;
-  padding: 0 5px;
+  /* Hanging icon: the title starts on the message text column while the icon
+     sits in the left gutter, so the row reads flush with the reply. */
+  margin-left: -24px;
+  width: calc(100% + 24px);
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
   background: none;
@@ -66,7 +69,8 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: 0 0 2px 7px;
+  /* Hang with the header so the rule stays under the hanging icon. */
+  margin: 0 0 2px -17px;
   padding: 1px 0 1px 11px;
   border-left: 1px solid var(--border);
 }
@@ -96,7 +100,7 @@
   width: 100%;
   min-width: 0;
   height: 24px;
-  padding: 0 5px;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
   background: none;
