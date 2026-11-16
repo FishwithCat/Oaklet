@@ -20,6 +20,9 @@ struct StreamDelta {
     reasoning: Option<String>,
     /// Provider-reported prompt size, when a chunk carries usage.
     usage: Option<usize>,
+    /// Terminal marker or provider finish reason, when this chunk carries one.
+    done: bool,
+    finish_reason: Option<String>,
 }
 
 /// A failed model request. The status and body are kept separate so the run
@@ -222,6 +225,8 @@ pub(super) async fn stream_step(
     let mut reasoning = String::new();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
     let mut prompt_tokens: Option<usize> = None;
+    let mut saw_done = false;
+    let mut finish_reason: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -238,10 +243,14 @@ pub(super) async fn stream_step(
                 while let Some(pos) = buffer.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = buffer.drain(..=pos).collect();
                     let line = String::from_utf8_lossy(&line);
-                    let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
+                    let mut delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
                         .map_err(RequestError::stream)?;
                     if let Some(tokens) = delta.usage {
                         prompt_tokens = Some(tokens);
+                    }
+                    saw_done |= delta.done;
+                    if let Some(reason) = delta.finish_reason.take() {
+                        finish_reason = Some(reason);
                     }
                     emit_stream_delta(ctx, delta);
                 }
@@ -251,12 +260,20 @@ pub(super) async fn stream_step(
 
     if !buffer.is_empty() {
         let line = String::from_utf8_lossy(&buffer);
-        let delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
+        let mut delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
             .map_err(RequestError::stream)?;
         if let Some(tokens) = delta.usage {
             prompt_tokens = Some(tokens);
         }
+        saw_done |= delta.done;
+        if let Some(reason) = delta.finish_reason.take() {
+            finish_reason = Some(reason);
+        }
         emit_stream_delta(ctx, delta);
+    }
+
+    if let Some(message) = stream_end_error(saw_done, finish_reason.as_deref()) {
+        return Err(RequestError::stream(message.into()));
     }
 
     let mut calls: Vec<ToolCall> = calls.into_values().collect();
@@ -266,6 +283,16 @@ pub(super) async fn stream_step(
         }
     }
     Ok((content, reasoning, calls, prompt_tokens))
+}
+
+fn stream_end_error(saw_done: bool, finish_reason: Option<&str>) -> Option<&'static str> {
+    if finish_reason == Some("length") {
+        Some("The model reached its output limit before finishing.")
+    } else if !saw_done && finish_reason.is_none() {
+        Some("The model stream ended before completion.")
+    } else {
+        None
+    }
 }
 
 fn emit_stream_delta(ctx: &RunContext, delta: StreamDelta) {
@@ -287,8 +314,14 @@ fn apply_sse_line(
         return Ok(StreamDelta::default());
     };
     let data = data.trim();
-    if data.is_empty() || data == "[DONE]" {
+    if data.is_empty() {
         return Ok(StreamDelta::default());
+    }
+    if data == "[DONE]" {
+        return Ok(StreamDelta {
+            done: true,
+            ..StreamDelta::default()
+        });
     }
 
     let value: Value =
@@ -313,6 +346,13 @@ fn apply_sse_line(
     }
 
     let mut emitted = StreamDelta::default();
+    if let Some(reason) = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+    {
+        emitted.finish_reason = Some(reason.to_string());
+    }
     if let Some(tokens) = value
         .pointer("/usage/prompt_tokens")
         .and_then(Value::as_u64)
@@ -482,6 +522,16 @@ mod tests {
         let delta =
             apply_sse_line("data: [DONE]", &mut content, &mut reasoning, &mut calls).unwrap();
         assert!(delta.content.is_none() && delta.reasoning.is_none());
+        assert!(delta.done);
+        let delta = apply_sse_line(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(delta.finish_reason.as_deref(), Some("stop"));
+        assert!(!delta.done);
         assert!(
             apply_sse_line(
                 r#"data: {"error":{"message":"bad key"}}"#,
@@ -527,6 +577,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(delta.usage, None);
+    }
+
+    #[test]
+    fn rejects_a_stream_without_a_terminal_marker() {
+        assert!(stream_end_error(false, None).is_some());
+        assert!(stream_end_error(false, Some("length")).is_some());
+        assert!(stream_end_error(false, Some("stop")).is_none());
+        assert!(stream_end_error(true, None).is_none());
+        assert!(stream_end_error(true, Some("tool_calls")).is_none());
     }
 
     #[test]
