@@ -148,6 +148,15 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     finally { busyRef.current = false; setBusy(false); }
   }
 
+  async function switchBranchSafely(next: string): Promise<boolean> {
+    if (!await canLeave()) return false;
+    // The open file may not exist, or may have different contents, on the
+    // branch being checked out.
+    setDocument(null);
+    dirtyRef.current = false;
+    return switchBranch(next);
+  }
+
   return (
     <section className="files-panel" hidden={!active} aria-label="Files" onKeyDown={(event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -167,7 +176,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
             branches={branches}
             switchingBranch={switchingBranch}
             branchError={branchError}
-            onSwitch={switchBranch}
+            onSwitch={switchBranchSafely}
             onClearError={clearBranchError}
           />
         )}
