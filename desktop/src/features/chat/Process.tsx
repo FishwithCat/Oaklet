@@ -9,6 +9,7 @@ import {
   SandglassRegular,
   SearchAIRegular,
   Sparkles3Regular,
+  Task2Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
 import { CloseCircleFilled, WarningFilled } from "@mingcute/react/core-filled";
@@ -37,6 +38,11 @@ const CATEGORY_ICONS: Record<ToolCategory, ReactNode> = {
   command: <TerminalBoxRegular size={14} />,
   web: <SearchAIRegular size={14} />,
   tools: <Sparkles3Regular size={14} />,
+};
+
+/** Tools that read better with their own glyph than their category's. */
+const TOOL_ICONS: Record<string, ReactNode> = {
+  job_output: <Task2Regular size={14} />,
 };
 
 function categoryIcon(category: ToolCategory | "thinking"): ReactNode {
@@ -203,7 +209,7 @@ function ToolRow({
     <div className="process-row tool" data-status={item.status}>
       {statusLabel && <span className="sr-only">{statusLabel}</span>}
       <DisclosureHead
-        icon={categoryIcon(category)}
+        icon={TOOL_ICONS[item.name] ?? categoryIcon(category)}
         title={toolTitle(item.name)}
         summary={toolSummary(item)}
         live={running}
