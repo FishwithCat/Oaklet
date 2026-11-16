@@ -63,6 +63,11 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     };
     let mut instructions = WorkspaceInstructions::load(workspace.root());
     let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config).await;
+    if cancel.is_cancelled() {
+        crate::tools::shutdown_workspace(workspace.root());
+        ctx.finish_stopped(strip_system(&input)).await;
+        return;
+    }
     ensure_history_tool(&mut tools, &ctx);
     let tool_context = ToolContext {
         workspace,
