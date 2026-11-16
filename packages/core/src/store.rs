@@ -500,6 +500,25 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|error| format!("Could not create the data directory: {error}"))?;
+            // Keep the database, WAL, SHM, and spill siblings private even if
+            // SQLite creates the journal files with the process umask.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        // Create the main database owner-only before SQLite can create a wider
+        // file. An existing file keeps its mode here and is narrowed below.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(path);
         }
         let conn = Connection::open(path)
             .map_err(|error| format!("Could not open the session database: {error}"))?;
@@ -948,7 +967,18 @@ fn restrict_permissions(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            let _ = std::fs::set_permissions(
+                std::path::PathBuf::from(name),
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
     }
     #[cfg(not(unix))]
     let _ = path;
@@ -1474,5 +1504,30 @@ mod tests {
         assert!(!has_table(&conn, "schema_migrations").unwrap());
         drop(conn);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_store_files_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = crate::tools::test_support::temp_root("store-permissions");
+        let path = root.join("oaklet.db");
+        let store = Store::open(&path).unwrap();
+        drop(store);
+
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            let sibling = std::path::PathBuf::from(name);
+            if sibling.exists() {
+                assert_eq!(mode(&sibling), 0o600);
+            }
+        }
+        std::fs::remove_dir_all(root).ok();
     }
 }
