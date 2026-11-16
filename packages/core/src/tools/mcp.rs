@@ -1014,6 +1014,10 @@ rl.on("line", (line) => {
             .await
             .unwrap();
         assert_eq!(outcome, "hello");
+        cache()
+            .lock()
+            .await
+            .remove(&cache_key("echo", &servers["echo"], workspace.root()));
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(tool_root).ok();
     }
@@ -1188,18 +1192,24 @@ rl.on("line", (line) => {
         assert_eq!(outcome, "over http");
         server.join().unwrap();
 
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 4);
-        assert!(seen.iter().any(|request| {
-            request
-                .to_ascii_lowercase()
-                .contains("mcp-session-id: test-session")
-        }));
-        assert!(seen.iter().any(|request| {
-            request
-                .to_ascii_lowercase()
-                .contains("mcp-protocol-version: 2025-06-18")
-        }));
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 4);
+            assert!(seen.iter().any(|request| {
+                request
+                    .to_ascii_lowercase()
+                    .contains("mcp-session-id: test-session")
+            }));
+            assert!(seen.iter().any(|request| {
+                request
+                    .to_ascii_lowercase()
+                    .contains("mcp-protocol-version: 2025-06-18")
+            }));
+        }
+        cache()
+            .lock()
+            .await
+            .remove(&cache_key("http", &servers["http"], workspace.root()));
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(tool_root).ok();
     }
