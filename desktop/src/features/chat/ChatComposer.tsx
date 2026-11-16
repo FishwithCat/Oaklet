@@ -102,7 +102,7 @@ export function ChatComposer({
   welcome?: boolean;
   attachments: Attachment[];
   onChange: (value: string) => void;
-  onAddAttachments: (attachments: Attachment[]) => void;
+  onAddAttachments: (attachments: Attachment[], tabId?: string) => void;
   onRemoveAttachment: (index: number) => void;
   onSubmit: (attachments: Attachment[]) => Promise<boolean>;
   onStop: () => void;
@@ -112,11 +112,13 @@ export function ChatComposer({
   const [attachmentError, setAttachmentError] = useState("");
   const [reading, setReading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
+  activeTabIdRef.current = activeTabId;
 
   useEffect(() => {
     if (!helpOpen) return;
@@ -174,6 +176,7 @@ export function ChatComposer({
     // Plain text falls through to the browser's default paste.
     if (files.length === 0) return;
     event.preventDefault();
+    const tabId = activeTabIdRef.current;
     setAttachmentError("");
     setReading(true);
     try {
@@ -182,11 +185,13 @@ export function ChatComposer({
         try {
           added.push(await readAttachment(file));
         } catch (error) {
-          setAttachmentError(errorText(error));
+          if (activeTabIdRef.current === tabId) {
+            setAttachmentError(errorText(error));
+          }
         }
       }
       if (added.length > 0) {
-        onAddAttachments(added);
+        onAddAttachments(added, tabId);
       }
     } finally {
       setReading(false);

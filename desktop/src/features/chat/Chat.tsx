@@ -219,11 +219,10 @@ export function Chat({
     setAttachments(next);
   }
 
-  function addAttachments(added: Attachment[]) {
-    updateAttachments([
-      ...(attachmentsRef.current.get(activeTabId) ?? []),
-      ...added,
-    ]);
+  function addAttachments(added: Attachment[], tabId = activeTabId) {
+    const next = [...(attachmentsRef.current.get(tabId) ?? []), ...added];
+    attachmentsRef.current.set(tabId, next);
+    if (activeTabIdRef.current === tabId) setAttachments(next);
   }
 
   async function submit(attachments: Attachment[]): Promise<boolean> {
