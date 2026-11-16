@@ -5,6 +5,7 @@
 //! helper over stdin, and returns the layouted JSON the React renderer needs.
 //! The helper never reads the workspace or executes workspace configuration.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -124,36 +125,50 @@ struct LoadBase {
 
 #[derive(Default)]
 pub struct ArchitectureCache {
-    cached: Option<CachedModel>,
-    cancel: Option<Arc<AtomicBool>>,
+    cached: HashMap<(String, String), CachedModel>,
+    loads: HashMap<String, LoadSlot>,
     generation: u64,
+}
+
+struct LoadSlot {
+    generation: u64,
+    cancel: Arc<AtomicBool>,
 }
 
 /// One architecture load attempt. Creating it supersedes any older attempt and
 /// dropping it releases the cancellation slot when this attempt still owns it.
 struct LoadTicket {
     shared: Arc<crate::AppState>,
+    workspace: String,
     generation: u64,
     cancel: Arc<AtomicBool>,
 }
 
 impl LoadTicket {
-    fn new(shared: Arc<crate::AppState>) -> Result<Self, String> {
+    fn new(shared: Arc<crate::AppState>, workspace: String) -> Result<Self, String> {
         let cancel = Arc::new(AtomicBool::new(false));
         let generation = {
             let mut cache = shared
                 .architecture
                 .lock()
                 .map_err(|_| "Architecture state is unavailable.".to_string())?;
-            if let Some(previous) = cache.cancel.take() {
-                previous.store(true, Ordering::SeqCst);
+            if let Some(previous) = cache.loads.remove(&workspace) {
+                previous.cancel.store(true, Ordering::SeqCst);
             }
             cache.generation = cache.generation.wrapping_add(1);
-            cache.cancel = Some(cancel.clone());
-            cache.generation
+            let generation = cache.generation;
+            cache.loads.insert(
+                workspace.clone(),
+                LoadSlot {
+                    generation,
+                    cancel: cancel.clone(),
+                },
+            );
+            generation
         };
         Ok(Self {
             shared,
+            workspace,
             generation,
             cancel,
         })
@@ -165,7 +180,11 @@ impl LoadTicket {
             .architecture
             .lock()
             .map_err(|_| "Architecture state is unavailable.".to_string())?;
-        if cache.generation == self.generation {
+        if cache
+            .loads
+            .get(&self.workspace)
+            .is_some_and(|slot| slot.generation == self.generation)
+        {
             Ok(())
         } else {
             Err("Architecture load was superseded by a newer request.".into())
@@ -176,31 +195,32 @@ impl LoadTicket {
 impl Drop for LoadTicket {
     fn drop(&mut self) {
         if let Ok(mut cache) = self.shared.architecture.lock()
-            && cache.generation == self.generation
+            && cache
+                .loads
+                .get(&self.workspace)
+                .is_some_and(|slot| slot.generation == self.generation)
         {
-            cache.cancel = None;
+            cache.loads.remove(&self.workspace);
         }
     }
 }
 
-/// Drop a model from another workspace and stop a compiler process that is no
-/// longer relevant.
-pub fn cancel_for_workspace_change(state: &crate::AppState) {
+/// Stop compiler work and drop cached models owned by one workspace.
+pub fn cancel_workspace(state: &crate::AppState, workspace: &Path) {
+    let workspace = workspace.to_string_lossy().into_owned();
     if let Ok(mut cache) = state.architecture.lock() {
-        cache.generation = cache.generation.wrapping_add(1);
-        if let Some(cancel) = cache.cancel.take() {
-            cancel.store(true, Ordering::SeqCst);
+        if let Some(slot) = cache.loads.remove(&workspace) {
+            slot.cancel.store(true, Ordering::SeqCst);
         }
-        cache.cached = None;
+        cache.cached.retain(|(cached, _), _| cached != &workspace);
     }
 }
 
 /// Stop any compiler process when the application exits.
 pub fn cancel_all(state: &crate::AppState) {
     if let Ok(mut cache) = state.architecture.lock() {
-        cache.generation = cache.generation.wrapping_add(1);
-        if let Some(cancel) = cache.cancel.take() {
-            cancel.store(true, Ordering::SeqCst);
+        for (_, slot) in cache.loads.drain() {
+            slot.cancel.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -231,7 +251,7 @@ pub async fn load(
     let workspace = Workspace::new(&workspace_path.to_string_lossy())?;
     let workspace_text = workspace.root().to_string_lossy().into_owned();
     let root = normalize_root(&requested_root);
-    let ticket = LoadTicket::new(shared.clone())?;
+    let ticket = LoadTicket::new(shared.clone(), workspace_text.clone())?;
 
     let workspace_for_scan = workspace.clone();
     let (models, warnings) = tauri::async_runtime::spawn_blocking(move || {
@@ -325,15 +345,7 @@ pub async fn load(
         ));
     };
 
-    let current_workspace = shared
-        .config
-        .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
-        .workspace
-        .clone();
-    if current_workspace != base.workspace {
-        return Err("The workspace changed while architecture was loading.".into());
-    }
+    ticket.require_current()?;
 
     let request = serde_json::json!({
         "version": 1,
@@ -341,23 +353,12 @@ pub async fn load(
     });
     let outcome = run_helper(&node, &helper, &request, ticket.cancel.clone()).await;
 
-    let current_workspace = shared
-        .config
-        .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
-        .workspace
-        .clone();
-    if current_workspace != base.workspace {
-        return Err("The workspace changed while architecture was loading.".into());
-    }
+    ticket.require_current()?;
 
     let mut cache = shared
         .architecture
         .lock()
         .map_err(|_| "Architecture state is unavailable.".to_string())?;
-    if cache.generation != ticket.generation {
-        return Err("Architecture load was superseded by a newer request.".into());
-    }
 
     match outcome {
         Ok(response) if response.ok => {
@@ -378,13 +379,16 @@ pub async fn load(
                 ));
             }
 
-            cache.cached = Some(CachedModel {
-                workspace: base.workspace.clone(),
-                root: base.root.clone(),
-                digest: base.digest.clone(),
-                model: model_data.clone(),
-                views: response.views.clone(),
-            });
+            cache.cached.insert(
+                (base.workspace.clone(), base.root.clone()),
+                CachedModel {
+                    workspace: base.workspace.clone(),
+                    root: base.root.clone(),
+                    digest: base.digest.clone(),
+                    model: model_data.clone(),
+                    views: response.views.clone(),
+                },
+            );
             Ok(LoadResult {
                 workspace: base.workspace,
                 root: base.root,
@@ -442,7 +446,7 @@ fn fallback_result(
 fn cached_for(cache: &ArchitectureCache, workspace: &str, root: &str) -> Option<CachedModel> {
     cache
         .cached
-        .as_ref()
+        .get(&(workspace.to_string(), root.to_string()))
         .filter(|cached| cached.workspace == workspace && cached.root == root)
         .cloned()
 }
@@ -480,7 +484,10 @@ mod tests {
     #[test]
     fn cache_only_matches_the_same_workspace_and_model_root() {
         let cache = ArchitectureCache {
-            cached: Some(cached_model("/workspace", "architecture")),
+            cached: HashMap::from([(
+                ("/workspace".into(), "architecture".into()),
+                cached_model("/workspace", "architecture"),
+            )]),
             ..Default::default()
         };
 
@@ -536,10 +543,12 @@ mod tests {
         Arc::new(crate::AppState {
             config: std::sync::Mutex::new(crate::AppConfig::default()),
             config_path: PathBuf::new(),
+            config_write: std::sync::Mutex::new(()),
+            windows: std::sync::Mutex::new(crate::WindowRegistry::default()),
             spill_root: PathBuf::new(),
             approvals: std::sync::Mutex::new(std::collections::HashMap::new()),
             chat: crate::chat::ChatState::in_memory(),
-            command_allow_all: std::sync::Mutex::new(None),
+            command_allow_all: std::sync::Mutex::new(std::collections::HashSet::new()),
             terminal: std::sync::Mutex::new(std::collections::HashMap::new()),
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             architecture: std::sync::Mutex::new(ArchitectureCache::default()),
@@ -550,10 +559,10 @@ mod tests {
     #[test]
     fn a_newer_ticket_supersedes_and_cancels_the_previous_one() {
         let shared = test_state();
-        let first = LoadTicket::new(shared.clone()).unwrap();
+        let first = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
         let first_cancel = first.cancel.clone();
 
-        let second = LoadTicket::new(shared.clone()).unwrap();
+        let second = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
 
         assert!(first_cancel.load(Ordering::SeqCst));
         assert!(first.require_current().unwrap_err().contains("superseded"));
@@ -562,10 +571,22 @@ mod tests {
     }
 
     #[test]
+    fn different_workspaces_load_without_cancelling_each_other() {
+        let shared = test_state();
+        let first = LoadTicket::new(shared.clone(), "/workspace-a".into()).unwrap();
+        let first_cancel = first.cancel.clone();
+        let second = LoadTicket::new(shared.clone(), "/workspace-b".into()).unwrap();
+
+        assert!(!first_cancel.load(Ordering::SeqCst));
+        first.require_current().unwrap();
+        second.require_current().unwrap();
+    }
+
+    #[test]
     fn dropping_an_old_ticket_keeps_the_newer_cancellation_slot() {
         let shared = test_state();
-        let first = LoadTicket::new(shared.clone()).unwrap();
-        let second = LoadTicket::new(shared.clone()).unwrap();
+        let first = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
+        let second = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
         let second_cancel = second.cancel.clone();
 
         drop(first);
@@ -575,41 +596,45 @@ mod tests {
             assert_eq!(cache.generation, second.generation);
             assert!(
                 cache
-                    .cancel
-                    .as_ref()
+                    .loads
+                    .get("/workspace")
+                    .map(|slot| &slot.cancel)
                     .is_some_and(|cancel| Arc::ptr_eq(cancel, &second_cancel))
             );
         }
 
         drop(second);
-        assert!(shared.architecture.lock().unwrap().cancel.is_none());
+        assert!(shared.architecture.lock().unwrap().loads.is_empty());
     }
 
     #[test]
     fn workspace_changes_invalidate_the_ticket_and_drop_the_cached_model() {
         let shared = test_state();
-        shared.architecture.lock().unwrap().cached =
-            Some(cached_model("/workspace", "architecture"));
-        let ticket = LoadTicket::new(shared.clone()).unwrap();
+        shared.architecture.lock().unwrap().cached.insert(
+            ("/workspace".into(), "architecture".into()),
+            cached_model("/workspace", "architecture"),
+        );
+        let ticket = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
         let cancel = ticket.cancel.clone();
 
-        cancel_for_workspace_change(&shared);
+        cancel_workspace(&shared, Path::new("/workspace"));
 
         assert!(cancel.load(Ordering::SeqCst));
         assert!(ticket.require_current().unwrap_err().contains("superseded"));
         {
             let cache = shared.architecture.lock().unwrap();
-            assert!(cache.cached.is_none());
-            assert!(cache.cancel.is_none());
+            assert!(cache.cached.is_empty());
+            assert!(cache.loads.is_empty());
         }
 
-        let newer = LoadTicket::new(shared.clone()).unwrap();
+        let newer = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
         drop(ticket);
         let cache = shared.architecture.lock().unwrap();
         assert!(
             cache
-                .cancel
-                .as_ref()
+                .loads
+                .get("/workspace")
+                .map(|slot| &slot.cancel)
                 .is_some_and(|slot| Arc::ptr_eq(slot, &newer.cancel))
         );
     }
@@ -617,9 +642,11 @@ mod tests {
     #[test]
     fn shutdown_cancels_in_flight_work_but_keeps_the_cached_model() {
         let shared = test_state();
-        shared.architecture.lock().unwrap().cached =
-            Some(cached_model("/workspace", "architecture"));
-        let ticket = LoadTicket::new(shared.clone()).unwrap();
+        shared.architecture.lock().unwrap().cached.insert(
+            ("/workspace".into(), "architecture".into()),
+            cached_model("/workspace", "architecture"),
+        );
+        let ticket = LoadTicket::new(shared.clone(), "/workspace".into()).unwrap();
         let cancel = ticket.cancel.clone();
 
         cancel_all(&shared);
@@ -627,8 +654,8 @@ mod tests {
         assert!(cancel.load(Ordering::SeqCst));
         assert!(ticket.require_current().is_err());
         let cache = shared.architecture.lock().unwrap();
-        assert!(cache.cached.is_some());
-        assert!(cache.cancel.is_none());
+        assert!(!cache.cached.is_empty());
+        assert!(cache.loads.is_empty());
     }
 
     #[test]

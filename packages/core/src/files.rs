@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
-use crate::{SharedState, tools::Workspace, workspace_path};
+use crate::{SharedState, tools::Workspace, workspace_for_window};
 
 const MAX_BYTES: u64 = 2_000_000;
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
@@ -19,9 +19,13 @@ pub struct Entry {
     directory: bool,
 }
 
-fn workspace(state: &SharedState, expected: &str) -> Result<Workspace, String> {
-    let current = workspace_path(state)?;
-    if current != Path::new(expected) {
+fn workspace(
+    state: &SharedState,
+    window: &WebviewWindow,
+    expected: &str,
+) -> Result<Workspace, String> {
+    let current = workspace_for_window(state, window.label())?;
+    if current.as_path() != Path::new(expected) {
         return Err("The workspace changed. Open the file again.".into());
     }
     Workspace::new(expected)
@@ -29,11 +33,12 @@ fn workspace(state: &SharedState, expected: &str) -> Result<Workspace, String> {
 
 #[tauri::command]
 pub async fn files_list(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     workspace: String,
     path: String,
 ) -> Result<Vec<Entry>, String> {
-    let root = self::workspace(&state, &workspace)?;
+    let root = self::workspace(&state, &window, &workspace)?;
     tauri::async_runtime::spawn_blocking(move || list(&root, &path))
         .await
         .map_err(|e| e.to_string())?
@@ -41,11 +46,12 @@ pub async fn files_list(
 
 #[tauri::command]
 pub async fn files_read(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     workspace: String,
     path: String,
 ) -> Result<String, String> {
-    let root = self::workspace(&state, &workspace)?;
+    let root = self::workspace(&state, &window, &workspace)?;
     tauri::async_runtime::spawn_blocking(move || read(&resolve(&root, &path)?))
         .await
         .map_err(|e| e.to_string())?
@@ -53,13 +59,14 @@ pub async fn files_read(
 
 #[tauri::command]
 pub async fn files_save(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     workspace: String,
     path: String,
     original: String,
     content: String,
 ) -> Result<(), String> {
-    let root = self::workspace(&state, &workspace)?;
+    let root = self::workspace(&state, &window, &workspace)?;
     tauri::async_runtime::spawn_blocking(move || save(&root, &path, &original, &content))
         .await
         .map_err(|e| e.to_string())?

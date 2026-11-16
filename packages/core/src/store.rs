@@ -62,6 +62,7 @@ pub struct ContextUsage {
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,
+    pub workspace: String,
     pub title: String,
     pub turns: usize,
     pub updated_at: i64,
@@ -84,6 +85,7 @@ pub struct SessionMeta {
 #[derive(Clone, Debug)]
 pub struct SessionWindow {
     pub id: String,
+    pub workspace: String,
     pub title: String,
     pub turns: usize,
     pub updated_at: i64,
@@ -363,6 +365,7 @@ fn to_session(conn: &Connection, row: SessionRow) -> Result<Session, String> {
     let events = decode_events(conn, &meta.id)?;
     Ok(Session {
         id: meta.id,
+        workspace: meta.workspace,
         title: meta.title,
         turns: meta.turns,
         updated_at: meta.updated_at,
@@ -583,6 +586,7 @@ impl Store {
         let has_more = events.first().is_some_and(|event| event.seq > 1);
         Ok(Some(SessionWindow {
             id: meta.id,
+            workspace: meta.workspace,
             title: meta.title,
             turns: meta.turns,
             updated_at: meta.updated_at,
@@ -829,6 +833,7 @@ impl Store {
         let has_more = events.first().is_some_and(|event| event.seq > 1);
         Ok(SessionWindow {
             id: meta.id,
+            workspace: meta.workspace,
             title: meta.title,
             turns: meta.turns,
             updated_at: meta.updated_at,

@@ -56,9 +56,9 @@ async fn request_approval(
     let granted = state
         .command_allow_all
         .lock()
-        .ok()
-        .and_then(|granted| granted.clone());
-    if auto_approves_command(&request.tool, workspace, granted.as_deref()) {
+        .map(|granted| granted.clone())
+        .unwrap_or_default();
+    if auto_approves_command(&request.tool, workspace, &granted) {
         return true;
     }
 
@@ -69,6 +69,7 @@ async fn request_approval(
             request_id.clone(),
             PendingApproval {
                 run_id: ctx.run_id().to_string(),
+                window: ctx.window_label().to_string(),
                 workspace: workspace.to_path_buf(),
                 sender,
             },

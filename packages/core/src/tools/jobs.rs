@@ -68,6 +68,7 @@ struct JobState {
 
 struct Job {
     id: String,
+    workspace: std::path::PathBuf,
     command: String,
     started_at: u64,
     state: Mutex<JobState>,
@@ -190,6 +191,7 @@ impl JobRegistry {
         let (kill_tx, kill_rx) = oneshot::channel();
         let job = Arc::new(Job {
             id: id.clone(),
+            workspace: workspace.to_path_buf(),
             command: command.to_string(),
             started_at: store::now_ms() as u64,
             state: Mutex::new(JobState {
@@ -210,22 +212,28 @@ impl JobRegistry {
         Ok(id)
     }
 
-    fn get(&self, id: &str) -> Result<Arc<Job>, String> {
-        self.jobs
+    fn get(&self, workspace: &Path, id: &str) -> Result<Arc<Job>, String> {
+        let job = self
+            .jobs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(id)
             .cloned()
-            .ok_or_else(|| format!("Unknown job id: {id}"))
+            .ok_or_else(|| format!("Unknown job id: {id}"))?;
+        if job.workspace != workspace {
+            return Err(format!("Unknown job id: {id}"));
+        }
+        Ok(job)
     }
 
-    pub fn list(&self) -> String {
+    pub fn list(&self, workspace: &Path) -> String {
         self.prune();
         let mut jobs: Vec<Arc<Job>> = self
             .jobs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
+            .filter(|job| job.workspace == workspace)
             .cloned()
             .collect();
         jobs.sort_by_key(|job| job.started_at);
@@ -271,11 +279,12 @@ impl JobRegistry {
 
     pub async fn output(
         &self,
+        workspace: &Path,
         id: &str,
         wait: bool,
         timeout_ms: Option<u64>,
     ) -> Result<String, String> {
-        let job = self.get(id)?;
+        let job = self.get(workspace, id)?;
         if wait {
             let timeout =
                 Duration::from_millis(timeout_ms.unwrap_or(WAIT_DEFAULT_MS).min(WAIT_MAX_MS));
@@ -296,8 +305,13 @@ impl JobRegistry {
         Ok(text)
     }
 
-    pub async fn kill(&self, id: &str, reason: Option<&str>) -> Result<String, String> {
-        let job = self.get(id)?;
+    pub async fn kill(
+        &self,
+        workspace: &Path,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<String, String> {
+        let job = self.get(workspace, id)?;
         if !job.snapshot().0.running() {
             return Ok(format!("Job {id} has already finished."));
         }
@@ -317,6 +331,28 @@ impl JobRegistry {
             .map(|reason| format!(" ({reason})"))
             .unwrap_or_default();
         Ok(format!("Stopped job {id}{reason}."))
+    }
+
+    /// Stop running jobs started in one workspace.
+    pub fn kill_workspace(&self, workspace: &Path) {
+        let jobs: Vec<Arc<Job>> = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|job| job.workspace == workspace)
+            .cloned()
+            .collect();
+        for job in jobs {
+            if let Some(sender) = job
+                .kill
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = sender.send(());
+            }
+        }
     }
 
     /// Stop every running job during app shutdown.
@@ -427,7 +463,7 @@ impl Tool for JobList {
         ctx: &'a ToolContext,
         _args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
-        Box::pin(async move { Ok(ToolOutput::text(ctx.jobs.list())) })
+        Box::pin(async move { Ok(ToolOutput::text(ctx.jobs.list(ctx.workspace.root()))) })
     }
 }
 
@@ -483,7 +519,12 @@ impl Tool for JobOutput {
         Box::pin(async move {
             let args: JobOutputArgs = parse_args(args)?;
             ctx.jobs
-                .output(&args.job_id, args.wait, args.timeout_ms)
+                .output(
+                    ctx.workspace.root(),
+                    &args.job_id,
+                    args.wait,
+                    args.timeout_ms,
+                )
                 .await
                 .map(ToolOutput::text)
                 .map_err(ToolError::Failed)
@@ -536,7 +577,7 @@ impl Tool for JobKill {
         Box::pin(async move {
             let args: JobKillArgs = parse_args(args)?;
             ctx.jobs
-                .kill(&args.job_id, args.reason.as_deref())
+                .kill(ctx.workspace.root(), &args.job_id, args.reason.as_deref())
                 .await
                 .map(ToolOutput::text)
                 .map_err(ToolError::Failed)
@@ -558,7 +599,10 @@ mod tests {
             .start(&root, "printf 'hello\\n'")
             .expect("job should start");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let output = registry.output(&id, true, Some(2_000)).await.unwrap();
+        let output = registry
+            .output(&root, &id, true, Some(2_000))
+            .await
+            .unwrap();
         assert!(output.contains("succeeded"));
         assert!(output.contains("hello"));
         let (status, _, _, _) = registry.jobs.lock().unwrap().get(&id).unwrap().snapshot();
@@ -568,7 +612,29 @@ mod tests {
     #[tokio::test]
     async fn unknown_job_is_reported() {
         let registry = JobRegistry::new();
-        assert!(registry.output("nope", false, None).await.is_err());
+        assert!(
+            registry
+                .output(&std::env::temp_dir(), "nope", false, None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn jobs_are_scoped_to_their_workspace() {
+        let registry = JobRegistry::new();
+        let first = crate::tools::test_support::temp_root("job-workspace-a");
+        let second = crate::tools::test_support::temp_root("job-workspace-b");
+        let id = registry.start(&first, "true").expect("job should start");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(registry.list(&first).contains(&id));
+        assert!(!registry.list(&second).contains(&id));
+        assert!(registry.output(&second, &id, false, None).await.is_err());
+        assert!(registry.kill(&second, &id, None).await.is_err());
+
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
     }
 
     #[test]
@@ -583,6 +649,7 @@ mod tests {
                     id.clone(),
                     Arc::new(Job {
                         id,
+                        workspace: std::env::temp_dir(),
                         command: "true".into(),
                         started_at: index as u64,
                         state: Mutex::new(JobState {
@@ -614,9 +681,9 @@ mod tests {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry.start(&root, "sleep 30").expect("job should start");
-        let message = registry.kill(&id, Some("test")).await.unwrap();
+        let message = registry.kill(&root, &id, Some("test")).await.unwrap();
         assert!(message.contains("Stopped job"));
-        let output = registry.output(&id, false, None).await.unwrap();
+        let output = registry.output(&root, &id, false, None).await.unwrap();
         assert!(output.contains("killed"));
     }
 }

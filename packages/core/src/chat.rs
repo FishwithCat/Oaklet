@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::store::{self, ContextUsage, Event, EventPayload, NewUserTurn, RunEnd, Session, Store};
 use crate::tools::{CancelHandle, FileDiff};
-use crate::{AppState, SharedState, compaction, context, spill};
+use crate::{AppState, SharedState, compaction, context, spill, workspace_for_window};
 
 const MAX_ATTACHMENTS: usize = 20;
 const MAX_FILE_BYTES: usize = 200_000;
@@ -39,6 +39,7 @@ const INTERRUPTED_NOTICE: &str = "The app closed while this run was working. \
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
     pub id: String,
+    pub workspace: String,
     pub title: String,
     pub updated_at: i64,
     pub turns: usize,
@@ -179,13 +180,25 @@ enum SentAttachment {
 #[derive(Default)]
 struct ChatLive {
     runs: HashMap<String, RunHandle>,
-    compacting: HashMap<String, CancelHandle>,
+    compacting: HashMap<String, CompactionHandle>,
 }
 
 struct RunHandle {
     session_id: String,
+    window: String,
     cancel: CancelHandle,
     view: Arc<Mutex<SessionView>>,
+}
+
+struct CompactionHandle {
+    window: String,
+    cancel: CancelHandle,
+}
+
+impl CompactionHandle {
+    fn cancel(&self) {
+        self.cancel.cancel();
+    }
 }
 
 impl RunHandle {
@@ -277,6 +290,7 @@ fn view_from_session(session: Session, compacting: bool) -> SessionView {
     let first_seq = session.events.first().map(|event| event.seq);
     SessionView {
         id: session.id,
+        workspace: session.workspace,
         title: session.title,
         updated_at: session.updated_at,
         turns: session.turns,
@@ -295,6 +309,7 @@ fn view_from_window(window: store::SessionWindow, compacting: bool) -> SessionVi
     let first_seq = window.events.first().map(|event| event.seq);
     SessionView {
         id: window.id,
+        workspace: window.workspace,
         title: window.title,
         updated_at: window.updated_at,
         turns: window.turns,
@@ -501,61 +516,76 @@ fn surface_messages(events: &[Event]) -> Vec<Value> {
 
 #[tauri::command]
 pub async fn session_create(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
-    workspace: String,
 ) -> Result<SessionView, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
     let store = state.chat.store.clone();
     let id = state.next_id();
     let now = store::now_ms();
-    let session =
-        tauri::async_runtime::spawn_blocking(move || store.create_session(&id, &workspace, now))
-            .await
-            .map_err(|error| format!("Could not create the session: {error}"))??;
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        store.create_session(&id, &workspace.to_string_lossy(), now)
+    })
+    .await
+    .map_err(|error| format!("Could not create the session: {error}"))??;
     Ok(view_from_session(session, false))
 }
 
 #[tauri::command]
 pub async fn session_list(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
-    workspace: String,
 ) -> Result<Vec<SessionSummary>, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
     let store = state.chat.store.clone();
-    let rows = tauri::async_runtime::spawn_blocking(move || store.list_sessions(&workspace))
-        .await
-        .map_err(|error| format!("Could not read session history: {error}"))??;
+    let rows = tauri::async_runtime::spawn_blocking(move || {
+        store.list_sessions(&workspace.to_string_lossy())
+    })
+    .await
+    .map_err(|error| format!("Could not read session history: {error}"))??;
     Ok(state.chat.summaries(rows))
 }
 
 #[tauri::command]
 pub async fn session_get(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     id: String,
     before_seq: Option<i64>,
 ) -> Result<SessionView, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
     if before_seq.is_none()
         && let Some(view) = state.chat.live_view(&id)
     {
+        if Path::new(&view.workspace) != workspace {
+            return Err("This chat belongs to another workspace.".into());
+        }
         return Ok(view);
     }
     let store = state.chat.store.clone();
-    let window = tauri::async_runtime::spawn_blocking(move || {
+    let session_window = tauri::async_runtime::spawn_blocking(move || {
         store.get_session_window(&id, before_seq, store::PAGE_EVENTS)
     })
     .await
     .map_err(|error| format!("Could not read the session: {error}"))??
     .ok_or_else(|| "This session no longer exists.".to_string())?;
-    Ok(state.chat.view(window))
+    if Path::new(&session_window.workspace) != workspace.as_path() {
+        return Err("This chat belongs to another workspace.".into());
+    }
+    Ok(state.chat.view(session_window))
 }
 
 #[tauri::command]
 pub async fn session_send(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     session_id: String,
     text: String,
     attachments: Vec<IncomingAttachment>,
 ) -> Result<SendResult, String> {
-    let config = state
+    let window_workspace = workspace_for_window(&state, window.label())?;
+    let mut config = state
         .config
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
@@ -567,9 +597,15 @@ pub async fn session_send(
         .await
         .map_err(|error| format!("Could not read the session: {error}"))??
         .ok_or_else(|| "This session no longer exists.".to_string())?;
-    if meta.workspace != config.workspace {
-        return Err("Switch back to this chat's workspace to continue it.".into());
+    if Path::new(&meta.workspace) != window_workspace.as_path() {
+        return Err(
+            "This chat belongs to another workspace. Open that workspace in its own window.".into(),
+        );
     }
+    if !Path::new(&meta.workspace).is_dir() {
+        return Err(format!("Workspace is unavailable: {}", meta.workspace));
+    }
+    config.workspace = meta.workspace.clone();
 
     let text = text.trim().to_string();
     let run_id = state.next_id();
@@ -612,6 +648,7 @@ pub async fn session_send(
             run_id.clone(),
             RunHandle {
                 session_id: session_id.clone(),
+                window: window.label().to_string(),
                 cancel: cancel_handle,
                 view: view.clone(),
             },
@@ -624,6 +661,7 @@ pub async fn session_send(
         state: state.inner().clone(),
         session_id,
         run_id: run_id.clone(),
+        window_label: window.label().to_string(),
         start_seq,
         view: view.clone(),
         finished: Arc::new(AtomicBool::new(false)),
@@ -645,15 +683,17 @@ pub async fn session_send(
 }
 
 #[tauri::command]
-pub fn session_stop(state: State<'_, SharedState>, session_id: String) {
-    if let Some(handle) = state.chat.live().compacting.get(&session_id) {
+pub fn session_stop(window: WebviewWindow, state: State<'_, SharedState>, session_id: String) {
+    if let Some(handle) = state.chat.live().compacting.get(&session_id)
+        && handle.window == window.label()
+    {
         handle.cancel();
     }
     let run_id = {
         let live = state.chat.live();
         let mut found = None;
         for (id, handle) in live.runs.iter() {
-            if handle.session_id == session_id {
+            if handle.session_id == session_id && handle.window == window.label() {
                 handle.cancel.cancel();
                 found = Some(id.clone());
                 break;
@@ -668,9 +708,20 @@ pub fn session_stop(state: State<'_, SharedState>, session_id: String) {
 
 #[tauri::command]
 pub async fn session_compact(
+    window: WebviewWindow,
     state: State<'_, SharedState>,
     session_id: String,
 ) -> Result<CompactResult, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let store = state.chat.store.clone();
+    let id = session_id.clone();
+    let meta = tauri::async_runtime::spawn_blocking(move || store.session_meta(&id))
+        .await
+        .map_err(|error| format!("Could not read the session: {error}"))??
+        .ok_or_else(|| "This session no longer exists.".to_string())?;
+    if Path::new(&meta.workspace) != workspace.as_path() {
+        return Err("This chat belongs to another workspace.".into());
+    }
     let cancel = {
         let mut live = state.chat.live();
         if live.compacting.contains_key(&session_id)
@@ -679,7 +730,13 @@ pub async fn session_compact(
             return Err("Stop the run before compacting this chat.".into());
         }
         let (handle, cancel) = CancelHandle::new();
-        live.compacting.insert(session_id.clone(), handle);
+        live.compacting.insert(
+            session_id.clone(),
+            CompactionHandle {
+                window: window.label().to_string(),
+                cancel: handle,
+            },
+        );
         cancel
     };
 
@@ -700,8 +757,14 @@ pub async fn session_compact(
 }
 
 #[tauri::command]
-pub fn session_compact_cancel(state: State<'_, SharedState>, session_id: String) {
-    if let Some(handle) = state.chat.live().compacting.get(&session_id) {
+pub fn session_compact_cancel(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    session_id: String,
+) {
+    if let Some(handle) = state.chat.live().compacting.get(&session_id)
+        && handle.window == window.label()
+    {
         handle.cancel();
     }
 }
@@ -711,7 +774,7 @@ async fn compact_session(
     session_id: &str,
     cancel: &crate::tools::Cancel,
 ) -> Result<(store::SessionWindow, usize, usize, bool), String> {
-    let config = state
+    let mut config = state
         .config
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
@@ -722,6 +785,10 @@ async fn compact_session(
         .await
         .map_err(|error| format!("Could not read the session: {error}"))??
         .ok_or_else(|| "This session no longer exists.".to_string())?;
+    if !Path::new(&session.workspace).is_dir() {
+        return Err(format!("Workspace is unavailable: {}", session.workspace));
+    }
+    config.workspace = session.workspace.clone();
 
     let base = surface_messages(&session.events);
     if base.is_empty() {
@@ -785,14 +852,53 @@ async fn load_window(
 /// Cancel every live run, for a workspace switch or app exit.
 pub fn stop_all(state: &AppState) {
     let run_ids: Vec<String> = {
-        let live = state.chat.live();
-        live.runs
+        let mut live = state.chat.live();
+        let run_ids = live
+            .runs
             .iter()
             .map(|(run_id, handle)| {
                 handle.cancel.cancel();
                 run_id.clone()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        let compacting_ids: Vec<String> = live.compacting.keys().cloned().collect();
+        for session_id in compacting_ids {
+            if let Some(handle) = live.compacting.remove(&session_id) {
+                handle.cancel();
+            }
+        }
+        run_ids
+    };
+    for run_id in run_ids {
+        resolve_approvals(state, &run_id);
+    }
+}
+
+/// Cancel every live run and compaction owned by one window.
+pub fn stop_window(state: &AppState, label: &str) {
+    let run_ids = {
+        let mut live = state.chat.live();
+        let run_ids: Vec<String> = live
+            .runs
+            .iter()
+            .filter(|(_, handle)| handle.window == label)
+            .map(|(run_id, handle)| {
+                handle.cancel.cancel();
+                run_id.clone()
+            })
+            .collect();
+        let compacting_ids: Vec<String> = live
+            .compacting
+            .iter()
+            .filter(|(_, handle)| handle.window == label)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        for session_id in &compacting_ids {
+            if let Some(handle) = live.compacting.remove(session_id) {
+                handle.cancel();
+            }
+        }
+        run_ids
     };
     for run_id in run_ids {
         resolve_approvals(state, &run_id);
@@ -1332,6 +1438,7 @@ pub struct RunContext {
     state: SharedState,
     session_id: String,
     run_id: String,
+    window_label: String,
     start_seq: i64,
     view: Arc<Mutex<SessionView>>,
     finished: Arc<AtomicBool>,
@@ -1369,6 +1476,10 @@ impl RunContext {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub fn window_label(&self) -> &str {
+        &self.window_label
     }
 
     pub fn store(&self) -> crate::store::Store {
@@ -1459,7 +1570,7 @@ impl RunContext {
     }
 
     fn emit<T: Serialize + Clone>(&self, event: &str, payload: T) {
-        let _ = self.app.emit(event, payload);
+        let _ = self.app.emit_to(&self.window_label, event, payload);
     }
 
     fn update_view(&self, update: impl FnOnce(&mut SessionView)) {
@@ -1920,6 +2031,7 @@ mod tests {
         let session = state.store.create_session("s1", "/tmp/ws", 1).unwrap();
         let view = SessionView {
             id: "s1".into(),
+            workspace: "/tmp/ws".into(),
             title: String::new(),
             updated_at: 1,
             turns: 0,
@@ -1944,6 +2056,7 @@ mod tests {
             "r1".into(),
             RunHandle {
                 session_id: "s1".into(),
+                window: "main".into(),
                 cancel,
                 view: Arc::new(Mutex::new(view)),
             },
@@ -2098,6 +2211,7 @@ mod tests {
     fn serializes_views_and_items_in_the_frontend_shape() {
         let view = SessionView {
             id: "s1".into(),
+            workspace: "/tmp/ws".into(),
             title: "chat".into(),
             updated_at: 7,
             turns: 2,
@@ -2111,6 +2225,7 @@ mod tests {
             active_run_id: None,
         };
         let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["workspace"], "/tmp/ws");
         assert_eq!(value["updatedAt"], 7);
         assert_eq!(value["activeRunId"], serde_json::Value::Null);
         assert_eq!(value["context"], serde_json::Value::Null);

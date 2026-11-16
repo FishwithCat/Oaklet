@@ -39,6 +39,11 @@ pub(crate) fn shutdown() {
     mcp::shutdown();
 }
 
+/// Release servers and caches owned by one workspace when its window closes.
+pub(crate) fn shutdown_workspace(workspace: &std::path::Path) {
+    mcp::evict_workspace(workspace);
+}
+
 /// Tool output above this many characters keeps only its head and tail.
 const TOOL_OUTPUT_THRESHOLD_CHARS: usize = 12_000;
 /// Head kept verbatim from an oversized tool output.
