@@ -6,6 +6,7 @@ export type ContextUsage = { used: number; window: number };
 /** Authoritative session state from Rust. Items are the rendered transcript. */
 export type SessionView = {
   id: string;
+  workspace: string;
   title: string;
   updatedAt: number;
   turns: number;

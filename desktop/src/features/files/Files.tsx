@@ -1,6 +1,5 @@
 import { Fragment, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type CSSProperties, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
   CloseRegular,
@@ -24,7 +23,10 @@ import { FileTree } from "./FileTree";
 // The editor bundle is heavy; load it when a file is opened, not with the page.
 const FileEditor = lazy(() => import("./FileEditor"));
 
-export type FilesHandle = { canLeave: () => Promise<boolean> };
+export type FilesHandle = {
+  canLeave: () => Promise<boolean>;
+  hasUnsaved: () => boolean;
+};
 type Document = { path: string; original: string; content: string };
 
 async function language(path: string): Promise<Extension> {
@@ -60,7 +62,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const dirty = document !== null && document.content !== editorText(document.original);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
-  const leaveRef = useRef<() => Promise<boolean>>(async () => true);
   const {
     branch,
     branches,
@@ -87,28 +88,10 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     }
   }
 
-  leaveRef.current = canLeave;
-  useImperativeHandle(ref, () => ({ canLeave }));
-
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    const unlisten = appWindow.onCloseRequested(async (event) => {
-      if (!dirtyRef.current && !busyRef.current) return;
-      event.preventDefault();
-      if (await leaveRef.current()) {
-        await appWindow.destroy().catch((err) => setError(errorText(err)));
-      }
-    });
-    unlisten.catch((err) => setError(errorText(err)));
-    function beforeUnload(event: BeforeUnloadEvent) {
-      if (dirtyRef.current || busyRef.current) { event.preventDefault(); event.returnValue = ""; }
-    }
-    window.addEventListener("beforeunload", beforeUnload);
-    return () => {
-      void unlisten.then((stop) => stop()).catch(() => {});
-      window.removeEventListener("beforeunload", beforeUnload);
-    };
-  }, []);
+  useImperativeHandle(ref, () => ({
+    canLeave,
+    hasUnsaved: () => dirtyRef.current || busyRef.current,
+  }));
 
   useEffect(() => {
     let cancelled = false;

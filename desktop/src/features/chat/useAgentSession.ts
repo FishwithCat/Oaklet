@@ -125,7 +125,7 @@ export function useAgentSession({
   function refreshHistory() {
     const workspace = workspaceRef.current;
     if (!workspace) return;
-    invoke<SessionSummary[]>("session_list", { workspace })
+    invoke<SessionSummary[]>("session_list")
       .then((list) => {
         if (workspaceRef.current === workspace) setHistory(list);
       })
@@ -148,12 +148,12 @@ export function useAgentSession({
 
     void (async () => {
       try {
-        const list = await invoke<SessionSummary[]>("session_list", { workspace });
+        const list = await invoke<SessionSummary[]>("session_list");
         if (workspaceRef.current !== workspace) return;
         setHistory(list);
         if (openTabsRef.current.length > 0) return;
 
-        const created = await invoke<SessionView>("session_create", { workspace });
+        const created = await invoke<SessionView>("session_create");
         if (workspaceRef.current !== workspace) return;
         if (openTabsRef.current.length > 0) return;
         addTab(created);
@@ -285,7 +285,7 @@ export function useAgentSession({
     const active = sessionsRef.current[activeTabIdRef.current];
     if (active && isBlankTab(active)) return;
     try {
-      const view = await invoke<SessionView>("session_create", { workspace });
+      const view = await invoke<SessionView>("session_create");
       if (workspaceRef.current !== workspace) return;
       addTab(view);
     } catch (error) {
@@ -569,6 +569,12 @@ export function useAgentSession({
     ? activeTabId
     : (openTabs[0]?.id ?? "");
   const activeTab = sessions[resolvedActiveId];
+  const busy = openTabs.some(({ id }) => {
+    const view = sessions[id];
+    return Boolean(
+      view?.running || view?.compacting || compactingIds.has(id),
+    );
+  });
 
   return {
     items: activeTab?.items ?? [],
@@ -584,6 +590,7 @@ export function useAgentSession({
     tabs,
     activeTabId: resolvedActiveId,
     context: activeTab?.context ?? null,
+    busy,
     allowAll,
     history,
     newTab,

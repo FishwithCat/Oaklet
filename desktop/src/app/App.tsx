@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { Chat, type ChatHandle } from "../features/chat/Chat";
 import { formatWorkdir } from "../features/chat/chat-model";
 import { SessionHistory } from "../features/chat/SessionHistory";
@@ -15,6 +17,8 @@ import Files, { type FilesHandle } from "../features/files/Files";
 import { agentShortcut } from "./shortcuts";
 import { Sidebar, type AppView } from "./Sidebar";
 import { useWorkspaceConfig } from "./useWorkspaceConfig";
+import { useWindowWorkspace } from "./useWindowWorkspace";
+import type { AppConfig } from "../features/settings/config";
 import "../styles/index.css";
 
 const Architecture = lazy(() => import("../features/architecture/Architecture"));
@@ -36,17 +40,13 @@ function App() {
 
   const { config, loadFailed, browsingWorkspace, chooseWorkspace, setConfig } =
     useWorkspaceConfig({
-      beforeWorkspaceChange: async () => await filesRef.current?.canLeave() ?? true,
       onFirstRun: () => setSettingsOpen(true),
-      onWorkspaceChanged: () => {
-        setWorkspaceTick((value) => value + 1);
-        session.reloadAllowance();
-      },
     });
+  const { workspace, error: workspaceError } = useWindowWorkspace(config !== null);
 
   const session = useAgentSession({
-    workspace: config?.workspace ?? "",
-    enabled: config !== null,
+    workspace: workspace ?? "",
+    enabled: config !== null && workspace !== null,
     onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });
 
@@ -55,11 +55,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!config || home === null) return;
-    const title = formatWorkdir(config.workspace, home);
+    if (!config || !workspace || home === null) return;
+    const title = formatWorkdir(workspace, home);
     document.title = title;
     getCurrentWindow().setTitle(title).catch(() => {});
-  }, [config, home]);
+  }, [config, workspace, home]);
 
   useEffect(() => {
     if (!config) return;
@@ -71,9 +71,30 @@ function App() {
     return () => media.removeEventListener("change", onChange);
   }, [config]);
 
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | undefined;
+    listen<AppConfig>("config://changed", (event) => {
+      if (!disposed) setConfig(event.payload);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else release = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      release?.();
+    };
+  }, [setConfig]);
+
+  useEffect(() => {
+    if (config) session.reloadAllowance();
+  }, [config?.allowAllCommands]);
+
   const { changes, changesError, unstaged } = useGitChanges({
-    enabled: config !== null,
-    workspace: config?.workspace ?? "",
+    enabled: config !== null && workspace !== null,
+    workspace: workspace ?? "",
     refreshToken: workspaceTick + savedTick,
   });
 
@@ -130,10 +151,54 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
+  useEffect(() => {
+    if (!workspace) return;
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    const unlisten = appWindow.onCloseRequested(async (event) => {
+      try {
+        if (disposed) return;
+        const busy = session.busy;
+        const dirty = filesRef.current?.hasUnsaved() ?? false;
+        if (!busy && !dirty) return;
+
+        event.preventDefault();
+        if (busy) {
+          const close = await confirm(
+            "This workspace still has a running chat. Close it and stop that work?",
+            {
+              title: "Close workspace",
+              kind: "warning",
+              okLabel: "Close and stop",
+              cancelLabel: "Keep working",
+            },
+          );
+          if (!close) return;
+        }
+        if (dirty && !(await filesRef.current?.canLeave())) return;
+        await appWindow.destroy();
+      } catch {
+        // Keep the window open if a confirmation could not be shown.
+      }
+    });
+    unlisten.catch(() => {});
+    return () => {
+      disposed = true;
+      void unlisten.then((stop) => stop()).catch(() => {});
+    };
+  }, [workspace, session.busy]);
+
   if (!config) {
     return (
       <div className="loading">
         {loadFailed ? "Could not load Oaklet." : "Loading Oaklet..."}
+      </div>
+    );
+  }
+  if (!workspace) {
+    return (
+      <div className="loading">
+        {workspaceError || "Opening workspace..."}
       </div>
     );
   }
@@ -148,7 +213,7 @@ function App() {
         onRevokeAllowAll={session.revokeAllowAll}
         onChooseWorkspace={chooseWorkspace}
         browsingWorkspace={browsingWorkspace}
-        workspace={config.workspace}
+        workspace={workspace}
         skillsOpen={skillsOpen}
         onToggleSkills={() => setSkillsOpen((open) => !open)}
         onOpenSettings={() => setSettingsOpen(true)}
@@ -190,13 +255,13 @@ function App() {
 
         <Terminal
           ref={terminalRef}
-          key={config.workspace}
+          key={workspace}
           active={view === "terminal"}
           onClose={() => setView("chat")}
         />
 
         <SourceControl
-          key={config.workspace}
+          key={workspace}
           active={view === "git"}
           changes={changes}
           changesError={changesError}
@@ -207,9 +272,9 @@ function App() {
         {filesOpened && (
           <Files
             ref={filesRef}
-            key={config.workspace}
+            key={workspace}
             active={view === "files"}
-            workspace={config.workspace}
+            workspace={workspace}
             refreshToken={workspaceTick}
             changes={changes}
             onRefresh={() => setWorkspaceTick((value) => value + 1)}
@@ -224,9 +289,9 @@ function App() {
             }
           >
             <Architecture
-              key={config.workspace}
+              key={workspace}
               active={view === "architecture"}
-              workspace={config.workspace}
+              workspace={workspace}
               refreshToken={workspaceTick}
               running={session.running}
               onPrompt={(prompt) => {
@@ -266,7 +331,7 @@ function App() {
 
       {skillsOpen && (
         <SkillsPopup
-          key={config.workspace}
+          key={workspace}
           onClose={() => setSkillsOpen(false)}
         />
       )}

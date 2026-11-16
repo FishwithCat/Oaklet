@@ -126,8 +126,8 @@ export function Sidebar({
           className="ghost icon-button"
           onClick={onChooseWorkspace}
           disabled={browsingWorkspace}
-          aria-label="Open workspace folder"
-          title={`Workspace folder: ${workspace}`}
+          aria-label="Open workspace"
+          title={`Open another workspace (current: ${workspace})`}
         >
           <FolderOpenRegular size={16} />
         </button>
