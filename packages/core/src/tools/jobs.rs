@@ -24,6 +24,9 @@ use super::shell::shell_command;
 use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const MAX_JOB_OUTPUT: usize = 1_000_000;
+/// Finished jobs kept for `job_output` and `job_list`. Running jobs are never
+/// evicted; this only stops a long session from retaining every build log.
+const MAX_FINISHED_JOBS: usize = 32;
 const WAIT_DEFAULT_MS: u64 = 10_000;
 const WAIT_MAX_MS: u64 = 30_000;
 const JOB_OUTPUT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -165,6 +168,7 @@ impl JobRegistry {
 
     /// Start one detached shell command and return its job id immediately.
     pub fn start(&self, workspace: &Path, command: &str) -> Result<String, String> {
+        self.prune();
         let mut process = shell_command(command);
         process
             .current_dir(workspace)
@@ -216,6 +220,7 @@ impl JobRegistry {
     }
 
     pub fn list(&self) -> String {
+        self.prune();
         let mut jobs: Vec<Arc<Job>> = self
             .jobs
             .lock()
@@ -240,6 +245,28 @@ impl JobRegistry {
             ));
         }
         lines.join("\n")
+    }
+
+    /// Drop the oldest finished jobs once the registry exceeds its retention
+    /// bound. The model can always rerun a command whose log was evicted.
+    fn prune(&self) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut finished: Vec<(u64, String)> = jobs
+            .values()
+            .filter(|job| !job.snapshot().0.running())
+            .map(|job| (job.started_at, job.id.clone()))
+            .collect();
+        if finished.len() <= MAX_FINISHED_JOBS {
+            return;
+        }
+        let excess = finished.len() - MAX_FINISHED_JOBS;
+        finished.sort_by_key(|(started_at, _)| *started_at);
+        for (_, id) in finished.drain(..excess) {
+            jobs.remove(&id);
+        }
     }
 
     pub async fn output(
@@ -519,7 +546,9 @@ impl Tool for JobKill {
 
 #[cfg(test)]
 mod tests {
-    use super::{JobRegistry, JobStatus};
+    use std::sync::{Arc, Mutex};
+
+    use super::{Job, JobRegistry, JobState, JobStatus, MAX_FINISHED_JOBS};
 
     #[tokio::test]
     async fn background_jobs_capture_output_and_finish() {
@@ -540,6 +569,43 @@ mod tests {
     async fn unknown_job_is_reported() {
         let registry = JobRegistry::new();
         assert!(registry.output("nope", false, None).await.is_err());
+    }
+
+    #[test]
+    fn finished_jobs_are_evicted_oldest_first() {
+        let registry = JobRegistry::new();
+        let total = MAX_FINISHED_JOBS + 5;
+        {
+            let mut jobs = registry.jobs.lock().unwrap();
+            for index in 0..total {
+                let id = format!("job-{index}");
+                jobs.insert(
+                    id.clone(),
+                    Arc::new(Job {
+                        id,
+                        command: "true".into(),
+                        started_at: index as u64,
+                        state: Mutex::new(JobState {
+                            status: JobStatus::Succeeded,
+                            output: String::new(),
+                            read_pos: 0,
+                            exit: Some(0),
+                            truncated: false,
+                        }),
+                        kill: Mutex::new(None),
+                    }),
+                );
+            }
+        }
+
+        registry.prune();
+
+        let jobs = registry.jobs.lock().unwrap();
+        assert_eq!(jobs.len(), MAX_FINISHED_JOBS);
+        for index in 0..5 {
+            assert!(!jobs.contains_key(&format!("job-{index}")));
+        }
+        assert!(jobs.contains_key(&format!("job-{}", total - 1)));
     }
 
     #[cfg(unix)]
