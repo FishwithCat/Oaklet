@@ -75,7 +75,10 @@ export function TerminalPane({
 
   function flushPending() {
     const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
+    if (!sessionId) {
+      pendingRef.current = [];
+      return;
+    }
     const pending = pendingRef.current;
     pendingRef.current = [];
     for (const data of pending) {
@@ -88,6 +91,10 @@ export function TerminalPane({
     if (!data) return;
     if (readyRef.current && sessionIdRef.current) {
       void invoke("terminal_write", { id: sessionIdRef.current, data });
+    } else if (termRef.current && sessionIdRef.current === null) {
+      termRef.current.write(
+        "\r\n\x1b[2m[Terminal is not running; reopen the Terminal view.]\x1b[0m\r\n",
+      );
     } else {
       pendingRef.current.push(data);
     }
@@ -148,6 +155,8 @@ export function TerminalPane({
         openedRef.current = true;
       } catch (error) {
         if (!disposed) {
+          sessionIdRef.current = null;
+          pendingRef.current = [];
           term.write(`\r\n\x1b[31m${String(error)}\x1b[0m\r\n`);
         }
       }
@@ -201,6 +210,7 @@ export function TerminalPane({
         openedRef.current = false;
         readyRef.current = false;
         sessionIdRef.current = null;
+        pendingRef.current = [];
         const code = event.payload.code;
         const detail = code === null ? "" : ` with code ${code}`;
         term.write(`\r\n\x1b[2m[process exited${detail}]\x1b[0m\r\n`);
