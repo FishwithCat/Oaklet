@@ -192,6 +192,16 @@ fn cache() -> &'static Mutex<HashMap<String, CachedEntry>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drop every cached client so `kill_on_drop` terminates stdio servers before
+/// the app process exits. Statics are not dropped during normal shutdown.
+pub(crate) fn shutdown() {
+    if let Some(cache) = CACHE.get()
+        && let Ok(mut entries) = cache.try_lock()
+    {
+        entries.clear();
+    }
+}
+
 /// Server name and config are part of the key: editing a command, URL, or
 /// header must start a new connection instead of reusing the old one.
 fn cache_key(name: &str, server: &McpServerConfig, workspace: &Path) -> String {

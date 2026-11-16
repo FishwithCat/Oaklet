@@ -34,6 +34,11 @@ mod workspace;
 pub use diff::FileDiff;
 pub use workspace::Workspace;
 
+/// Release process-wide tool resources during app shutdown.
+pub(crate) fn shutdown() {
+    mcp::shutdown();
+}
+
 /// Tool output above this many characters keeps only its head and tail.
 const TOOL_OUTPUT_THRESHOLD_CHARS: usize = 12_000;
 /// Head kept verbatim from an oversized tool output.

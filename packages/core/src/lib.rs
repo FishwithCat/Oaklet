@@ -821,6 +821,7 @@ pub fn run() {
                 architecture::cancel_all(app.state::<SharedState>().inner());
                 chat::stop_all(app.state::<SharedState>().inner());
                 app.state::<SharedState>().jobs.kill_all();
+                tools::shutdown();
             }
         });
 }
