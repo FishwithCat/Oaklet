@@ -1,7 +1,11 @@
 .files-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .files-panel[hidden] { display: none; }
 .files-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
-.files-browser { width: 300px; min-width: 150px; max-width: 35%; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); padding: 0; }
+.files-browser { width: var(--files-browser-width, 300px); min-width: 150px; max-width: 35%; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); padding: 0; }
+.files-resizer { position: relative; z-index: 1; flex: none; width: 6px; margin: 0 -4px 0 -1px; cursor: col-resize; touch-action: none; }
+.files-resizer:hover, .files-resizer:focus-visible, .files-resizer:active { background: var(--accent-soft); }
+.files-resizer:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+body.files-resizing { cursor: col-resize; user-select: none; }
 .files-toolbar { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 32px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--border); overflow: hidden; }
 .files-breadcrumbs { display: flex; align-items: center; gap: 1px; flex: 1; min-width: 0; height: 100%; overflow: hidden; font-size: 12px; color: var(--muted); }
 .files-crumb { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; padding: 2px 4px; border-radius: 4px; white-space: nowrap; }
