@@ -5,7 +5,7 @@
 //! output later. Output is capped and read with a cursor so repeated
 //! `job_output` calls return new text instead of the whole log.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -159,6 +159,7 @@ impl Job {
 #[derive(Default)]
 pub struct JobRegistry {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
+    closed_workspaces: Mutex<HashSet<std::path::PathBuf>>,
     next_id: AtomicU64,
 }
 
@@ -169,6 +170,13 @@ impl JobRegistry {
 
     /// Start one detached shell command and return its job id immediately.
     pub fn start(&self, workspace: &Path, command: &str) -> Result<String, String> {
+        let closed = self
+            .closed_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if closed.contains(workspace) {
+            return Err("The workspace window is closed.".into());
+        }
         self.prune();
         let mut process = shell_command(command);
         process
@@ -210,6 +218,22 @@ impl JobRegistry {
 
         tokio::spawn(run_job(job, child, kill_rx));
         Ok(id)
+    }
+
+    /// Mark a workspace as open again after its window is recreated.
+    pub fn open_workspace(&self, workspace: &Path) {
+        self.closed_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(workspace);
+    }
+
+    /// Reject new jobs after a workspace window closes.
+    pub fn close_workspace(&self, workspace: &Path) {
+        self.closed_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(workspace.to_path_buf());
     }
 
     fn get(&self, workspace: &Path, id: &str) -> Result<Arc<Job>, String> {
@@ -635,6 +659,22 @@ mod tests {
 
         std::fs::remove_dir_all(first).ok();
         std::fs::remove_dir_all(second).ok();
+    }
+
+    #[tokio::test]
+    async fn a_closed_workspace_cannot_start_new_jobs() {
+        let registry = JobRegistry::new();
+        let workspace = crate::tools::test_support::temp_root("job-closed-workspace");
+        registry.close_workspace(&workspace);
+        assert!(registry.start(&workspace, "true").is_err());
+
+        registry.open_workspace(&workspace);
+        let id = registry
+            .start(&workspace, "true")
+            .expect("job should start");
+        assert!(registry.list(&workspace).contains(&id));
+
+        std::fs::remove_dir_all(workspace).ok();
     }
 
     #[test]

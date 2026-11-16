@@ -237,6 +237,7 @@ fn open_workspace_window(
     state: &AppState,
     workspace: PathBuf,
 ) -> Result<(), String> {
+    state.jobs.open_workspace(&workspace);
     let existing = state
         .windows
         .lock()
@@ -351,6 +352,7 @@ fn cleanup_window(state: &AppState, label: &str) {
     if let Ok(mut terminals) = state.terminal.lock() {
         terminals.retain(|_, terminal| terminal.window != label);
     }
+    state.jobs.close_workspace(&workspace);
     state.jobs.kill_workspace(&workspace);
     tools::shutdown_workspace(&workspace);
 }
@@ -1140,12 +1142,34 @@ pub fn run() {
             }
             let config_path = app.path().app_config_dir()?.join("config.json");
             let mut config = read_config(&config_path).unwrap_or_default();
+            let args: Vec<String> = std::env::args_os()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            let cli_workspace =
+                requested_workspace(&args).and_then(|path| {
+                    match canonical_workspace(&path.to_string_lossy()) {
+                        Ok(path) => Some(path),
+                        Err(error) => {
+                            log::key(format_args!(
+                                "[oaklet] ignoring the command-line workspace: {error}"
+                            ));
+                            None
+                        }
+                    }
+                });
             if config.workspace.trim().is_empty() || !Path::new(&config.workspace).is_dir() {
                 config.workspace = default_workspace();
             }
             if let Ok(canonical) = Path::new(&config.workspace).canonicalize() {
                 config.workspace = canonical.to_string_lossy().into_owned();
             }
+            let cli_workspace = cli_workspace
+                .map(|path| {
+                    let path = path.to_string_lossy().into_owned();
+                    config.workspace = path.clone();
+                    path
+                })
+                .is_some();
             let data_dir = app.path().app_data_dir()?;
             let spill_root = data_dir.join("spill");
             spill::cleanup(&spill_root, spill::RETENTION);
@@ -1160,7 +1184,7 @@ pub fn run() {
             windows
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
-            app.manage(Arc::new(AppState {
+            let state = Arc::new(AppState {
                 config: Mutex::new(config),
                 config_path,
                 config_write: Mutex::new(()),
@@ -1173,7 +1197,17 @@ pub fn run() {
                 jobs: Arc::new(tools::jobs::JobRegistry::new()),
                 architecture: Mutex::new(architecture::ArchitectureCache::default()),
                 ids: AtomicU64::new(0),
-            }));
+            });
+            app.manage(state.clone());
+            if cli_workspace {
+                let snapshot = state.config.lock().unwrap().clone();
+                let _write = state.config_write.lock().unwrap();
+                if let Err(error) = write_config(&state.config_path, &snapshot) {
+                    log::key(format_args!(
+                        "[oaklet] could not save the command-line workspace: {error}"
+                    ));
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1231,7 +1265,7 @@ mod tests {
 
     use super::{
         AppConfig, McpServerConfig, McpTransport, WindowRegistry, auto_approves_command,
-        normalize_mcp_servers, read_config, write_config,
+        normalize_mcp_servers, read_config, requested_workspace, write_config,
     };
 
     #[test]
@@ -1423,5 +1457,28 @@ mod tests {
         assert_eq!(windows.remove_label("main"), Some(PathBuf::from("/tmp/a")));
         assert!(windows.label_for(Path::new("/tmp/a")).is_none());
         assert_eq!(windows.last_label().as_deref(), Some("ws-1"));
+    }
+
+    #[test]
+    fn parses_a_workspace_from_command_line_arguments() {
+        let args = ["oaklet", "--workspace", "/tmp/project"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args),
+            Some(PathBuf::from("/tmp/project"))
+        );
+
+        let args = ["oaklet", "/tmp/positional"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args),
+            Some(PathBuf::from("/tmp/positional"))
+        );
+
+        assert_eq!(requested_workspace(&["oaklet".to_string()]), None);
     }
 }

@@ -204,12 +204,12 @@ pub(crate) fn shutdown() {
 
 /// Release the servers owned by one workspace when its window closes.
 pub(crate) fn evict_workspace(workspace: &Path) {
-    if let Some(cache) = CACHE.get()
-        && let Ok(mut entries) = cache.try_lock()
-    {
+    let workspace = workspace.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let mut entries = cache().lock().await;
         let prefix = format!("{}\u{0}", workspace.display());
         entries.retain(|key, _| !key.starts_with(&prefix));
-    }
+    });
 }
 
 /// Server name and config are part of the key: editing a command, URL, or

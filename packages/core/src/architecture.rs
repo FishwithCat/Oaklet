@@ -359,6 +359,13 @@ pub async fn load(
         .architecture
         .lock()
         .map_err(|_| "Architecture state is unavailable.".to_string())?;
+    if cache
+        .loads
+        .get(&ticket.workspace)
+        .is_none_or(|slot| slot.generation != ticket.generation)
+    {
+        return Err("Architecture load was superseded by a newer request.".into());
+    }
 
     match outcome {
         Ok(response) if response.ok => {

@@ -33,6 +33,11 @@ struct ToolCall {
 /// run; this loop streams, executes tools, and finishes through `ctx`, which
 /// writes the transcript and publishes the terminal event.
 pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunContext) {
+    if cancel.is_cancelled() {
+        ctx.finish_stopped(strip_system(&input)).await;
+        return;
+    }
+
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
