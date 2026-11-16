@@ -1024,7 +1024,7 @@ mod tests {
 
     #[test]
     fn pressure_then_force_trimming_keeps_the_spill_pointer() {
-        let path = ".oaklet/spill/run-1/read_file-call_1.txt";
+        let path = "/tmp/oaklet/spill/session-0123456789abcdef/read_file-call_1.txt";
         let text = format!(
             "{}\n\n[... tool output middle pruned; full output (900 lines, 20000 bytes) saved to: {path}. Use read_file with offset and limit to page through it.]\n\n{}",
             "h".repeat(4_000),
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn keeps_an_existing_spill_pointer_when_trimming_again() {
-        let path = ".oaklet/spill/run-1/run_command-call_1.txt";
+        let path = "/tmp/oaklet/spill/session-0123456789abcdef/run_command-call_1.txt";
         let original = format!(
             "artifact saved to: build/report.html\n{}\n\n[... tool output middle pruned; full output (900 lines, 20000 bytes) saved to: {path}. Use read_file with offset and limit to page through it.]\n\n{}",
             "h".repeat(4_000),

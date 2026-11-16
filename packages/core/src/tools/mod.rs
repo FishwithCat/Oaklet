@@ -79,13 +79,9 @@ pub(crate) fn spill_pointer(text: &str) -> Option<&str> {
     None
 }
 
-/// Whether `path` looks like this app's spill locator: either the old
-/// workspace-relative convention or the current absolute app-data path.
+/// Whether `path` looks like this app's absolute spill locator.
 fn is_spill_path(path: &str) -> bool {
-    path.starts_with(".oaklet/spill/")
-        || path.starts_with(".oaklet\\spill\\")
-        || path.contains("/spill/session-")
-        || path.contains("\\spill\\session-")
+    path.contains("/spill/session-") || path.contains("\\spill\\session-")
 }
 
 /// One image returned by a tool. `data_url` is a complete `data:` URL so the
@@ -889,18 +885,17 @@ mod tests {
 
     #[test]
     fn spill_pointer_ignores_saved_to_text_before_the_marker() {
-        let path = ".oaklet/spill/run-1/out.txt";
+        let path = "/Users/me/Library/Application Support/com.oaklet.desktop/spill/session-0123456789abcdef/out.txt";
         let text = format!(
             "artifact saved to: build/report.html\n\n{SPILL_MARKER_HEAD}900 lines, 20000 bytes{SPILL_MARKER_POINTER}{path}{SPILL_MARKER_TAIL}"
         );
 
         assert_eq!(spill_pointer(&text), Some(path));
 
-        let absolute = "/Users/me/Library/Application Support/com.oaklet.desktop/spill/session-0123456789abcdef/out.txt";
-        let text = format!(
-            "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}{absolute}{SPILL_MARKER_TAIL}"
+        let legacy = format!(
+            "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}.oaklet/spill/run-1/out.txt{SPILL_MARKER_TAIL}"
         );
-        assert_eq!(spill_pointer(&text), Some(absolute));
+        assert_eq!(spill_pointer(&legacy), None);
 
         let not_a_spill = format!(
             "{SPILL_MARKER_HEAD}1 lines, 2 bytes{SPILL_MARKER_POINTER}build/report.html{SPILL_MARKER_TAIL}"
