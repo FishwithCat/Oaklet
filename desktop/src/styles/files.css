@@ -36,13 +36,14 @@ button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { 
 .files-editor .cm-editor .cm-activeLineGutter { background: var(--subtle-overlay); color: var(--accent); }
 .files-editor .cm-editor .cm-selectionBackground { background: var(--accent-surface-hover) !important; }
 .files-editor .cm-editor .cm-cursor { border-left-color: var(--text); border-left-width: 2px; }
-.files-preview { flex: 1; min-height: 0; overflow: auto; padding: 20px; font-size: 14px; line-height: 1.7; }
+.files-preview { flex: 1; min-height: 0; overflow: auto; padding: 20px; font-size: 11px; line-height: 1.7; }
 .files-preview .markdown { max-width: 900px; margin: 0 auto; }
 .files-preview .markdown :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 12px; line-height: 1.35; font-weight: 600; }
-.files-preview .markdown h1 { font-size: 26px; }
-.files-preview .markdown h2 { font-size: 21px; }
-.files-preview .markdown h3 { font-size: 17px; }
-.files-preview .markdown :is(h4, h5, h6) { font-size: 14px; }
+.files-preview .markdown h1 { font-size: 20px; }
+.files-preview .markdown h2 { font-size: 16px; }
+.files-preview .markdown h3 { font-size: 13px; }
+.files-preview .markdown :is(h4, h5, h6) { font-size: 11px; }
+.files-preview .markdown :is(code, pre, table) { font-size: 11px; }
 .files-preview .markdown :is(h1, h2) { padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .files-preview .markdown :is(p, ul, ol, blockquote) { margin-top: 0; margin-bottom: 14px; }
 .files-preview .markdown li > p { margin: 8px 0; }
