@@ -37,6 +37,7 @@ function App() {
   const [savedTick, setSavedTick] = useState(0);
   const chatRef = useRef<ChatHandle>(null);
   const terminalRef = useRef<TerminalHandle>(null);
+  const sessionBusyRef = useRef(false);
 
   const { config, loadFailed, browsingWorkspace, chooseWorkspace, setConfig } =
     useWorkspaceConfig({
@@ -49,6 +50,7 @@ function App() {
     enabled: config !== null && workspace !== null,
     onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });
+  sessionBusyRef.current = session.busy;
 
   useEffect(() => {
     homeDir().then(setHome).catch(() => setHome(""));
@@ -158,7 +160,7 @@ function App() {
     const unlisten = appWindow.onCloseRequested(async (event) => {
       try {
         if (disposed) return;
-        const busy = session.busy;
+        const busy = sessionBusyRef.current;
         const dirty = filesRef.current?.hasUnsaved() ?? false;
         if (!busy && !dirty) return;
 
@@ -186,7 +188,7 @@ function App() {
       disposed = true;
       void unlisten.then((stop) => stop()).catch(() => {});
     };
-  }, [workspace, session.busy]);
+  }, [workspace]);
 
   if (!config) {
     return (
@@ -198,7 +200,12 @@ function App() {
   if (!workspace) {
     return (
       <div className="loading">
-        {workspaceError || "Opening workspace..."}
+        <p>{workspaceError || "Opening workspace..."}</p>
+        {workspaceError && (
+          <button type="button" onClick={chooseWorkspace} disabled={browsingWorkspace}>
+            Open another workspace
+          </button>
+        )}
       </div>
     );
   }
