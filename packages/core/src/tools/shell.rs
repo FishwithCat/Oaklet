@@ -11,6 +11,40 @@ use super::{ApprovalRequest, Tool, ToolContext, ToolError, ToolOutput, parse_arg
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: u64 = 1_000_000;
 
+/// Kill the whole POSIX process group unless the command finished normally.
+/// This covers both an explicit Stop and the pipeline's 120-second timeout,
+/// which drops the command future without running its cancel branch.
+#[cfg(unix)]
+struct ProcessGroupGuard {
+    pid: Option<u32>,
+}
+
+#[cfg(unix)]
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    fn kill(&self) {
+        if let Some(pid) = self.pid {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 pub struct RunCommand;
 
 impl Tool for RunCommand {
@@ -107,16 +141,22 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    process.process_group(0);
 
     let mut child = process
         .spawn()
         .map_err(|error| format!("Could not start command: {error}"))?;
+    #[cfg(unix)]
+    let mut group = ProcessGroupGuard::new(child.id());
     let stdout = tokio::spawn(read_to_end(child.stdout.take()));
     let stderr = tokio::spawn(read_to_end(child.stderr.take()));
 
     let status = tokio::select! {
         result = child.wait() => result.map_err(|error| format!("Command failed to run: {error}"))?,
         _ = ctx.cancel.cancelled() => {
+            #[cfg(unix)]
+            group.kill();
             let _ = child.kill().await;
             let _ = child.wait().await;
             return Err(ToolError::Cancelled);
@@ -125,6 +165,8 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
 
     let stdout = stdout.await.unwrap_or_default();
     let stderr = stderr.await.unwrap_or_default();
+    #[cfg(unix)]
+    group.disarm();
     let mut output = String::new();
     if !stdout.is_empty() {
         output.push_str(&String::from_utf8_lossy(&stdout));
