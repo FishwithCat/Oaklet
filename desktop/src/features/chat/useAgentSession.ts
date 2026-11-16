@@ -63,6 +63,7 @@ export function useAgentSession({
   const workspaceRef = useRef(workspace);
   const tabCountRef = useRef(0);
   const compactingRef = useRef(false);
+  const compactingIdRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
@@ -380,10 +381,14 @@ export function useAgentSession({
 
   function compact() {
     const tab = sessionsRef.current[activeTabIdRef.current];
+    if (compactingRef.current) {
+      const id = compactingIdRef.current;
+      if (id) void invoke("session_compact_cancel", { sessionId: id });
+      return;
+    }
     if (
       !tab ||
       tab.running ||
-      compactingRef.current ||
       loadingOlderRef.current ||
       tab.turns === 0
     ) {
@@ -391,6 +396,7 @@ export function useAgentSession({
     }
 
     compactingRef.current = true;
+    compactingIdRef.current = tab.id;
     setCompacting(true);
     const workspaceAtStart = workspaceRef.current;
     invoke<CompactResult>("session_compact", { sessionId: tab.id })
@@ -407,13 +413,19 @@ export function useAgentSession({
       })
       .catch((error) => {
         if (workspaceRef.current === workspaceAtStart) {
+          const message = errorText(error);
           updateSession(tab.id, (view) =>
-            appendNotice(view, "error", errorText(error)),
+            appendNotice(
+              view,
+              message === "Stopped." ? "muted" : "error",
+              message === "Stopped." ? "Compaction stopped." : message,
+            ),
           );
         }
       })
       .finally(() => {
         compactingRef.current = false;
+        compactingIdRef.current = null;
         setCompacting(false);
       });
   }

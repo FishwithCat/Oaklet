@@ -44,7 +44,7 @@ function ContextGauge({
   const hint = running
     ? "Stop the run to compact context"
     : compacting
-      ? "Compacting context…"
+      ? "Click to stop compacting"
       : usage
         ? "Click to compact context"
         : "Context usage is unavailable; click to compact context";
@@ -56,7 +56,7 @@ function ContextGauge({
       }`}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onCompact}
-      disabled={running || compacting}
+      disabled={running}
       aria-label={
         label
           ? `Context used: ${label}. ${hint}`

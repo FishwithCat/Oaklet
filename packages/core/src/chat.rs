@@ -179,7 +179,7 @@ enum SentAttachment {
 #[derive(Default)]
 struct ChatLive {
     runs: HashMap<String, RunHandle>,
-    compacting: HashSet<String>,
+    compacting: HashMap<String, CancelHandle>,
 }
 
 struct RunHandle {
@@ -234,7 +234,7 @@ impl ChatState {
     }
 
     fn view(&self, window: store::SessionWindow) -> SessionView {
-        let compacting = self.live().compacting.contains(&window.id);
+        let compacting = self.live().compacting.contains_key(&window.id);
         view_from_window(window, compacting)
     }
 
@@ -258,7 +258,7 @@ impl ChatState {
         rows.into_iter()
             .map(|row| {
                 let blocked = active.get(row.id.as_str()).copied();
-                let compacting = live.compacting.contains(&row.id);
+                let compacting = live.compacting.contains_key(&row.id);
                 SessionSummary {
                     id: row.id,
                     title: row.title,
@@ -593,7 +593,7 @@ pub async fn session_send(
     // both start a run for the same session.
     let (view, start_seq, messages) = {
         let mut live = state.chat.live();
-        if live.compacting.contains(&session_id)
+        if live.compacting.contains_key(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
             return Err("This chat is already working.".into());
@@ -646,6 +646,9 @@ pub async fn session_send(
 
 #[tauri::command]
 pub fn session_stop(state: State<'_, SharedState>, session_id: String) {
+    if let Some(handle) = state.chat.live().compacting.get(&session_id) {
+        handle.cancel();
+    }
     let run_id = {
         let live = state.chat.live();
         let mut found = None;
@@ -668,17 +671,19 @@ pub async fn session_compact(
     state: State<'_, SharedState>,
     session_id: String,
 ) -> Result<CompactResult, String> {
-    {
+    let cancel = {
         let mut live = state.chat.live();
-        if live.compacting.contains(&session_id)
+        if live.compacting.contains_key(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
             return Err("Stop the run before compacting this chat.".into());
         }
-        live.compacting.insert(session_id.clone());
-    }
+        let (handle, cancel) = CancelHandle::new();
+        live.compacting.insert(session_id.clone(), handle);
+        cancel
+    };
 
-    let result = compact_session(state.inner(), &session_id).await;
+    let result = compact_session(state.inner(), &session_id, &cancel).await;
 
     {
         let mut live = state.chat.live();
@@ -694,9 +699,17 @@ pub async fn session_compact(
     })
 }
 
+#[tauri::command]
+pub fn session_compact_cancel(state: State<'_, SharedState>, session_id: String) {
+    if let Some(handle) = state.chat.live().compacting.get(&session_id) {
+        handle.cancel();
+    }
+}
+
 async fn compact_session(
     state: &SharedState,
     session_id: &str,
+    cancel: &crate::tools::Cancel,
 ) -> Result<(store::SessionWindow, usize, usize, bool), String> {
     let config = state
         .config
@@ -716,9 +729,8 @@ async fn compact_session(
     }
 
     let before = context::estimate_tokens(&base);
-    let (_handle, cancel) = CancelHandle::new();
     let next =
-        compaction::compact_messages(&reqwest::Client::new(), &config, &base, &cancel).await?;
+        compaction::compact_messages(&reqwest::Client::new(), &config, &base, cancel).await?;
     let Some(compacted) = next else {
         return Ok((load_window(state, session_id).await?, before, before, false));
     };
