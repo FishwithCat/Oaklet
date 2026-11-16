@@ -171,6 +171,7 @@ function App() {
           firstSeq={session.firstSeq}
           hasMore={session.hasMore}
           loadingOlder={session.loadingOlder}
+          loadOlderError={session.loadOlderError}
           running={session.running}
           compacting={session.compacting}
           activeRunId={session.activeRunId}

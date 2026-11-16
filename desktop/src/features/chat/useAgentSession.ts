@@ -56,6 +56,10 @@ export function useAgentSession({
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [compacting, setCompacting] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadOlderError, setLoadOlderError] = useState<{
+    id: string;
+    text: string;
+  } | null>(null);
 
   const sessionsRef = useRef(sessions);
   const openTabsRef = useRef(openTabs);
@@ -476,6 +480,7 @@ export function useAgentSession({
       return false;
     }
     const workspaceAtStart = workspaceRef.current;
+    setLoadOlderError(null);
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
@@ -495,12 +500,11 @@ export function useAgentSession({
       const next = prependWindow(current, older);
       if (next === current) return false;
       putSession(next);
+      setLoadOlderError(null);
       return true;
     } catch (error) {
       if (workspaceRef.current === workspaceAtStart) {
-        updateSession(id, (view) =>
-          appendNotice(view, "error", errorText(error)),
-        );
+        setLoadOlderError({ id, text: errorText(error) });
       }
       return false;
     } finally {
@@ -565,6 +569,8 @@ export function useAgentSession({
     firstSeq: activeTab?.firstSeq ?? null,
     hasMore: activeTab?.hasMore ?? false,
     loadingOlder,
+    loadOlderError:
+      loadOlderError?.id === resolvedActiveId ? loadOlderError.text : "",
     running: activeTab?.running ?? false,
     activeRunId: activeTab?.activeRunId ?? null,
     compacting: compacting || (activeTab?.compacting ?? false),

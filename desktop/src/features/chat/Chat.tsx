@@ -51,6 +51,7 @@ export function Chat({
   firstSeq,
   hasMore,
   loadingOlder,
+  loadOlderError,
   running,
   compacting,
   activeRunId,
@@ -74,6 +75,7 @@ export function Chat({
   firstSeq: number | null;
   hasMore: boolean;
   loadingOlder: boolean;
+  loadOlderError: string;
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
@@ -409,6 +411,11 @@ export function Chat({
             >
               {loadingOlder ? "Loading earlier…" : "Load earlier"}
             </button>
+            {loadOlderError && (
+              <p className="load-older-error" role="alert">
+                {loadOlderError}
+              </p>
+            )}
           </div>
         )}
         {items.length === 0 ? (
