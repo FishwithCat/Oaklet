@@ -1037,9 +1037,94 @@ fn refresh_blocked(view: &mut SessionView) {
     view.blocked = is_blocked(&view.items);
 }
 
-/// A stopped or failed run can end between one assistant tool-call message and
-/// its results. Drop that trailing block so the saved history is still a valid
-/// request for the next turn.
+/// Give every unanswered assistant tool call a synthetic error result in the
+/// run's pending events, preserving call order and existing started markers.
+fn close_incomplete_tool_calls(pending: &mut Vec<EventPayload>, run_id: &str) {
+    // Existing tool messages are created by `tool_start` and updated in place
+    // by `tool_result`; remember whether each call has an outcome.
+    let mut tool_message: HashMap<String, (usize, bool)> = HashMap::new();
+    for (index, payload) in pending.iter().enumerate() {
+        let EventPayload::Message { message, display } = payload else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        let Some(id) = message.get("tool_call_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let waiting = display
+            .as_ref()
+            .and_then(|display| display.get("pending"))
+            .and_then(Value::as_bool)
+            == Some(true);
+        tool_message.insert(id.to_string(), (index, waiting));
+    }
+
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for payload in pending.iter() {
+        let EventPayload::Message { message, .. } = payload else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+            continue;
+        };
+        for call in calls {
+            let Some(id) = call.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if tool_message.get(id).is_some_and(|(_, waiting)| !*waiting) {
+                continue;
+            }
+            let name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            missing.push((id.to_string(), name));
+        }
+    }
+
+    for (id, name) in missing {
+        let started = tool_message.get(&id).map(|(index, _)| *index);
+        let text = if started.is_some() {
+            "The tool call was interrupted after it started, but no result was recorded. \
+             Its outcome is unknown; verify external state before retrying."
+        } else {
+            "The tool call was interrupted before it started. Retry it if it is still needed."
+        };
+        if let Some(index) = started {
+            if let EventPayload::Message { message, display } = &mut pending[index] {
+                message["content"] = json!(text);
+                if let Some(display) = display.as_mut().and_then(Value::as_object_mut) {
+                    display.insert("ok".into(), json!(false));
+                    display.remove("pending");
+                }
+            }
+        } else {
+            pending.push(EventPayload::Message {
+                message: json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": text,
+                }),
+                display: Some(json!({
+                    "runId": run_id,
+                    "name": name,
+                    "ok": false,
+                    "hidden": true,
+                })),
+            });
+        }
+    }
+}
+
+/// Close an incomplete tool-call block in model history without truncating
+/// later user turns. The database is repaired separately at run finish; this
+/// keeps replayed/legacy histories valid before a request.
 fn trim_incomplete_tool_block(mut messages: Vec<Value>) -> Vec<Value> {
     let Some(index) = messages.iter().rposition(|message| {
         message
@@ -1054,13 +1139,76 @@ fn trim_incomplete_tool_block(mut messages: Vec<Value>) -> Vec<Value> {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    let answered = messages[index + 1..]
-        .iter()
-        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-        .count();
-    if answered < expected {
-        messages.truncate(index);
+    if expected == 0 {
+        return messages;
     }
+
+    let calls: Vec<(String, String)> = messages[index]
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|call| {
+            Some((
+                call.get("id").and_then(Value::as_str)?.to_string(),
+                call.pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string(),
+            ))
+        })
+        .collect();
+    let answered: HashSet<&str> = messages[index + 1..]
+        .iter()
+        .filter_map(|message| {
+            (message.get("role").and_then(Value::as_str) == Some("tool"))
+                .then(|| message.get("tool_call_id").and_then(Value::as_str))
+                .flatten()
+        })
+        .collect();
+    let missing: Vec<&(String, String)> = calls
+        .iter()
+        .filter(|(id, _)| !answered.contains(id.as_str()))
+        .collect();
+    if missing.is_empty() {
+        return messages;
+    }
+
+    // Keep the synthetic results next to the tool block they answer. Later
+    // user/assistant turns stay untouched and the request remains valid.
+    let block_ids: HashSet<&str> = calls.iter().map(|(id, _)| id.as_str()).collect();
+    let mut insert_at = index + 1;
+    for (offset, message) in messages[index + 1..].iter().enumerate() {
+        let Some(id) = message.get("tool_call_id").and_then(Value::as_str) else {
+            break;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("tool") || !block_ids.contains(id) {
+            break;
+        }
+        insert_at = index + 2 + offset;
+    }
+
+    let synthetic: Vec<Value> = missing
+        .into_iter()
+        .map(|(id, _)| {
+            let started = messages[index + 1..].iter().any(|message| {
+                message.get("role").and_then(Value::as_str) == Some("tool")
+                    && message.get("tool_call_id").and_then(Value::as_str) == Some(id)
+            });
+            let text = if started {
+                "The tool call was interrupted after it started, but no result was recorded. \
+                 Its outcome is unknown; verify external state before retrying."
+            } else {
+                "The tool call was interrupted before it started. Retry it if it is still needed."
+            };
+            json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": text,
+            })
+        })
+        .collect();
+    messages.splice(insert_at..insert_at, synthetic);
     messages
 }
 
@@ -1283,6 +1431,19 @@ impl RunContext {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         archived.extend_from_slice(messages);
+    }
+
+    /// Give every unanswered assistant tool call a durable error result.
+    ///
+    /// A stop or provider failure can land between the assistant message and
+    /// its tool results. Persisting that gap would make the next request
+    /// invalid, so close it here while the run still owns its event buffer.
+    fn repair_incomplete_tool_calls(&self) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        close_incomplete_tool_calls(&mut pending, &self.run_id);
     }
 
     fn emit<T: Serialize + Clone>(&self, event: &str, payload: T) {
@@ -1593,6 +1754,7 @@ impl RunContext {
                 .view
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.repair_incomplete_tool_calls();
             settle_streaming(&mut view.items);
             settle_unfinished_tools(&mut view.items);
             match status {
@@ -1733,9 +1895,9 @@ mod tests {
 
     use super::{
         ATTACHMENT_SPILL_BYTES, ChatState, IncomingAttachment, NewItem, RunHandle, SessionView,
-        ToolItem, ToolStatus, build_user_turn, format_tokens, is_blocked, merge_stream,
-        project_events, session_title, settle_streaming, settle_unfinished_tools, surface_messages,
-        trim_incomplete_tool_block, view_from_session,
+        ToolItem, ToolStatus, build_user_turn, close_incomplete_tool_calls, format_tokens,
+        is_blocked, merge_stream, project_events, session_title, settle_streaming,
+        settle_unfinished_tools, surface_messages, trim_incomplete_tool_block, view_from_session,
     };
     use crate::store::{self, Event, EventPayload};
     use crate::tools::CancelHandle;
@@ -1793,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_a_tool_block_that_stopped_before_its_results() {
+    fn closes_a_tool_block_that_stopped_before_its_results() {
         let assistant_with_two_calls = json!({
             "role": "assistant",
             "content": "",
@@ -1807,9 +1969,31 @@ mod tests {
             assistant_with_two_calls.clone(),
             json!({ "role": "tool", "tool_call_id": "a", "content": "ok" }),
         ];
-        let trimmed = trim_incomplete_tool_block(partial);
-        assert_eq!(trimmed.len(), 1);
-        assert_eq!(trimmed[0]["role"], "user");
+        let repaired = trim_incomplete_tool_block(partial);
+        assert_eq!(repaired.len(), 4);
+        assert_eq!(repaired[0]["role"], "user");
+        assert_eq!(repaired[1]["role"], "assistant");
+        assert_eq!(repaired[2]["tool_call_id"], "a");
+        assert_eq!(repaired[3]["tool_call_id"], "b");
+        assert!(
+            repaired[3]["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("interrupted"))
+        );
+
+        // A later turn must survive so the model does not forget it.
+        let with_later_turn = vec![
+            json!({ "role": "user", "content": "go" }),
+            assistant_with_two_calls.clone(),
+            json!({ "role": "tool", "tool_call_id": "a", "content": "ok" }),
+            json!({ "role": "user", "content": "next" }),
+            json!({ "role": "assistant", "content": "answer" }),
+        ];
+        let repaired = trim_incomplete_tool_block(with_later_turn);
+        assert_eq!(repaired.len(), 6);
+        assert_eq!(repaired[3]["tool_call_id"], "b");
+        assert_eq!(repaired[4]["content"], "next");
+        assert_eq!(repaired[5]["content"], "answer");
 
         let complete = vec![
             json!({ "role": "user", "content": "go" }),
@@ -1819,6 +2003,53 @@ mod tests {
             json!({ "role": "assistant", "content": "done" }),
         ];
         assert_eq!(trim_incomplete_tool_block(complete).len(), 5);
+    }
+
+    #[test]
+    fn repairs_pending_events_for_unanswered_tool_calls() {
+        let mut pending = vec![
+            EventPayload::Message {
+                message: json!({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        { "id": "a", "type": "function", "function": { "name": "read_file", "arguments": "{}" } },
+                        { "id": "b", "type": "function", "function": { "name": "read_file", "arguments": "{}" } },
+                    ],
+                }),
+                display: Some(json!({ "runId": "r1" })),
+            },
+            EventPayload::Message {
+                message: json!({ "role": "tool", "tool_call_id": "a", "content": "" }),
+                display: Some(json!({
+                    "runId": "r1",
+                    "name": "read_file",
+                    "pending": true,
+                })),
+            },
+        ];
+
+        close_incomplete_tool_calls(&mut pending, "r1");
+        assert_eq!(pending.len(), 3);
+        let EventPayload::Message { message, display } = &pending[1] else {
+            panic!("expected a tool message");
+        };
+        assert!(
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("unknown"))
+        );
+        assert_eq!(
+            display
+                .as_ref()
+                .and_then(|display| display.get("pending"))
+                .and_then(serde_json::Value::as_bool),
+            None
+        );
+        let EventPayload::Message { message, .. } = &pending[2] else {
+            panic!("expected a synthetic tool result");
+        };
+        assert_eq!(message["tool_call_id"], "b");
     }
 
     #[test]
