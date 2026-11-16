@@ -113,3 +113,29 @@ button.allow-all-chip {
   color: var(--green);
   background: transparent;
 }
+
+.pane-resizer {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 6px;
+  margin: 0 -4px 0 -1px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-resizer:hover,
+.pane-resizer:focus-visible,
+.pane-resizer:active {
+  background: var(--accent-soft);
+}
+
+.pane-resizer:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+body.pane-resizing {
+  cursor: col-resize;
+  user-select: none;
+}

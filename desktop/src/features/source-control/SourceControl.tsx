@@ -1,8 +1,10 @@
+import { useState, type CSSProperties } from "react";
 import {
   CheckCircleRegular,
   GitBranch2Regular,
   Refresh3Regular,
 } from "@mingcute/react/core-regular";
+import { PaneResizer } from "../../shared/PaneResizer";
 import { BranchMenu } from "./BranchMenu";
 import { Diff } from "./Diff";
 import {
@@ -51,6 +53,8 @@ export function SourceControl({
     switchBranch,
     refresh,
   } = useSourceControl({ active, changes, refreshToken, onRefresh });
+  const [listWidth, setListWidth] = useState(300);
+  const bodyStyle = { "--sc-list-width": `${listWidth}px` } as CSSProperties;
 
   return (
     <section className="sc" hidden={!active} aria-label="Source control">
@@ -121,7 +125,7 @@ export function SourceControl({
             <p>No uncommitted changes.</p>
           </div>
         ) : (
-          <div className="sc-body">
+          <div className="sc-body" style={bodyStyle}>
             <div className="sc-list" aria-label="Uncommitted changes">
               {changes.map((entry) => {
                 const info = statusInfo(entry.status);
@@ -145,6 +149,8 @@ export function SourceControl({
                 );
               })}
             </div>
+
+            <PaneResizer width={listWidth} label="Resize change list" onChange={setListWidth} />
 
             <div className="sc-detail">
               {change && (
@@ -173,7 +179,7 @@ export function SourceControl({
           <p>No commits yet in this repository.</p>
         </div>
       ) : (
-        <div className="sc-body">
+        <div className="sc-body" style={bodyStyle}>
           <div className="sc-list" aria-label="Recent commits">
             {commits.map((entry) => (
               <button
@@ -196,6 +202,8 @@ export function SourceControl({
               </button>
             ))}
           </div>
+
+          <PaneResizer width={listWidth} label="Resize commit list" onChange={setListWidth} />
 
           <div className="sc-detail">
             {commit && (

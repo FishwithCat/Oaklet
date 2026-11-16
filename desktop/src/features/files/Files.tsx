@@ -1,4 +1,4 @@
-import { Fragment, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type Ref } from "react";
+import { Fragment, lazy, Suspense, useEffect, useImperativeHandle, useRef, useState, type CSSProperties, type Ref } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -13,6 +13,7 @@ import {
 } from "@mingcute/react/core-regular";
 import type { Extension } from "@codemirror/state";
 import { MarkdownText } from "../../shared/Markdown";
+import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
 import { BranchMenu } from "../source-control/BranchMenu";
 import { useGitBranch } from "../source-control/useGitBranch";
@@ -55,8 +56,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [preview, setPreview] = useState(false);
   const [syntax, setSyntax] = useState<Extension>([]);
   const [browserWidth, setBrowserWidth] = useState(300);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const busyRef = useRef(false);
   const dirty = document !== null && document.content !== editorText(document.original);
   const dirtyRef = useRef(dirty);
@@ -88,39 +87,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     }
   }
 
-  function clampWidth(width: number) {
-    const available = bodyRef.current?.clientWidth ?? 900;
-    return Math.max(150, Math.min(width, available * 0.35));
-  }
-
-  function startResize(event: ReactPointerEvent<HTMLDivElement>) {
-    resizeStart.current = { x: event.clientX, width: browserWidth };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    window.document.body.classList.add("files-resizing");
-  }
-
-  function dragResize(event: ReactPointerEvent<HTMLDivElement>) {
-    const start = resizeStart.current;
-    if (!start) return;
-    setBrowserWidth(clampWidth(start.width + event.clientX - start.x));
-  }
-
-  function stopResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!resizeStart.current) return;
-    resizeStart.current = null;
-    window.document.body.classList.remove("files-resizing");
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-  }
-
-  function keyResize(event: ReactKeyboardEvent<HTMLDivElement>) {
-    const step = event.shiftKey ? 50 : 10;
-    if (event.key === "ArrowLeft") setBrowserWidth((width) => clampWidth(width - step));
-    else if (event.key === "ArrowRight") setBrowserWidth((width) => clampWidth(width + step));
-    else if (event.key === "Home") setBrowserWidth(150);
-    else if (event.key === "End") setBrowserWidth(clampWidth(Number.POSITIVE_INFINITY));
-    else return;
-    event.preventDefault();
-  }
   leaveRef.current = canLeave;
   useImperativeHandle(ref, () => ({ canLeave }));
 
@@ -216,7 +182,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           <Refresh3Regular size={14} />
         </button>
       </header>
-      <div className="files-body" ref={bodyRef} style={{ "--files-browser-width": `${browserWidth}px` } as CSSProperties}>
+      <div className="files-body" style={{ "--files-browser-width": `${browserWidth}px` } as CSSProperties}>
         <FileTree
           workspace={workspace}
           active={active}
@@ -226,22 +192,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           busy={busy}
           onOpen={(path) => { if (path !== document?.path) void openFile(path); }}
         />
-        <div
-          className="files-resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize file browser"
-          tabIndex={0}
-          onPointerDown={startResize}
-          onPointerMove={dragResize}
-          onPointerUp={stopResize}
-          onPointerCancel={stopResize}
-          onLostPointerCapture={() => {
-            resizeStart.current = null;
-            window.document.body.classList.remove("files-resizing");
-          }}
-          onKeyDown={keyResize}
-        />
+        <PaneResizer width={browserWidth} label="Resize file browser" onChange={setBrowserWidth} />
         <div className="files-document">
           {error && <p role="alert" className="files-error">{error}</p>}
           {document ? <>
