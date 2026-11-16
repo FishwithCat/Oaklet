@@ -314,7 +314,10 @@ export function useAgentSession({
     }
   }
 
-  function send(text: string, attachments: Attachment[] = []): boolean {
+  async function send(
+    text: string,
+    attachments: Attachment[] = [],
+  ): Promise<boolean> {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || !enabled) return false;
 
@@ -338,36 +341,36 @@ export function useAgentSession({
       ),
     );
 
-    invoke<SendResult>("session_send", {
-      sessionId: tab.id,
-      text: trimmed,
-      attachments,
-    })
-      .then(({ runId, session }) => {
-        if (workspaceRef.current !== workspaceAtSend) return;
-        const current = sessionsRef.current[tab.id];
-        // A terminal event may already have replaced the optimistic view.
-        if (!current || !current.running) return;
-        // The run finished before the command response; its view is final.
-        if (!session.running) {
-          putSession(mergeWindow(current, session));
-          return;
-        }
-        putSession({
-          ...current,
-          title: session.title,
-          turns: session.turns,
-          updatedAt: session.updatedAt,
-          running: true,
-          activeRunId: runId,
-        });
-      })
-      .catch((error) => {
-        if (workspaceRef.current !== workspaceAtSend) return;
-        if (!sessionsRef.current[tab.id]) return;
-        putSession(appendNotice(previous, "error", errorText(error)));
+    try {
+      const { runId, session } = await invoke<SendResult>("session_send", {
+        sessionId: tab.id,
+        text: trimmed,
+        attachments,
       });
-    return true;
+      if (workspaceRef.current !== workspaceAtSend) return false;
+      const current = sessionsRef.current[tab.id];
+      // A terminal event may already have replaced the optimistic view.
+      if (!current || !current.running) return true;
+      // The run finished before the command response; its view is final.
+      if (!session.running) {
+        putSession(mergeWindow(current, session));
+        return true;
+      }
+      putSession({
+        ...current,
+        title: session.title,
+        turns: session.turns,
+        updatedAt: session.updatedAt,
+        running: true,
+        activeRunId: runId,
+      });
+      return true;
+    } catch (error) {
+      if (workspaceRef.current !== workspaceAtSend) return false;
+      if (!sessionsRef.current[tab.id]) return false;
+      putSession(appendNotice(previous, "error", errorText(error)));
+      return false;
+    }
   }
 
   function stop() {

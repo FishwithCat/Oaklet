@@ -104,7 +104,7 @@ export function ChatComposer({
   onChange: (value: string) => void;
   onAddAttachments: (attachments: Attachment[]) => void;
   onRemoveAttachment: (index: number) => void;
-  onSubmit: (attachments: Attachment[]) => boolean;
+  onSubmit: (attachments: Attachment[]) => Promise<boolean>;
   onStop: () => void;
   onCompact: () => void;
 }) {
@@ -115,6 +115,7 @@ export function ChatComposer({
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
+  const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
 
   useEffect(() => {
@@ -192,11 +193,16 @@ export function ChatComposer({
     }
   }
 
-  function submit() {
-    if (compacting || reading) return;
-    if (!onSubmit(attachments)) return;
-    setAttachmentError("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  async function submit() {
+    if (compacting || reading || submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      if (!await onSubmit(attachments)) return;
+      setAttachmentError("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+    } finally {
+      submittingRef.current = false;
+    }
   }
 
   return (
@@ -205,7 +211,7 @@ export function ChatComposer({
         className={`composer${showContextGauge ? " has-context" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          void submit();
         }}
       >
         {showContextGauge && (
@@ -280,7 +286,7 @@ export function ChatComposer({
           onKeyDown={(event) => {
             if (!isSendEnter(event.nativeEvent, composingRef.current)) return;
             event.preventDefault();
-            submit();
+            void submit();
           }}
         />
         <div className="composer-footer">

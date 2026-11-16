@@ -79,7 +79,7 @@ export function Chat({
   activeRunId: string | null;
   context: ContextUsage | null;
   model: string;
-  onSend: (text: string, attachments: Attachment[]) => boolean;
+  onSend: (text: string, attachments: Attachment[]) => Promise<boolean>;
   onStop: () => void;
   onCompact: () => void;
   onLoadOlder: () => Promise<boolean>;
@@ -103,6 +103,9 @@ export function Chat({
   const draftsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
+  const activeTabIdRef = useRef(activeTabId);
+  const submittingRef = useRef(false);
+  activeTabIdRef.current = activeTabId;
   // The welcome screen is the blank first tab: no tabs, find or selection.
   const welcome = tabs.length <= 1 && items.length === 0 && !hasMore;
   const { selectionAction, selectionButtonRef, clearSelection } =
@@ -221,12 +224,31 @@ export function Chat({
     ]);
   }
 
-  function submit(attachments: Attachment[]): boolean {
-    if (!onSend(input, attachments)) return false;
-    updateDraft("");
-    updateAttachments([]);
-    stickToBottomRef.current = true;
-    return true;
+  async function submit(attachments: Attachment[]): Promise<boolean> {
+    if (submittingRef.current) return false;
+    submittingRef.current = true;
+    const tabId = activeTabIdRef.current;
+    const text = input;
+    try {
+      const accepted = await onSend(text, attachments);
+      if (!accepted) return false;
+      // A successful send consumes this tab's draft, but do not erase text
+      // typed in another tab while the request was in flight.
+      if (draftsRef.current.get(tabId) === text) {
+        draftsRef.current.delete(tabId);
+      }
+      if (attachmentsRef.current.get(tabId) === attachments) {
+        attachmentsRef.current.delete(tabId);
+      }
+      if (activeTabIdRef.current === tabId) {
+        setInput("");
+        setAttachments([]);
+        stickToBottomRef.current = true;
+      }
+      return true;
+    } finally {
+      submittingRef.current = false;
+    }
   }
 
   async function loadEarlier() {
