@@ -15,6 +15,9 @@ use crate::compaction;
 use crate::context::estimate_tokens;
 use crate::tools::{Cancel, ToolRegistry};
 
+/// Total attempts for a transient provider failure, including the first.
+const MAX_ATTEMPTS: usize = 3;
+
 /// The assistant turn the run should act on.
 pub(super) struct Reply {
     pub content: String,
@@ -38,36 +41,49 @@ pub(super) async fn request(
     ctx: &RunContext,
     overflow_retried: &mut bool,
 ) -> Result<Next, String> {
-    match stream_step(ctx, client, config, tools, messages, cancel).await {
-        Ok((content, reasoning, calls, prompt_tokens)) => {
-            *overflow_retried = false;
-            Ok(Next::Reply(Reply {
-                content,
-                reasoning,
-                calls,
-                prompt_tokens,
-            }))
-        }
-        Err(err) if err.is_context_overflow() && !*overflow_retried => {
-            *overflow_retried = true;
-            match compaction::force(client, config, messages, tools, cancel).await {
-                Ok(Some(compacted)) => {
-                    note_compaction(
-                        estimate_tokens(messages),
-                        estimate_tokens(&compacted.messages),
-                    );
-                    ctx.record_archived(&compacted.replaced);
-                    ensure_history_tool(tools, ctx);
-                    *messages = compacted.messages;
-                    Ok(Next::Retry)
-                }
-                Ok(None) => Err(format!(
-                    "{err}\n\nThe conversation could not be compacted further; \
-                     start a new chat or raise the context window."
-                )),
-                Err(force_err) => Err(force_err),
+    let mut attempt = 0;
+    loop {
+        match stream_step(ctx, client, config, tools, messages, cancel).await {
+            Ok((content, reasoning, calls, prompt_tokens)) => {
+                *overflow_retried = false;
+                return Ok(Next::Reply(Reply {
+                    content,
+                    reasoning,
+                    calls,
+                    prompt_tokens,
+                }));
             }
+            Err(err) if err.is_transient() && attempt + 1 < MAX_ATTEMPTS => {
+                let delay = err.retry_delay(attempt);
+                attempt += 1;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = cancel.cancelled() => return Err("Stopped.".into()),
+                }
+            }
+            Err(err) if err.is_context_overflow() && !*overflow_retried => {
+                *overflow_retried = true;
+                match compaction::force(client, config, messages, tools, cancel).await {
+                    Ok(Some(compacted)) => {
+                        note_compaction(
+                            estimate_tokens(messages),
+                            estimate_tokens(&compacted.messages),
+                        );
+                        ctx.record_archived(&compacted.replaced);
+                        ensure_history_tool(tools, ctx);
+                        *messages = compacted.messages;
+                        return Ok(Next::Retry);
+                    }
+                    Ok(None) => {
+                        return Err(format!(
+                            "{err}\n\nThe conversation could not be compacted further; \
+                             start a new chat or raise the context window."
+                        ));
+                    }
+                    Err(force_err) => return Err(force_err),
+                }
+            }
+            Err(err) => return Err(err.to_string()),
         }
-        Err(err) => Err(err.to_string()),
     }
 }

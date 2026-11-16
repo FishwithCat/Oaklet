@@ -5,6 +5,7 @@
 //! calls, and keeps provider error text classifiable as a context overflow.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -32,6 +33,10 @@ struct StreamDelta {
 pub(super) struct RequestError {
     status: Option<reqwest::StatusCode>,
     body: String,
+    /// Set when repeating the request can plausibly succeed.
+    retryable: bool,
+    /// Provider-requested delay before the next attempt.
+    retry_after: Option<Duration>,
 }
 
 impl RequestError {
@@ -39,11 +44,55 @@ impl RequestError {
         Self {
             status: Some(status),
             body,
+            retryable: false,
+            retry_after: None,
+        }
+    }
+
+    fn response_retry(
+        status: reqwest::StatusCode,
+        body: String,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self {
+            status: Some(status),
+            body,
+            retryable: true,
+            retry_after,
         }
     }
 
     fn stream(body: String) -> Self {
-        Self { status: None, body }
+        Self {
+            status: None,
+            body,
+            retryable: false,
+            retry_after: None,
+        }
+    }
+
+    fn transport(body: String) -> Self {
+        Self {
+            status: None,
+            body,
+            retryable: true,
+            retry_after: None,
+        }
+    }
+
+    /// Whether the run loop should send the same request again. Only failures
+    /// before any streamed content are safe to repeat: replaying a partial
+    /// reply would duplicate text the user already saw.
+    pub(super) fn is_transient(&self) -> bool {
+        self.retryable
+    }
+
+    /// Honor `Retry-After` when present, otherwise back off exponentially.
+    pub(super) fn retry_delay(&self, attempt: usize) -> Duration {
+        let backoff = Duration::from_secs(1 << attempt.min(4));
+        self.retry_after
+            .map(|delay| delay.min(Duration::from_secs(30)))
+            .unwrap_or(backoff)
     }
 
     pub(super) fn is_context_overflow(&self) -> bool {
@@ -182,6 +231,26 @@ fn is_context_overflow(body: &str) -> bool {
     text.contains("上下文长度") || text.contains("上下文窗口")
 }
 
+/// Statuses where the same request may succeed after a short wait. A 4xx
+/// other than a timeout or rate limit describes the request itself and will
+/// fail the same way on every attempt.
+fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error()
+}
+
+/// `Retry-After` in delta-seconds form. HTTP-date values are ignored; the
+/// exponential fallback is still a safe delay.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(Duration::from_secs(seconds))
+}
+
 pub(super) async fn stream_step(
     ctx: &RunContext,
     client: &reqwest::Client,
@@ -208,14 +277,18 @@ pub(super) async fn stream_step(
         biased;
         _ = cancel.cancelled() => return Err(RequestError::stream("Stopped.".into())),
         response = request.send() => response.map_err(|err| {
-            RequestError::stream(format!("Could not reach {}: {err}", config.base_url))
+            RequestError::transport(format!("Could not reach {}: {err}", config.base_url))
         })?,
     };
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = retry_after(response.headers());
         let detail = response.text().await.unwrap_or_default();
         let detail = cap(detail, 2_000);
+        if is_transient_status(status) {
+            return Err(RequestError::response_retry(status, detail, retry_after));
+        }
         return Err(RequestError::response(status, detail));
     }
 
@@ -460,6 +533,67 @@ mod tests {
             "maximum context length is 8192 tokens".into(),
         );
         assert!(error.is_context_overflow());
+    }
+
+    #[test]
+    fn retries_only_transient_provider_failures() {
+        for status in [
+            reqwest::StatusCode::REQUEST_TIMEOUT,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(
+                RequestError::response_retry(status, "later".into(), None).is_transient(),
+                "{status}"
+            );
+        }
+        for status in [
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::NOT_FOUND,
+        ] {
+            assert!(!RequestError::response(status, "no".into()).is_transient());
+        }
+        assert!(RequestError::transport("offline".into()).is_transient());
+        // A stream that broke after emitting content must not replay it.
+        assert!(!RequestError::stream("interrupted".into()).is_transient());
+    }
+
+    #[test]
+    fn retry_delay_honors_retry_after_and_backs_off() {
+        let error = RequestError::response_retry(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "slow down".into(),
+            Some(Duration::from_secs(7)),
+        );
+        assert_eq!(error.retry_delay(0), Duration::from_secs(7));
+
+        let error = RequestError::response_retry(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "slow down".into(),
+            Some(Duration::from_secs(600)),
+        );
+        assert_eq!(error.retry_delay(0), Duration::from_secs(30));
+
+        let error = RequestError::transport("offline".into());
+        assert_eq!(error.retry_delay(0), Duration::from_secs(1));
+        assert_eq!(error.retry_delay(1), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn parses_delta_seconds_retry_after() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "12".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(12)));
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after(&headers), None);
     }
 
     #[test]
