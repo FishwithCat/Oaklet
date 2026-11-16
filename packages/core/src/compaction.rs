@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use crate::AppConfig;
 use crate::context::{estimate_message, estimate_text, estimate_tokens};
 use crate::repeat::is_reminder;
+use crate::store::is_checkpoint;
 use crate::tools::{Cancel, ToolRegistry, cap, spill_pointer};
 
 /// Room kept for the response and for the next round of tool output.
@@ -70,6 +71,10 @@ pub struct Compacted {
 const DROPPED: &str = "The earlier part of this conversation was dropped so the run could stay \
 within the context window. The original messages are archived: use history_read when you need an \
 exact earlier command, error, or file content instead of assuming what happened before.";
+
+/// First text part of the synthetic user turn that carries tool images.
+/// `agent::messages::image_message` uses the same sentence.
+const TOOL_IMAGE_NOTICE: &str = "Images returned by the previous tool call(s).";
 
 const COMPACTION_INSTRUCTION: &str = "\
 Condense the conversation above into a checkpoint that the same coding agent will read to continue \
@@ -346,25 +351,6 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<u
     Some((next, start..end))
 }
 
-fn is_checkpoint(message: &Value) -> bool {
-    if role(message) != Some("user") {
-        return false;
-    }
-    match message.get("content") {
-        Some(Value::String(text)) => is_protected_text(text),
-        Some(Value::Array(parts)) => parts.iter().any(|part| {
-            part.get("text")
-                .and_then(Value::as_str)
-                .is_some_and(is_protected_text)
-        }),
-        _ => false,
-    }
-}
-
-fn is_protected_text(text: &str) -> bool {
-    text.contains("<compacted-summary>") || text.contains(DROPPED)
-}
-
 /// Summarize `messages[1..cut]` and replace that range with one checkpoint.
 ///
 /// `drop_on_failure` keeps an automatic run fitting the window when the model
@@ -559,17 +545,35 @@ fn select_latest_turn(messages: &[Value]) -> Option<usize> {
     (cut >= 2).then_some(cut)
 }
 
-/// Index of the latest real user message, preferring it over loop-guard advice.
+/// Index of the latest real user message, preferring it over loop-guard advice
+/// and the synthetic user turn that carries tool images.
 fn latest_user(messages: &[Value]) -> usize {
     messages
         .iter()
-        .rposition(|message| role(message) == Some("user") && !is_reminder(message))
+        .rposition(|message| {
+            role(message) == Some("user")
+                && !is_reminder(message)
+                && !is_tool_image_message(message)
+        })
         .or_else(|| {
             messages
                 .iter()
                 .rposition(|message| role(message) == Some("user"))
         })
         .unwrap_or(1)
+}
+
+fn is_tool_image_message(message: &Value) -> bool {
+    if role(message) != Some("user") {
+        return false;
+    }
+    match message.get("content") {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .find_map(|part| part.get("text").and_then(Value::as_str))
+            .is_some_and(|text| text.trim_start().starts_with(TOOL_IMAGE_NOTICE)),
+        _ => false,
+    }
 }
 
 /// Pick the earliest cut whose tail fits `retain`, without starting the tail
@@ -1398,6 +1402,52 @@ mod tests {
         messages.push(assistant("trying another approach"));
 
         let cut = select_cut(&messages, 500, 100).unwrap();
+        assert!(
+            messages[cut..]
+                .iter()
+                .any(|message| message["content"] == "CURRENT REQUEST")
+        );
+    }
+
+    #[test]
+    fn a_tool_image_turn_does_not_replace_the_current_request() {
+        let mut messages = vec![system()];
+        for step in 0..20 {
+            messages.push(user(&format!("old {step} {}", "x".repeat(800))));
+            messages.push(assistant(&"a".repeat(800)));
+        }
+        messages.push(user("CURRENT REQUEST"));
+        messages.push(json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_now",
+                "type": "function",
+                "function": { "name": "read_image", "arguments": "{}" }
+            }]
+        }));
+        messages.push(tool("call_now", "image result"));
+        messages.push(json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Images returned by the previous tool call(s). This is tool output, not a new user request."
+                },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+            ]
+        }));
+
+        assert_eq!(
+            messages
+                .iter()
+                .rposition(|message| message["content"] == "CURRENT REQUEST"),
+            Some(41)
+        );
+        assert_eq!(latest_user(&messages), 41);
+
+        let cut = select_cut(&messages, 500, 100).unwrap();
+        assert!(cut <= 41);
         assert!(
             messages[cut..]
                 .iter()

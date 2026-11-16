@@ -431,14 +431,23 @@ fn surface_messages_with(
 
 /// A compaction checkpoint is user-visible history, not conversation.
 pub(crate) fn is_checkpoint(message: &Value) -> bool {
-    message.get("role").and_then(Value::as_str) == Some("user")
-        && message
-            .get("content")
-            .and_then(Value::as_str)
-            .is_some_and(|text| {
-                text.contains("<compacted-summary>")
-                    || text.contains("The earlier part of this conversation was dropped")
-            })
+    if message.get("role").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    match message.get("content") {
+        Some(Value::String(text)) => is_checkpoint_text(text),
+        Some(Value::Array(parts)) => parts.iter().any(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(is_checkpoint_text)
+        }),
+        _ => false,
+    }
+}
+
+fn is_checkpoint_text(text: &str) -> bool {
+    text.contains("<compacted-summary>")
+        || text.contains("The earlier part of this conversation was dropped")
 }
 
 /// Seq of the last message a compaction summary replaces. The retained tail is
@@ -956,7 +965,10 @@ pub fn now_ms() -> i64 {
 mod tests {
     use serde_json::json;
 
-    use super::{CompactionEnd, ContextUsage, EventPayload, NewUserTurn, RunEnd, Store, has_table};
+    use super::{
+        CompactionEnd, ContextUsage, EventPayload, NewUserTurn, RunEnd, Store, has_table,
+        is_checkpoint,
+    };
 
     fn store() -> Store {
         Store::in_memory().unwrap()
@@ -968,6 +980,25 @@ mod tests {
             display: None,
             title: title.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn recognizes_checkpoints_in_string_and_array_content() {
+        assert!(is_checkpoint(&json!({
+            "role": "user",
+            "content": "<compacted-summary>old</compacted-summary>",
+        })));
+        assert!(is_checkpoint(&json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "<compacted-summary>old</compacted-summary>" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } },
+            ],
+        })));
+        assert!(!is_checkpoint(&json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "ordinary" }],
+        })));
     }
 
     #[test]
