@@ -89,12 +89,13 @@ export function SettingsPanel({
   });
 
   useEffect(() => {
+    if (saving) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, saving]);
 
   useEffect(() => {
     testRequest.current += 1;
@@ -174,11 +175,15 @@ export function SettingsPanel({
     }
   }
 
+  function close() {
+    if (!saving) onClose();
+  }
+
   return (
     <div
       className="modal-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) close();
       }}
     >
       <form
@@ -191,7 +196,8 @@ export function SettingsPanel({
         <button
           type="button"
           className="ghost icon-button modal-close"
-          onClick={onClose}
+          onClick={close}
+          disabled={saving}
           aria-label="Close settings"
           title="Close"
         >
@@ -511,7 +517,7 @@ export function SettingsPanel({
         {error && <p className="error-text settings-error">{error}</p>}
 
         <div className="modal-actions settings-actions">
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={close} disabled={saving}>
             Cancel
           </button>
           <button className="primary" type="submit" disabled={saving}>
