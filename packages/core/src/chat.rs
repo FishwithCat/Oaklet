@@ -629,6 +629,7 @@ pub async fn session_send(
         finished: Arc::new(AtomicBool::new(false)),
         archived: Arc::new(Mutex::new(Vec::new())),
         pending: Arc::new(Mutex::new(Vec::new())),
+        partial: Arc::new(Mutex::new(PartialReply::default())),
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_before: Arc::new(Mutex::new(None)),
     };
@@ -1179,10 +1180,18 @@ pub struct RunContext {
     archived: Arc<Mutex<Vec<Value>>>,
     /// Append-only events this run produced, in order.
     pending: Arc<Mutex<Vec<EventPayload>>>,
+    /// Text from the current model stream, kept until the stream settles.
+    partial: Arc<Mutex<PartialReply>>,
     /// Set once compaction replaced part of the model history.
     compacted: Arc<AtomicBool>,
     /// Prompt size before the first compaction in this run.
     compaction_before: Arc<Mutex<Option<usize>>>,
+}
+
+#[derive(Default)]
+struct PartialReply {
+    content: String,
+    reasoning: String,
 }
 
 impl RunContext {
@@ -1235,6 +1244,12 @@ impl RunContext {
 
     /// Record a model-visible message plus its optional UI metadata.
     pub fn record_message(&self, message: Value, display: Option<Value>) {
+        if message.get("role").and_then(Value::as_str) == Some("assistant") {
+            *self
+                .partial
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = PartialReply::default();
+        }
         self.record(EventPayload::Message { message, display });
     }
 
@@ -1283,6 +1298,11 @@ impl RunContext {
     }
 
     pub fn delta(&self, text: &str) {
+        self.partial
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .content
+            .push_str(text);
         self.update_view(|view| {
             merge_stream(&mut view.items, &self.run_id, "assistant", text);
             view.active_run_id = Some(self.run_id.clone());
@@ -1298,6 +1318,11 @@ impl RunContext {
     }
 
     pub fn reasoning(&self, text: &str) {
+        self.partial
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reasoning
+            .push_str(text);
         self.update_view(|view| {
             merge_stream(&mut view.items, &self.run_id, "reasoning", text);
             view.active_run_id = Some(self.run_id.clone());
@@ -1540,6 +1565,27 @@ impl RunContext {
         if self.finished.swap(true, Ordering::SeqCst) {
             return;
         }
+
+        // A stopped or failed stream never reaches the assistant-message
+        // handoff. Persist what the user already saw instead of letting the
+        // database-backed final view erase the partial answer.
+        let partial = std::mem::take(
+            &mut *self
+                .partial
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        if status != "done" && (!partial.content.is_empty() || !partial.reasoning.is_empty()) {
+            let mut message = json!({ "role": "assistant", "content": partial.content });
+            if !partial.reasoning.is_empty() {
+                message["reasoning_content"] = json!(partial.reasoning);
+            }
+            self.record_message(
+                message,
+                Some(json!({ "runId": self.run_id, "interrupted": true })),
+            );
+        }
+
         let messages = trim_incomplete_tool_block(messages);
 
         let final_view = {
