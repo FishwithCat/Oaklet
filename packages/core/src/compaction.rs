@@ -220,11 +220,9 @@ pub async fn force(
     if estimate_tokens(&next) > target
         && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
     {
-        let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
-            <= trigger_at(config.context_window);
         let merged = cut < next.len() && role(&next[cut]) == Some("user");
-        next = if prefix_fits {
-            let compacted = compact_at(
+        next = if prefix_fits(&next, cut, config, Some(tools)) {
+            compact_at(
                 client,
                 config,
                 &next,
@@ -233,8 +231,8 @@ pub async fn force(
                 cancel,
                 CompactMode::Auto,
             )
-            .await?;
-            compacted.messages
+            .await?
+            .messages
         } else {
             note_fallback("summary prefix would not fit");
             assemble(&next, cut, &fallback_summary(&next, cut, None))
@@ -508,6 +506,21 @@ async fn compact_at(
     })
 }
 
+/// Whether the summary request fits: its replayed prefix, the directive, and
+/// the tool schemas it carries. A prefix that fits alone can still overflow.
+fn prefix_fits(
+    messages: &[Value],
+    cut: usize,
+    config: &AppConfig,
+    tools: Option<&ToolRegistry>,
+) -> bool {
+    let schemas = tools
+        .map(|tools| estimate_text(&tools.schemas().to_string()))
+        .unwrap_or(0);
+    estimate_tokens(&messages[..cut]) + estimate_text(COMPACTION_INSTRUCTION) + schemas
+        <= trigger_at(config.context_window)
+}
+
 /// Deterministic fallback; include the checkpoint framing in the shrink check.
 fn fallback_summary(messages: &[Value], cut: usize, skip_request: Option<usize>) -> String {
     let skip = skip_request.map(|index| index.saturating_sub(1));
@@ -712,9 +725,7 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let prefix_fits = estimate_tokens(&history[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
-        <= trigger_at(config.context_window);
-    let compacted = if prefix_fits {
+    let compacted = if prefix_fits(&history, cut, config, None) {
         compact_at(
             client,
             config,
@@ -2155,6 +2166,50 @@ pub(crate) mod tests {
                 .iter()
                 .any(|message| message == &messages[3])
         );
+    }
+
+    #[test]
+    fn summary_prefix_budget_counts_the_tool_schemas_it_replays() {
+        use futures_util::future::BoxFuture;
+
+        use crate::tools::{Tool, ToolContext, ToolError, ToolOutput};
+
+        struct BigSchema(String);
+        impl Tool for BigSchema {
+            fn name(&self) -> &str {
+                "big_schema"
+            }
+            fn description(&self) -> &str {
+                &self.0
+            }
+            fn parameters(&self) -> Value {
+                json!({ "type": "object" })
+            }
+            fn execute<'a>(
+                &'a self,
+                _ctx: &'a ToolContext,
+                _args: Value,
+            ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+                Box::pin(async { Ok(ToolOutput::text("")) })
+            }
+        }
+
+        let messages = vec![
+            system(),
+            user(&"u".repeat(8_000)),
+            assistant(&"a".repeat(8_000)),
+            user("current"),
+        ];
+        let config = AppConfig {
+            context_window: 8_192,
+            ..AppConfig::default()
+        };
+        let cut = messages.len() - 1;
+        assert!(prefix_fits(&messages, cut, &config, None));
+
+        let mut tools = ToolRegistry::new();
+        tools.push_for_test(Box::new(BigSchema("d".repeat(20_000))));
+        assert!(!prefix_fits(&messages, cut, &config, Some(&tools)));
     }
 
     #[test]
