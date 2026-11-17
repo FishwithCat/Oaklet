@@ -70,12 +70,12 @@ pub(super) fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> Stri
                     if !summary.is_empty() {
                         let (mut prior, progress) =
                             summary.split_once(PROGRESS_START).unwrap_or((&summary, ""));
-                        if let Some((base, encoded)) = prior.split_once(REQUESTS_START)
+                        if let Some((base, encoded)) = prior.split_once(REQUESTS_START.trim_start())
                             && let Some(encoded) = encoded.strip_suffix(REQUESTS_END)
                             && let Ok(saved) = serde_json::from_str::<Vec<String>>(encoded)
                         {
                             requests.extend(saved);
-                            prior = base;
+                            prior = base.trim_end();
                         }
                         checkpoints.push(prior.to_string());
                         let progress = progress.strip_suffix(PROGRESS_END).unwrap_or(progress);
@@ -91,7 +91,7 @@ pub(super) fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> Stri
                     }
                     if Some(index) == skip {
                         String::new()
-                    } else if !request.trim().is_empty() && !checkpoints.is_empty() {
+                    } else if !request.trim().is_empty() {
                         requests.push(request);
                         String::new()
                     } else {

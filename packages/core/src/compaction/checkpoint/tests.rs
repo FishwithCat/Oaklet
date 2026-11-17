@@ -4,6 +4,64 @@ use crate::compaction::test_support::*;
 use crate::compaction::{CompactMode, compact_at};
 use crate::context::estimate_text;
 
+#[tokio::test]
+async fn first_fallback_keeps_user_constraints_outside_the_log_budget() {
+    let constraint = "Use staging only; never deploy to production. 保留旧格式，禁止提交。";
+    let messages = vec![
+        system(),
+        user("Fix the build."),
+        assistant(&"old log ".repeat(3_000)),
+        json!({"role":"user", "content":[{"type":"text", "text":constraint}]}),
+        assistant(&"new log ".repeat(3_000)),
+        user("Continue."),
+    ];
+    let config = AppConfig {
+        context_window: 8_192,
+        base_url: "invalid://summary".into(),
+        ..AppConfig::default()
+    };
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let compacted = crate::compaction::compact(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        estimate_tokens(&messages),
+        &crate::tools::ToolRegistry::new(),
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let checkpoint = compacted.messages[1]["content"].as_str().unwrap();
+    assert!(checkpoint.contains("Fix the build."));
+    assert!(checkpoint.contains(constraint));
+    assert!(checkpoint.ends_with("Continue."));
+    assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+    assert_compaction_restores(&messages, &compacted);
+
+    let mut messages = compacted.messages;
+    for _ in 0..3 {
+        messages.push(assistant(&"more log ".repeat(3_000)));
+        messages.push(user("Continue."));
+        let compacted = compact_at(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            messages.len() - 1,
+            None,
+            &cancel,
+            CompactMode::Auto,
+        )
+        .await
+        .unwrap();
+        let checkpoint = compacted.messages[1]["content"].as_str().unwrap();
+        assert_eq!(checkpoint.matches("<checkpoint-requests>").count(), 1);
+        assert_eq!(checkpoint.matches(constraint).count(), 1);
+        assert!(checkpoint.contains("Fix the build."));
+        messages = compacted.messages;
+    }
+}
+
 #[test]
 fn mechanical_digest_preserves_old_checkpoints_and_merged_requests() {
     let merged = assemble(

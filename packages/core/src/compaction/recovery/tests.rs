@@ -648,7 +648,7 @@ async fn force_keeps_a_bounded_digest_when_the_summary_prefix_would_overflow() {
     assert!(next.iter().any(|message| {
         message["content"]
             .as_str()
-            .is_some_and(|text| text.contains("user: request 0"))
+            .is_some_and(|text| text.contains("request 0"))
     }));
     assert!(estimate_tokens(&next) <= trigger_at(config.context_window));
 }

@@ -202,7 +202,7 @@ mod tests {
         assert!(messages.iter().any(|message| {
             message["content"]
                 .as_str()
-                .is_some_and(|text| text.contains("user: request 0"))
+                .is_some_and(|text| text.contains("request 0"))
         }));
     }
 }
