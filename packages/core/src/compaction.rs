@@ -434,19 +434,7 @@ async fn compact_at(
     let replaced_tokens = estimate_tokens(&replaced);
 
     let summary = match summarize(client, config, &messages[..cut], tools, cancel).await {
-        Ok(summary) if estimate_text(&summary) < replaced_tokens => summary,
-        Ok(summary) => {
-            note_fallback(&format!(
-                "summary was {} tokens for {replaced_tokens} replaced",
-                estimate_text(&summary)
-            ));
-            if !drop_on_failure {
-                return Err(format!(
-                    "The summary was not smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
-                ));
-            }
-            fallback_summary(messages, cut)
-        }
+        Ok(summary) => summary,
         Err(err) => {
             if cancel.is_cancelled() {
                 return Err("Stopped.".into());
@@ -459,8 +447,23 @@ async fn compact_at(
         }
     };
 
+    let compacted = assemble(messages, cut, &summary);
+    if estimate_tokens(&compacted) < estimate_tokens(messages) {
+        return Ok(Compacted {
+            messages: compacted,
+            replaced,
+        });
+    }
+    // A summary can pass a text-only check yet grow the prompt once the
+    // checkpoint framing and archive notice are added. Compare the real result.
+    note_fallback("checkpoint would not shrink the history");
+    if !drop_on_failure {
+        return Err(format!(
+            "The checkpoint would not be smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
+        ));
+    }
     Ok(Compacted {
-        messages: assemble(messages, cut, &summary),
+        messages: assemble(messages, cut, &fallback_summary(messages, cut)),
         replaced,
     })
 }
@@ -469,8 +472,7 @@ async fn compact_at(
 fn fallback_summary(messages: &[Value], cut: usize) -> String {
     let digest = mechanical_digest(&messages[1..cut]);
     if !digest.is_empty()
-        && (messages[1..cut].iter().any(is_checkpoint)
-            || estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages))
+        && estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages)
     {
         digest
     } else {
@@ -1787,6 +1789,7 @@ pub(crate) mod tests {
             system(),
             base,
             user(constraint),
+            assistant(&"old log ".repeat(2_000)),
             assistant("Latest verification failed."),
             user("finish"),
         ];
@@ -1858,7 +1861,7 @@ pub(crate) mod tests {
         let mut prior = "Goal: ship it.".to_string();
         let mut sizes = Vec::new();
         for index in 0..8 {
-            let messages = vec![
+            let messages = [
                 system(),
                 user(&format!("<compacted-summary>{prior}</compacted-summary>")),
                 user(&format!("request {index}: {}", "a".repeat(3_000))),
@@ -1947,6 +1950,58 @@ pub(crate) mod tests {
     fn mechanical_fallback_drops_only_when_the_checkpoint_would_not_shrink() {
         let messages = vec![system(), user("hi"), assistant("hello"), user("continue")];
         assert_eq!(fallback_summary(&messages, 3), DROPPED);
+    }
+
+    #[test]
+    fn fallback_does_not_keep_a_prior_checkpoint_that_would_grow() {
+        let checkpoint = user(&format!(
+            "<compacted-summary>{}</compacted-summary>",
+            "x".repeat(20_000)
+        ));
+        let messages = vec![system(), checkpoint, assistant("tail")];
+        assert_eq!(fallback_summary(&messages, 2), DROPPED);
+    }
+
+    #[tokio::test]
+    async fn summary_that_grows_after_framing_falls_back_to_a_digest() {
+        use crate::tools::CancelHandle;
+
+        let summary = "x".repeat(7_900);
+        let body = format!(
+            r#"{{"choices":[{{"message":{{"role":"assistant","content":"{summary}"}}}}]}}"#
+        );
+        let (base_url, _seen, server) = summary_server_with(vec![(200, body.as_str())]);
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url,
+            ..AppConfig::default()
+        };
+        let messages = vec![
+            system(),
+            user(&"a".repeat(4_000)),
+            assistant(&"b".repeat(4_000)),
+            user("continue"),
+        ];
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = compact_at(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            3,
+            None,
+            &cancel,
+            true,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+        assert!(
+            !compacted.messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&summary)
+        );
     }
 
     #[tokio::test]
