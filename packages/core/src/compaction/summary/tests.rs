@@ -112,25 +112,146 @@ async fn cancelling_a_summary_after_headers_does_not_wait_for_its_body() {
 }
 
 #[tokio::test]
-async fn rejects_truncated_summary_responses() {
-    let response =
-        r#"{"choices":[{"finish_reason":"length","message":{"content":"PARTIAL SUMMARY"}}]}"#;
-    let (base_url, _, server) = summary_server_with(vec![(200, response)]);
-    let config = AppConfig {
-        base_url,
-        ..AppConfig::default()
-    };
-    let (_handle, cancel) = crate::tools::CancelHandle::new();
-    assert!(
-        summarize(
+async fn rejects_truncated_and_oversized_summary_responses() {
+    let oversized = format!(
+        r#"{{"choices":[{{"finish_reason":"stop","message":{{"content":"{}"}}}}]}}"#,
+        "字".repeat(4097)
+    );
+    for response in [
+        r#"{"choices":[{"finish_reason":"length","message":{"content":"PARTIAL SUMMARY"}}]}"#,
+        oversized.as_str(),
+    ] {
+        let (base_url, _, server) = summary_server_with(vec![(200, response)]);
+        let config = AppConfig {
+            base_url,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let result = summarize(
             &reqwest::Client::new(),
             &config,
             &[system(), user("old")],
             None,
-            &cancel
+            &cancel,
         )
-        .await
-        .is_err()
-    );
+        .await;
+        assert!(result.is_err());
+        server.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn summary_budget_accepts_a_prefix_above_the_main_trigger() {
+    let (base_url, seen, server) = summary_server();
+    let config = AppConfig {
+        base_url,
+        context_window: 32768,
+        ..AppConfig::default()
+    };
+    let messages = [
+        system(),
+        user(&"u".repeat(52000)),
+        assistant(&"a".repeat(52000)),
+        user("current"),
+    ];
+    assert!(estimate_tokens(&messages[..3]) > crate::compaction::trigger_at(config.context_window));
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let compacted = crate::compaction::compact_messages(
+        &reqwest::Client::new(),
+        &config,
+        &messages[1..],
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     server.join().unwrap();
+    assert!(
+        compacted.summary.unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("Goal: ship compaction.")
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn summary_replays_trimmed_tools_before_falling_back_to_a_digest() {
+    let (base_url, seen, server) = summary_server();
+    let config = AppConfig {
+        base_url,
+        context_window: 8192,
+        ..AppConfig::default()
+    };
+    let messages = tool_history(5);
+    let cut = messages.len() - 1;
+    assert!(!prefix_fits(&messages, cut, &config, None));
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let compacted = crate::compaction::compact_at(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        cut,
+        None,
+        &cancel,
+        crate::compaction::CompactMode::Auto,
+    )
+    .await
+    .unwrap();
+    server.join().unwrap();
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(&requests[0]).unwrap();
+    assert!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .all(|message| message["content"].as_str().unwrap().chars().count() <= 4500)
+    );
+    assert_eq!(compacted.replaced, messages[1..cut]);
+    assert!(
+        compacted.summary.unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("Goal: ship compaction.")
+    );
+}
+
+#[test]
+fn summary_replay_preserves_image_information_and_strips_internal_identity() {
+    let original = json!({"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,ABC"}}]});
+    let replayed = summary_messages(&[crate::store::checkpoint(user("old")), original.clone()]);
+    assert_eq!(replayed[1], original);
+    assert!(replayed[0].get("oaklet_checkpoint").is_none());
+}
+
+#[tokio::test]
+async fn manual_trimmed_prefix_replay_keeps_the_latest_turn_verbatim() {
+    let (base_url, _, server) = summary_server();
+    let config = AppConfig {
+        base_url,
+        context_window: 8192,
+        ..AppConfig::default()
+    };
+    let mut messages = tool_history(5);
+    let tail = vec![
+        json!({"role":"assistant", "content":"reading current", "tool_calls":[{"id":"current", "type":"function", "function":{"name":"read_file", "arguments":"{}"}}]}),
+        tool("current", &"current output".repeat(1000)),
+        assistant("current progress"),
+    ];
+    messages.extend_from_slice(&tail);
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let compacted = crate::compaction::compact_messages(
+        &reqwest::Client::new(),
+        &config,
+        &messages[1..],
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(&compacted.messages[1..], tail.as_slice());
 }

@@ -502,7 +502,7 @@ async fn force_summarizes_with_a_smaller_tail() {
     assert!(body.get("tools").is_some());
     // Sampling parameters are optional; some providers reject them.
     assert!(body.get("temperature").is_none());
-    assert!(body.get("max_tokens").is_none());
+    assert_eq!(body["max_tokens"], 4_096);
 }
 
 #[tokio::test]
@@ -654,39 +654,36 @@ async fn force_keeps_a_bounded_digest_when_the_summary_prefix_would_overflow() {
 }
 
 #[tokio::test]
-async fn long_turn_summary_budget_includes_tool_schemas() {
-    use std::net::TcpListener;
-    use std::time::Duration;
-
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
+async fn long_turn_summary_omits_schemas_when_only_the_prefix_fits() {
+    let (base_url, seen, server) = summary_server();
     let config = AppConfig {
-        base_url: format!("http://{}", listener.local_addr().unwrap()),
+        base_url,
         context_window: 8_192,
         ..AppConfig::default()
     };
     let mut messages = tool_history(10);
     messages.pop();
-    // Short results leave the prefix itself within budget; schemas push it over.
     for message in &mut messages {
         if role(message) == Some("tool") {
             message["content"] = json!("x".repeat(1_000));
         }
     }
-    let tools = large_tool_registry();
     let (_handle, cancel) = crate::tools::CancelHandle::new();
-    let client = reqwest::Client::builder()
-        .read_timeout(Duration::from_millis(100))
-        .build()
-        .unwrap();
-    let compacted = force(&client, &config, &messages, &tools, &cancel)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
+    let compacted = force(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        &large_tool_registry(),
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    server.join().unwrap();
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(&requests[0]).unwrap();
+    assert!(body.get("tools").is_none());
     assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
     assert_compaction_restores(&messages, &compacted);
 }

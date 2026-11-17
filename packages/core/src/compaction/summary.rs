@@ -3,12 +3,16 @@
 use serde_json::{Value, json};
 use std::time::Duration;
 
-use super::{history::role, trigger_at};
+use super::history::role;
 use crate::AppConfig;
 use crate::context::{estimate_text, estimate_tokens};
 use crate::tools::{Cancel, ToolRegistry, cap};
 
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
+
+pub(super) fn output_limit(config: &AppConfig) -> usize {
+    (config.context_window / 8).clamp(512, 4_096)
+}
 
 const COMPACTION_INSTRUCTION: &str = "\
 Condense the conversation above into a checkpoint that the same coding agent will read to continue \
@@ -47,6 +51,12 @@ Rules:
 - Keep the language of the original conversation for quoted requirements.
 - Do not include tool-call syntax, JSON, or thinking out loud, and do not call any tool.";
 
+pub(super) fn prefix_tokens(messages: &[Value], cut: usize) -> usize {
+    estimate_tokens(&messages[..cut]).saturating_add(crate::context::estimate_message(
+        &json!({"role":"user", "content":COMPACTION_INSTRUCTION}),
+    ))
+}
+
 /// Whether the summary request fits: its replayed prefix, the directive, and
 /// the tool schemas it carries. A prefix that fits alone can still overflow.
 pub(super) fn prefix_fits(
@@ -58,8 +68,8 @@ pub(super) fn prefix_fits(
     let schemas = tools
         .map(|tools| estimate_text(&tools.schemas().to_string()))
         .unwrap_or(0);
-    estimate_tokens(&messages[..cut]) + estimate_text(COMPACTION_INSTRUCTION) + schemas
-        <= trigger_at(config.context_window)
+    prefix_tokens(messages, cut).saturating_add(schemas)
+        <= config.context_window.saturating_sub(output_limit(config))
 }
 
 pub(super) async fn summarize(
@@ -73,8 +83,10 @@ pub(super) async fn summarize(
         "model": summary_model(config),
         "messages": summary_messages(prefix),
         "stream": false,
+        "max_tokens": output_limit(config),
     });
-    if let Some(tools) = tools {
+    if let Some(tools) = tools.filter(|tools| !tools.schemas().as_array().is_none_or(Vec::is_empty))
+    {
         body["tools"] = tools.schemas();
         body["tool_choice"] = json!("none");
     }
@@ -117,6 +129,9 @@ pub(super) async fn summarize(
         .to_string();
     if summary.is_empty() {
         return Err("The model returned an empty summary.".into());
+    }
+    if estimate_text(&summary) > output_limit(config) {
+        return Err("The model summary exceeded its token budget.".into());
     }
     Ok(summary)
 }

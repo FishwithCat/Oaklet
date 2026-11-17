@@ -147,12 +147,53 @@ async fn compact_at(
         CompactMode::LongTurn(request) => Some(request),
         _ => None,
     };
-    let replaced = messages[1..cut].to_vec();
+    let original = messages.to_vec();
+    let config_for_plan = config.clone();
+    let schema_tokens = tools
+        .map(|tools| crate::context::estimate_text(&tools.schemas().to_string()))
+        .unwrap_or(0);
+    let (planned, omit_tools, trimmed_indices) = tauri::async_runtime::spawn_blocking(move || {
+        let (mut trimmed, mut indices) = trim_tool_outputs(
+            &original,
+            PRESSURE_TOOL_OUTPUT_CHARS,
+            PRESSURE_TOOL_OUTPUT_HEAD_CHARS,
+            PRESSURE_TOOL_OUTPUT_TAIL_CHARS,
+        );
+        if manual {
+            trimmed[cut..].clone_from_slice(&original[cut..]);
+            indices.retain(|index| *index < cut);
+        }
+        let fits = |history: &[Value], schemas: usize| {
+            summary::prefix_tokens(history, cut).saturating_add(schemas)
+                <= config_for_plan
+                    .context_window
+                    .saturating_sub(summary::output_limit(&config_for_plan))
+        };
+        if fits(&original, schema_tokens) {
+            (original, false, Default::default())
+        } else if fits(&trimmed, schema_tokens) {
+            (trimmed, false, indices)
+        } else if fits(&original, 0) {
+            (original, true, Default::default())
+        } else {
+            (trimmed, true, indices)
+        }
+    })
+    .await
+    .map_err(|error| format!("Could not prepare compaction: {error}"))?;
+    let tools = if omit_tools { None } else { tools };
+    let mut replaced_indices: std::collections::BTreeSet<_> = (1..cut).collect();
+    replaced_indices.extend(trimmed_indices);
+    let replaced = replaced_indices
+        .into_iter()
+        .filter(|&index| !crate::store::is_checkpoint(&messages[index]))
+        .map(|index| messages[index].clone())
+        .collect::<Vec<_>>();
 
-    if prefix_fits(messages, cut, config, tools) {
-        match summarize(client, config, &messages[..cut], tools, cancel).await {
+    if prefix_fits(&planned, cut, config, tools) {
+        match summarize(client, config, &planned[..cut], tools, cancel).await {
             Ok(summary) => {
-                let compacted = assemble(messages, cut, &summary);
+                let compacted = assemble(&planned, cut, &summary);
                 // Count checkpoint framing and the archive notice in the shrink check.
                 if estimate_tokens(&compacted) < estimate_tokens(messages) {
                     return Ok(Compacted {
@@ -182,11 +223,19 @@ async fn compact_at(
     } else {
         note_fallback("summary prefix would not fit");
     }
-    let compacted = assemble(
-        messages,
-        cut,
-        &fallback_summary(messages, cut, skip_request),
-    );
+    let original = messages.to_vec();
+    let compacted = tauri::async_runtime::spawn_blocking(move || {
+        assemble(
+            &planned,
+            cut,
+            &fallback_summary(&original, cut, skip_request),
+        )
+    })
+    .await
+    .map_err(|error| format!("Could not build checkpoint: {error}"))?;
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
     Ok(Compacted {
         summary: Some(compacted[1].clone()),
         messages: compacted,
