@@ -65,6 +65,7 @@ export function useGitBranch({
   return {
     branch: loaded?.branch ?? "",
     branches: loaded?.branches ?? [],
+    hasTrackedChanges: loaded?.hasTrackedChanges ?? false,
     branchLoaded: loaded !== null,
     loadError,
     loading,

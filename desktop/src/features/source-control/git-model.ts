@@ -12,6 +12,7 @@ export type GitLog = {
   branch: string;
   branches: string[];
   commits: CommitInfo[];
+  hasTrackedChanges: boolean;
 };
 
 export type ChangeInfo = { path: string; status: string; unstaged: boolean };

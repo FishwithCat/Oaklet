@@ -110,6 +110,7 @@ function App() {
   const {
     branch,
     branches,
+    hasTrackedChanges,
     branchLoaded,
     loading: branchLoading,
     loadError: branchLoadError,
@@ -130,11 +131,9 @@ function App() {
       reportBranchError("Stop the running chat before switching branches.");
       return false;
     }
-    const tracked =
-      changes?.some((change) => change.status !== "untracked") ?? false;
-    if (tracked) {
+    if (hasTrackedChanges) {
       const proceed = await confirm(
-        "Uncommitted changes stay in this workspace and move to the new branch. Switch anyway?",
+        "Uncommitted changes in this repository move to the new branch. Switch anyway?",
         {
           title: "Uncommitted changes",
           kind: "warning",

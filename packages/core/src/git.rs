@@ -22,6 +22,7 @@ pub struct GitLog {
     branch: String,
     branches: Vec<String>,
     commits: Vec<GitCommit>,
+    has_tracked_changes: bool,
 }
 
 #[derive(Serialize)]
@@ -41,6 +42,7 @@ const NULL_DEVICE: &str = "/dev/null";
 
 fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
+        .arg("--literal-pathspecs")
         .arg("-C")
         .arg(workspace)
         .args(args)
@@ -64,6 +66,7 @@ const MAX_PATCH_BYTES: usize = 1024 * 1024;
 
 fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String, String> {
     let mut child = Command::new("git")
+        .arg("--literal-pathspecs")
         .arg("-C")
         .arg(workspace)
         .args(args)
@@ -119,6 +122,11 @@ pub fn log(workspace: &Path, include_commits: bool) -> Result<GitLog, String> {
         .map(|text| text.trim().to_string())
         .unwrap_or_default();
     let branches = local_branches(workspace).unwrap_or_default();
+    let has_tracked_changes = !run_git(
+        workspace,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+    )?
+    .is_empty();
 
     let commits = if include_commits {
         let format = format!("--format={LOG_FORMAT}");
@@ -141,6 +149,7 @@ pub fn log(workspace: &Path, include_commits: bool) -> Result<GitLog, String> {
         branch,
         branches,
         commits,
+        has_tracked_changes,
     })
 }
 
@@ -189,9 +198,20 @@ pub fn changes(workspace: &Path) -> Result<Vec<GitChange>, String> {
 
     let output = run_git(
         workspace,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ],
     )?;
-    Ok(parse_status(&output))
+    let prefix = run_git(workspace, &["rev-parse", "--show-prefix"])?;
+    Ok(parse_status(
+        &output,
+        prefix.strip_suffix('\n').unwrap_or(&prefix),
+    ))
 }
 
 pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
@@ -241,6 +261,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
             &[
                 "diff",
                 "--cached",
+                "--relative",
                 "--no-color",
                 "--no-ext-diff",
                 "--find-renames",
@@ -256,6 +277,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
         &[
             "diff",
             "HEAD",
+            "--relative",
             "--no-color",
             "--no-ext-diff",
             "--find-renames",
@@ -318,7 +340,7 @@ fn status_name(code: &str) -> &'static str {
     }
 }
 
-fn parse_status(output: &str) -> Vec<GitChange> {
+fn parse_status(output: &str, prefix: &str) -> Vec<GitChange> {
     let mut records = output.split('\0');
     let mut changes = Vec::new();
 
@@ -328,16 +350,26 @@ fn parse_status(output: &str) -> Vec<GitChange> {
         }
 
         let code = &record[..2];
+        let original = if code.contains('R') || code.contains('C') {
+            records.next()
+        } else {
+            None
+        };
+        let (path, status) = if let Some(path) = record[3..].strip_prefix(prefix) {
+            (path, status_name(code))
+        } else if code.contains('R') {
+            let Some(path) = original.and_then(|path| path.strip_prefix(prefix)) else {
+                continue;
+            };
+            (path, "deleted")
+        } else {
+            continue;
+        };
         changes.push(GitChange {
-            path: record[3..].to_string(),
-            status: status_name(code).to_string(),
+            path: path.to_string(),
+            status: status.to_string(),
             unstaged: code != "??" && record.as_bytes().get(1) != Some(&b' '),
         });
-
-        // Rename/copy records include the original path as a second NUL field.
-        if code.contains('R') || code.contains('C') {
-            records.next();
-        }
     }
 
     changes
@@ -454,7 +486,7 @@ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1
     fn parses_working_tree_status() {
         let output =
             " M src/a.ts\0?? notes.md\0A  src/new.ts\0R  src/new-name.ts\0src/old-name.ts\0";
-        let changes = parse_status(output);
+        let changes = parse_status(output, "");
 
         assert_eq!(changes.len(), 4);
         assert_eq!(changes[0].path, "src/a.ts");
@@ -468,6 +500,136 @@ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1
         assert_eq!(changes[3].path, "src/new-name.ts");
         assert_eq!(changes[3].status, "renamed");
         assert!(!changes[3].unstaged);
+    }
+
+    #[test]
+    fn subdirectory_changes_and_diffs_use_workspace_relative_paths() {
+        let root = crate::tools::test_support::temp_root("git-subdirectory");
+        let workspace = root.join("sub space/子目录");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for path in ["tracked.txt", "deleted.txt", "old.txt", "move-out.txt"] {
+            std::fs::write(workspace.join(path), format!("before {path}\n")).unwrap();
+        }
+        std::fs::write(root.join("outside.txt"), "outside\n").unwrap();
+        std::fs::write(root.join("move-in.txt"), "incoming\n").unwrap();
+        super::run_git(&root, &["init", "-b", "main"]).unwrap();
+        super::run_git(&root, &["add", "."]).unwrap();
+        super::run_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "Fixture",
+            ],
+        )
+        .unwrap();
+        std::fs::write(workspace.join("tracked.txt"), "after\n").unwrap();
+        std::fs::remove_file(workspace.join("deleted.txt")).unwrap();
+        super::run_git(&workspace, &["mv", "old.txt", "new.txt"]).unwrap();
+        super::run_git(&workspace, &["mv", "move-out.txt", "../../moved.txt"]).unwrap();
+        super::run_git(&workspace, &["mv", "../../move-in.txt", "move-in.txt"]).unwrap();
+        std::fs::write(workspace.join("untracked.txt"), "inside\n").unwrap();
+        std::fs::write(root.join("outside.txt"), "external change\n").unwrap();
+        let changes = super::changes(&workspace).unwrap();
+        let paths: std::collections::BTreeSet<_> =
+            changes.iter().map(|change| change.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "tracked.txt",
+                "deleted.txt",
+                "new.txt",
+                "move-out.txt",
+                "move-in.txt",
+                "untracked.txt"
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(
+            super::diff(&workspace, "tracked.txt")
+                .unwrap()
+                .contains("+after")
+        );
+        assert!(
+            super::diff(&workspace, "untracked.txt")
+                .unwrap()
+                .contains("+inside")
+        );
+        assert!(
+            super::diff(&workspace, "deleted.txt")
+                .unwrap()
+                .contains("-before deleted.txt")
+        );
+        assert!(
+            super::diff(&workspace, "move-out.txt")
+                .unwrap()
+                .contains("-before move-out.txt")
+        );
+        assert!(
+            super::diff(&workspace, "move-in.txt")
+                .unwrap()
+                .contains("+incoming")
+        );
+        assert!(
+            super::diff(&workspace, "new.txt")
+                .unwrap()
+                .contains("+before old.txt")
+        );
+        assert!(
+            super::diff(&workspace, "tracked.txt")
+                .unwrap()
+                .starts_with("diff --git a/tracked.txt b/tracked.txt")
+        );
+        #[cfg(unix)]
+        {
+            std::fs::write(workspace.join(":(top)outside.txt"), "literal filename\n").unwrap();
+            assert!(
+                super::diff(&workspace, ":(top)outside.txt")
+                    .unwrap()
+                    .contains("+literal filename")
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untracked_files_in_a_subdirectory_need_no_head() {
+        let root = crate::tools::test_support::temp_root("git-subdirectory-no-head");
+        let workspace = root.join("sub");
+        std::fs::create_dir(&workspace).unwrap();
+        super::run_git(&root, &["init"]).unwrap();
+        std::fs::write(workspace.join("new.txt"), "new file\n").unwrap();
+        std::fs::write(root.join("outside.txt"), "outside\n").unwrap();
+        let changes = super::changes(&workspace).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "new.txt");
+        assert!(!super::log(&workspace, false).unwrap().has_tracked_changes);
+        assert!(
+            super::diff(&workspace, &changes[0].path)
+                .unwrap()
+                .contains("+new file")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_metadata_reports_tracked_changes_outside_the_workspace() {
+        let root = crate::tools::test_support::temp_root("git-branch-outside-changes");
+        let workspace = root.join("sub");
+        std::fs::create_dir(&workspace).unwrap();
+        super::run_git(&root, &["init"]).unwrap();
+        std::fs::write(root.join("outside.txt"), "staged outside workspace\n").unwrap();
+        super::run_git(&root, &["add", "outside.txt"]).unwrap();
+        assert!(super::changes(&workspace).unwrap().is_empty());
+        assert!(super::log(&workspace, false).unwrap().has_tracked_changes);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
