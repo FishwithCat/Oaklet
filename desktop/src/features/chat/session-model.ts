@@ -221,11 +221,11 @@ export function applyToolStart(
 
 export function applyToolResult(
   tab: SessionView,
-  event: { id: string; ok: boolean; output: string; diffs?: FileDiff[] },
+  event: { runId: string; id: string; ok: boolean; output: string; diffs?: FileDiff[] },
   finishedAt: number,
 ): SessionView {
   const items = tab.items.map((item) => {
-    if (item.kind !== "tool" || item.id !== event.id) return item;
+    if (item.kind !== "tool" || item.runId !== event.runId || item.id !== event.id) return item;
     const next = {
       ...item,
       status: event.ok ? ("ok" as const) : ("error" as const),
@@ -244,6 +244,7 @@ export function applyToolResult(
 export function applyApproval(
   tab: SessionView,
   event: {
+    runId: string;
     id: string;
     requestId: string;
     prompt: string;
@@ -251,7 +252,7 @@ export function applyApproval(
   },
 ): SessionView {
   const items = tab.items.map((item) =>
-    item.kind === "tool" && item.id === event.id
+    item.kind === "tool" && item.runId === event.runId && item.id === event.id
       ? {
           ...item,
           status: "awaiting" as const,
@@ -266,11 +267,11 @@ export function applyApproval(
 
 export function applyApprovalResolved(
   tab: SessionView,
-  event: { id: string; allow: boolean },
+  event: { runId: string; id: string; allow: boolean },
   now: number,
 ): SessionView {
   const items = tab.items.map((item) =>
-    item.kind === "tool" && item.id === event.id
+    item.kind === "tool" && item.runId === event.runId && item.id === event.id
       ? {
           ...item,
           status: "running" as const,

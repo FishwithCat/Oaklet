@@ -354,12 +354,15 @@ pub(super) async fn stream_step(
     }
 
     let mut calls: Vec<ToolCall> = calls.into_values().collect();
-    for (index, call) in calls.iter_mut().enumerate() {
-        if call.id.is_empty() {
-            call.id = format!("call_{index}");
-        }
-    }
+    assign_call_ids(&mut calls, &ctx.state().next_id());
     Ok((content, reasoning, calls, prompt_tokens))
+}
+
+fn assign_call_ids(calls: &mut [ToolCall], response_id: &str) {
+    // Providers may omit or reuse IDs; storage and replay need unique identities.
+    for (index, call) in calls.iter_mut().enumerate() {
+        call.id = format!("call_{response_id}_{index}");
+    }
 }
 
 fn stream_end_error(saw_done: bool, finish_reason: Option<&str>) -> Option<&'static str> {
@@ -483,6 +486,38 @@ fn apply_sse_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_and_repeated_provider_ids_are_unique_in_history_and_results() {
+        let mut calls = vec![
+            ToolCall::default(),
+            ToolCall {
+                id: "repeated".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "repeated".into(),
+                ..ToolCall::default()
+            },
+        ];
+        assign_call_ids(&mut calls, "response-1");
+        let mut later = vec![ToolCall {
+            id: "repeated".into(),
+            ..ToolCall::default()
+        }];
+        assign_call_ids(&mut later, "response-2");
+        let ids: std::collections::HashSet<_> =
+            calls.iter().chain(&later).map(|call| &call.id).collect();
+        assert_eq!(ids.len(), 4);
+        let assistant = super::super::messages::assistant_message("", "", &calls);
+        for (index, call) in calls.iter().enumerate() {
+            let result = super::super::messages::tool_message(&call.id, "output".into());
+            assert_eq!(assistant["tool_calls"][index]["id"], result["tool_call_id"]);
+        }
+        assert_eq!(calls[1].name, "read_file");
+        assert_eq!(calls[1].arguments, "{}");
+    }
 
     #[test]
     fn recognizes_context_window_rejections() {

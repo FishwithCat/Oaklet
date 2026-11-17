@@ -144,7 +144,7 @@ test("applyToolResult records success or failure and the elapsed time", () => {
   );
   const finished = applyToolResult(
     started,
-    { id: "tool-1", ok: true, output: "ok" },
+    { runId: "run-1", id: "tool-1", ok: true, output: "ok" },
     1500,
   );
 
@@ -155,11 +155,36 @@ test("applyToolResult records success or failure and the elapsed time", () => {
 
   const failed = applyToolResult(
     started,
-    { id: "tool-1", ok: false, output: "no" },
+    { runId: "run-1", id: "tool-1", ok: false, output: "no" },
     1750,
   );
   assert.equal(failed.items[0].status, "error");
   assert.equal(failed.items[0].durationMs, 750);
+});
+
+test("reused tool IDs cannot overwrite another run's output or approval", () => {
+  const previous = {
+    kind: "tool", runId: "previous-run", id: "call_0", name: "run_command",
+    status: "ok", output: "previous output", diffs: [{ path: "old.txt", oldText: null, newText: "old" }],
+  };
+  const started = applyToolStart(session({ items: [previous] }), {
+    runId: "current-run", id: "call_0", name: "run_command", summary: "echo current",
+  }, 1000);
+  const awaiting = applyApproval(started, {
+    runId: "current-run", id: "call_0", requestId: "current-approval", prompt: "Run?", detail: "echo current",
+  });
+  assert.equal(awaiting.items[0], previous);
+  assert.equal(awaiting.items[1].requestId, "current-approval");
+  const allowed = applyApprovalResolved(awaiting, {
+    runId: "current-run", id: "call_0", allow: true,
+  }, 2000);
+  assert.equal(allowed.items[0], previous);
+  const finished = applyToolResult(allowed, {
+    runId: "current-run", id: "call_0", ok: true, output: "current output",
+  }, 2500);
+  assert.equal(finished.items[0], previous);
+  assert.equal(finished.items[1].output, "current output");
+  assert.equal(finished.items[1].durationMs, 500);
 });
 
 test("tool diffs survive the pending row and are replaced by the applied ones", () => {
@@ -184,14 +209,14 @@ test("tool diffs survive the pending row and are replaced by the applied ones", 
 
   const finished = applyToolResult(
     started,
-    { id: "tool-1", ok: true, output: "ok", diffs: applied },
+    { runId: "run-1", id: "tool-1", ok: true, output: "ok", diffs: applied },
     1500,
   );
   assert.deepEqual(finished.items[0].diffs, applied);
 
   const failed = applyToolResult(
     started,
-    { id: "tool-1", ok: false, output: "no", diffs: [] },
+    { runId: "run-1", id: "tool-1", ok: false, output: "no", diffs: [] },
     1500,
   );
   assert.equal(failed.items[0].diffs, undefined);
@@ -204,6 +229,7 @@ test("applyApproval moves the matching tool into the awaiting state", () => {
     1000,
   );
   const awaiting = applyApproval(started, {
+    runId: "run-1",
     id: "tool-1",
     requestId: "req-1",
     prompt: "Run?",
@@ -224,19 +250,20 @@ test("applyApprovalResolved clears the card and starts the clock", () => {
     1000,
   );
   const awaiting = applyApproval(started, {
+    runId: "run-1",
     id: "tool-1",
     requestId: "req-1",
     prompt: "Run?",
     detail: "ls -la",
   });
-  const allowed = applyApprovalResolved(awaiting, { id: "tool-1", allow: true }, 2000);
+  const allowed = applyApprovalResolved(awaiting, { runId: "run-1", id: "tool-1", allow: true }, 2000);
 
   assert.equal(allowed.items[0].status, "running");
   assert.equal(allowed.items[0].startedAt, 2000);
   assert.equal(allowed.items[0].requestId, undefined);
   assert.equal(allowed.blocked, false);
 
-  const denied = applyApprovalResolved(awaiting, { id: "tool-1", allow: false }, 2000);
+  const denied = applyApprovalResolved(awaiting, { runId: "run-1", id: "tool-1", allow: false }, 2000);
   assert.equal(denied.items[0].status, "running");
   assert.equal(denied.items[0].startedAt, undefined);
 });

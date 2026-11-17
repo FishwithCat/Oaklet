@@ -529,7 +529,7 @@ export function useAgentSession({
       withItems(
         view,
         view.items.map((entry) =>
-          entry.kind === "tool" && entry.id === item.id
+          entry.kind === "tool" && entry.runId === item.runId && entry.id === item.id
             ? {
                 ...entry,
                 status: "running" as const,
