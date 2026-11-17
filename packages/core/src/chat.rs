@@ -730,6 +730,7 @@ pub async fn session_send(
         partial: Arc::new(Mutex::new(PartialReply::default())),
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_sizes: Arc::new(Mutex::new(None)),
+        summary: Arc::new(Mutex::new(None)),
     };
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
@@ -1566,6 +1567,8 @@ pub struct RunContext {
     compacted: Arc<AtomicBool>,
     /// Local request sizes at the first and last compaction in this run.
     compaction_sizes: Arc<Mutex<Option<(usize, usize)>>>,
+    /// Checkpoint produced by this run's compaction, if one was created.
+    summary: Arc<Mutex<Option<Value>>>,
 }
 
 #[derive(Default)]
@@ -1615,6 +1618,13 @@ impl RunContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let first = recorded.map(|(first, _)| first).unwrap_or(before);
         *recorded = Some((first, after));
+    }
+
+    pub fn set_summary(&self, summary: Value) {
+        *self
+            .summary
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(summary);
     }
 
     pub fn record(&self, payload: EventPayload) {
@@ -1722,6 +1732,7 @@ impl RunContext {
             partial: Arc::new(Mutex::new(PartialReply::default())),
             compacted: Arc::new(AtomicBool::new(false)),
             compaction_sizes: Arc::new(Mutex::new(None)),
+            summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2056,14 +2067,16 @@ impl RunContext {
             .compaction_sizes
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let compaction = self
             .compacted
             .load(Ordering::SeqCst)
             .then(|| store::CompactionEnd {
-                summary: messages
-                    .iter()
-                    .find(|message| store::is_checkpoint(message))
-                    .cloned(),
+                summary,
                 surface: messages.clone(),
                 before: sizes.map(|(before, _)| before).unwrap_or(0),
                 after: sizes.map(|(_, after)| after).unwrap_or(0),

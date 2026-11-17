@@ -12,6 +12,12 @@ use crate::compaction;
 use crate::context::{Meter, estimate_tokens};
 use crate::tools::{Cancel, ToolRegistry};
 
+#[derive(Default)]
+struct CompactionTrace {
+    archived: Vec<Value>,
+    summary: Option<Value>,
+}
+
 /// Tell the debug log and the UI how large the next request will be.
 pub(super) fn report(ctx: &RunContext, config: &AppConfig, meter: &Meter, messages: &[Value]) {
     let pressure = meter.pressure(messages);
@@ -32,7 +38,7 @@ pub(super) async fn make_room(
     cancel: &Cancel,
     ctx: &RunContext,
 ) -> Result<(), String> {
-    let mut replaced = Vec::new();
+    let mut trace = CompactionTrace::default();
     // A forced pass can fail after a normal pass already shrank the history.
     // Report the size the run started from instead of a zero gauge.
     let before =
@@ -44,12 +50,15 @@ pub(super) async fn make_room(
         cancel,
         messages,
         meter,
-        &mut replaced,
+        &mut trace,
     )
     .await;
     let after =
         estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
     if after != before {
+        if let Some(checkpoint) = trace.summary.take() {
+            ctx.set_summary(checkpoint);
+        }
         ctx.mark_compacted(before, after);
         ctx.record_archived(messages).await?;
         ensure_history_tool(tools, ctx).await;
@@ -82,13 +91,17 @@ async fn compact_before_request(
     cancel: &Cancel,
     messages: &mut Vec<Value>,
     meter: &mut Meter,
-    archived: &mut Vec<Value>,
+    trace: &mut CompactionTrace,
 ) -> Result<Option<usize>, String> {
     let trigger = compaction::trigger_at(config.context_window);
     let schemas = crate::context::estimate_text(&tools.schemas().to_string());
     meter.set_schema_tokens(schemas);
-    if schemas + crate::context::estimate_tokens(&messages[..1]) >= trigger {
-        return Err("The system prompt and tool schemas exceed the available context budget; reduce tools or raise the context window.".into());
+    let system = messages
+        .first()
+        .map(crate::context::estimate_message)
+        .unwrap_or(0);
+    if schemas + system >= config.context_window {
+        return Err("The system prompt and tool schemas already exceed the context window; reduce tools or raise the context window.".into());
     }
     let pressure = meter.prepare(messages);
     if pressure <= trigger {
@@ -100,11 +113,14 @@ async fn compact_before_request(
         compaction::compact(client, config, messages, pressure, tools, cancel).await?
     {
         compacted_any = true;
+        if let Some(checkpoint) = compacted.summary.clone() {
+            trace.summary = Some(checkpoint);
+        }
         note_compaction(
             estimate_tokens(messages) + schemas,
             estimate_tokens(&compacted.messages) + schemas,
         );
-        archived.extend(compacted.replaced);
+        trace.archived.extend(compacted.replaced);
         *messages = compacted.messages;
         // Reprice the history that is actually sent, so the next usage anchor
         // is not measured against the old size.
@@ -118,11 +134,14 @@ async fn compact_before_request(
         && let Some(compacted) = compaction::force(client, config, messages, tools, cancel).await?
     {
         compacted_any = true;
+        if let Some(checkpoint) = compacted.summary.clone() {
+            trace.summary = Some(checkpoint);
+        }
         note_compaction(
             estimate_tokens(messages) + schemas,
             estimate_tokens(&compacted.messages) + schemas,
         );
-        archived.extend(compacted.replaced);
+        trace.archived.extend(compacted.replaced);
         *messages = compacted.messages;
         let _ = meter.prepare(messages);
     }
@@ -176,7 +195,7 @@ mod tests {
             ..AppConfig::default()
         };
         let mut meter = Meter::default();
-        let mut archived = Vec::new();
+        let mut trace = CompactionTrace::default();
         let (_handle, cancel) = CancelHandle::new();
 
         compact_before_request(
@@ -186,12 +205,12 @@ mod tests {
             &cancel,
             &mut messages,
             &mut meter,
-            &mut archived,
+            &mut trace,
         )
         .await
         .unwrap();
 
-        assert!(archived.iter().any(|message| {
+        assert!(trace.archived.iter().any(|message| {
             message["content"]
                 .as_str()
                 .is_some_and(|text| text.contains("request 0"))
@@ -233,7 +252,7 @@ mod schema_budget_tests {
         assert!(estimate_tokens(&messages) < budget);
         assert!(estimate_tokens(&messages) + schemas > budget);
         let mut meter = Meter::default();
-        let mut archived = Vec::new();
+        let mut trace = CompactionTrace::default();
         let (_handle, cancel) = CancelHandle::new();
         let compacted = compact_before_request(
             &reqwest::Client::new(),
@@ -242,12 +261,12 @@ mod schema_budget_tests {
             &cancel,
             &mut messages,
             &mut meter,
-            &mut archived,
+            &mut trace,
         )
         .await
         .unwrap();
         assert!(compacted.is_some());
-        assert!(!archived.is_empty());
+        assert!(!trace.archived.is_empty());
         assert_eq!(
             meter.pressure(&messages),
             estimate_tokens(&messages) + schemas
@@ -258,7 +277,7 @@ mod schema_budget_tests {
     #[tokio::test]
     async fn oversized_fixed_cost_reports_an_actionable_error_without_a_summary_request() {
         let config = AppConfig {
-            context_window: 8192,
+            context_window: 4096,
             base_url: "invalid://summary".into(),
             ..AppConfig::default()
         };
@@ -271,11 +290,40 @@ mod schema_budget_tests {
             &cancel,
             &mut messages,
             &mut Meter::default(),
-            &mut Vec::new(),
+            &mut CompactionTrace::default(),
         )
         .await
         .unwrap_err();
         assert!(error.contains("tool schemas"));
         assert!(error.contains("reduce tools"));
+    }
+
+    #[tokio::test]
+    async fn fixed_cost_over_trigger_but_under_window_is_still_sent() {
+        let config = AppConfig {
+            context_window: 8192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let mut messages = vec![system(), user("hello")];
+        let tools = large_tool_registry();
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = compact_before_request(
+            &reqwest::Client::new(),
+            &config,
+            &tools,
+            &cancel,
+            &mut messages,
+            &mut Meter::default(),
+            &mut CompactionTrace::default(),
+        )
+        .await
+        .unwrap();
+        assert!(compacted.is_none());
+        assert!(
+            estimate_tokens(&messages)
+                + crate::context::estimate_text(&tools.schemas().to_string())
+                <= config.context_window
+        );
     }
 }

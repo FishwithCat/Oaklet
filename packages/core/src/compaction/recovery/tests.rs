@@ -10,6 +10,58 @@ fn forced_compaction_keeps_a_smaller_tail_than_normal_compaction() {
 }
 
 #[tokio::test]
+async fn long_turn_recovery_budgets_the_restored_request_and_schemas() {
+    let config = AppConfig {
+        context_window: 8_192,
+        base_url: "invalid://summary".into(),
+        ..AppConfig::default()
+    };
+    let tools = ToolRegistry::new();
+    let schemas = crate::context::estimate_text(&tools.schemas().to_string());
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    for request in [
+        user(&"r".repeat(12_000)),
+        json!({"role":"user", "content":[
+            {"type":"text", "text":"r".repeat(8_000)},
+            {"type":"image_url", "image_url":{"url":"data:image/png;base64,AA"}}
+        ]}),
+    ] {
+        for blocks in [1, 20] {
+            let mut messages = vec![system(), request.clone()];
+            messages = assemble(&messages, 1, &"c".repeat(16_000));
+            for index in 0..blocks {
+                messages.push(json!({"role":"assistant", "content":"a".repeat(1_000), "tool_calls":[{
+                    "id":format!("call_{index}"), "type":"function", "function":{"name":"read_file", "arguments":"{}"}
+                }]}));
+                messages.push(tool(&format!("call_{index}"), &"x".repeat(2_000)));
+            }
+            let compacted = force(&reqwest::Client::new(), &config, &messages, &tools, &cancel)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                estimate_tokens(&compacted.messages) + schemas <= trigger_at(config.context_window)
+            );
+            assert_eq!(&compacted.messages[2..], &messages[messages.len() - 2..]);
+            match &request["content"] {
+                Value::String(text) => assert!(
+                    compacted.messages[1]["content"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with(text)
+                ),
+                Value::Array(parts) => assert_eq!(
+                    &compacted.messages[1]["content"].as_array().unwrap()[1..],
+                    parts.as_slice()
+                ),
+                _ => unreachable!(),
+            }
+            assert_compaction_restores(&messages, &compacted);
+        }
+    }
+}
+
+#[tokio::test]
 async fn force_compacts_completed_tools_inside_the_current_turn() {
     let config = AppConfig {
         context_window: 8_192,

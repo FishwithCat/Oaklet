@@ -65,6 +65,9 @@ pub(super) async fn request(
                 *overflow_retried = true;
                 match compaction::force(client, config, messages, tools, cancel).await {
                     Ok(Some(compacted)) => {
+                        if let Some(checkpoint) = compacted.summary.clone() {
+                            ctx.set_summary(checkpoint);
+                        }
                         let before = estimate_tokens(messages)
                             + crate::context::estimate_text(&tools.schemas().to_string());
                         ctx.mark_compacted(

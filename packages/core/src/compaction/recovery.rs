@@ -59,12 +59,13 @@ pub async fn force(
         FORCE_TOOL_OUTPUT_TAIL_CHARS,
     );
     let mut origins: Vec<Option<usize>> = (0..messages.len()).map(Some).collect();
+    let mut summary = None;
 
     if estimate_tokens(&next) > target
         && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
     {
         let merged = cut < next.len() && role(&next[cut]) == Some("user");
-        next = compact_at(
+        let compacted = compact_at(
             client,
             config,
             &next,
@@ -73,8 +74,11 @@ pub async fn force(
             cancel,
             CompactMode::Auto,
         )
-        .await?
-        .messages;
+        .await?;
+        if let Some(checkpoint) = compacted.summary {
+            summary = Some(checkpoint);
+        }
+        next = compacted.messages;
         // Trim/summarize/drop rewrite or remove messages; collect their original
         // indices so the archive always holds the untrimmed text.
         replaced.extend(1..cut);
@@ -85,6 +89,9 @@ pub async fn force(
         let Some((dropped, removed)) = drop_oldest_turn(&next) else {
             break;
         };
+        if let Some(checkpoint) = dropped.get(1).filter(|message| is_checkpoint(message)).cloned() {
+            summary = Some(checkpoint);
+        }
         replaced.extend(origins[removed.clone()].iter().flatten().copied());
         origins = reassemble_origins(&origins, removed.end, true);
         next = dropped;
@@ -105,8 +112,10 @@ pub async fn force(
                 suffix = suffix.saturating_sub(estimate_message(message));
                 fits.then_some(index)
             })
-            .or_else(|| latest_block.filter(|&index| index > current + 1));
-        if let Some(cut) = cut {
+            .or_else(|| {
+                latest_block.filter(|&index| index > current + 1 || is_checkpoint(&next[current]))
+            });
+        if let Some(mut cut) = cut {
             let mut request = next[current].clone();
             if is_checkpoint(&request) {
                 match &mut request["content"] {
@@ -141,9 +150,24 @@ pub async fn force(
             )
             .await?
             .messages;
-            prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
-            compacted[1] = crate::store::checkpoint(request);
+            let mut checkpoint = request.clone();
+            prepend_text(&mut checkpoint, compacted[1]["content"].as_str().unwrap());
+            compacted[1] = crate::store::checkpoint(checkpoint);
+            // Budget the restored request too; an old checkpoint can otherwise keep recovery oversized.
+            if estimate_tokens(&compacted).saturating_add(schemas) > config.context_window {
+                cut = latest_block.unwrap_or(cut);
+                compacted = assemble(&next, cut, DROPPED);
+                prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
+                compacted[1] = crate::store::checkpoint(request);
+            }
             if estimate_tokens(&compacted) < estimate_tokens(&next) {
+                if let Some(checkpoint) = compacted
+                    .get(1)
+                    .filter(|message| is_checkpoint(message))
+                    .cloned()
+                {
+                    summary = Some(checkpoint);
+                }
                 replaced.extend(origins[1..cut].iter().flatten().copied());
                 next = compacted;
             }
@@ -154,10 +178,7 @@ pub async fn force(
         return Ok(None);
     }
     Ok(Some(Compacted {
-        summary: next
-            .get(1)
-            .filter(|message| is_checkpoint(message))
-            .cloned(),
+        summary,
         messages: next,
         replaced: replaced
             .into_iter()
