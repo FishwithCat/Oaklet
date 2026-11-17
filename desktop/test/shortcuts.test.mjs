@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentShortcut, isSendEnter } from "../src/app/shortcuts.ts";
+import { agentShortcut, isSendEnter, previewFontShortcut } from "../src/app/shortcuts.ts";
 
 const press = (overrides) => ({
   key: "",
@@ -10,6 +10,20 @@ const press = (overrides) => ({
   shiftKey: false,
   repeat: false,
   ...overrides,
+});
+
+test("Command or Control with +, -, and 0 changes the preview font size", () => {
+  assert.equal(previewFontShortcut(press({ key: "+", metaKey: true })), 1);
+  assert.equal(previewFontShortcut(press({ key: "=", metaKey: true })), 1);
+  assert.equal(previewFontShortcut(press({ key: "+", ctrlKey: true })), 1);
+  assert.equal(previewFontShortcut(press({ key: "-", metaKey: true })), -1);
+  assert.equal(previewFontShortcut(press({ key: "_", metaKey: true, shiftKey: true })), -1);
+  assert.equal(previewFontShortcut(press({ key: "-", ctrlKey: true })), -1);
+  assert.equal(previewFontShortcut(press({ key: "+" })), 0);
+  assert.equal(previewFontShortcut(press({ key: "-", altKey: true, metaKey: true })), 0);
+  assert.equal(previewFontShortcut(press({ key: "0", metaKey: true })), "reset");
+  assert.equal(previewFontShortcut(press({ key: "0", ctrlKey: true })), "reset");
+  assert.equal(previewFontShortcut(press({ key: "0" })), 0);
 });
 
 test("Command+N opens a new session in chat and a new tab in the terminal", () => {

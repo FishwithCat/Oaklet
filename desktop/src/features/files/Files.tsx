@@ -14,6 +14,7 @@ import type { Extension } from "@codemirror/state";
 import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
+import { previewFontShortcut } from "../../app/shortcuts";
 import { BranchMenu } from "../source-control/BranchMenu";
 import { useGitBranch } from "../source-control/useGitBranch";
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
@@ -22,6 +23,10 @@ import { FileTree } from "./FileTree";
 
 // The editor bundle is heavy; load it when a file is opened, not with the page.
 const FileEditor = lazy(() => import("./FileEditor"));
+
+const PREVIEW_FONT_SIZE_DEFAULT = 12;
+const PREVIEW_FONT_SIZE_MIN = 10;
+const PREVIEW_FONT_SIZE_MAX = 20;
 
 export type FilesHandle = {
   canLeave: () => Promise<boolean>;
@@ -57,6 +62,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(false);
+  const [previewFontSize, setPreviewFontSize] = useState(PREVIEW_FONT_SIZE_DEFAULT);
   const [syntax, setSyntax] = useState<Extension>([]);
   const [browserWidth, setBrowserWidth] = useState(300);
   const busyRef = useRef(false);
@@ -103,6 +109,22 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       .catch(() => {}); // Plain text remains usable if a language chunk cannot load.
     return () => { cancelled = true; };
   }, [document?.path]);
+
+  useEffect(() => {
+    if (!active || !preview) return;
+    function onKeyDown(event: KeyboardEvent) {
+      const action = previewFontShortcut(event);
+      if (action === 0) return;
+      event.preventDefault();
+      setPreviewFontSize((size) =>
+        action === "reset"
+          ? PREVIEW_FONT_SIZE_DEFAULT
+          : Math.min(PREVIEW_FONT_SIZE_MAX, Math.max(PREVIEW_FONT_SIZE_MIN, size + action)),
+      );
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, preview]);
 
   async function openFile(path: string, previewMarkdown = false) {
     if (!await canLeave()) return;
@@ -212,7 +234,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                 <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
               </div>
             </div>
-            {preview ? <div className="files-preview"><MarkdownText text={document.content} /></div> :
+            {preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
               <Suspense fallback={<div className="files-editor" />}>
                 <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
                   onChange={(content) => {

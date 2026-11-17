@@ -20,6 +20,16 @@ export type AgentShortcut =
 
 type EnterEvent = Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing">;
 
+/** Command/Ctrl with + or - adjusts the markdown preview font size; 0 resets it. */
+export function previewFontShortcut(event: KeyEvent): -1 | 0 | 1 | "reset" {
+  if ((!event.metaKey && !event.ctrlKey) || event.altKey) return 0;
+  // Accept the unshifted keys that some layouts report for Command + "+".
+  if (event.key === "+" || event.key === "=") return 1;
+  if (event.key === "-" || event.key === "_") return -1;
+  if (event.key === "0") return "reset";
+  return 0;
+}
+
 /**
  * Safari fires compositionend before the Enter that confirms an IME candidate,
  * so that keydown reports isComposing=false; `composing` keeps the guard alive
