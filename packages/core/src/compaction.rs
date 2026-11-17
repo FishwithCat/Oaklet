@@ -618,9 +618,14 @@ fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> String {
         checkpoint.push_str(REQUESTS_END);
     }
     let budget = DIGEST_TEXT_CHARS;
-    // New progress gets first claim on the budget; older entries fill any remaining space.
-    entries.extend(previous_progress);
-    let digest = entries.join("\n\n");
+    // New progress gets first claim; older progress keeps only its tail.
+    let mut digest_entries = Vec::new();
+    let old = previous_progress.join("\n\n");
+    if !old.is_empty() {
+        digest_entries.push(crate::spill::preview(&old, 0, usize::MAX, 0, budget / 4).tail);
+    }
+    digest_entries.extend(entries);
+    let digest = digest_entries.join("\n\n");
     let recent = if digest.chars().count() <= budget {
         digest
     } else {
@@ -1911,6 +1916,25 @@ pub(crate) mod tests {
         assert!(summary.contains("Also preserve the old file format."));
         assert!(summary.contains("verified"));
         assert!(summary.contains("still working"));
+    }
+
+    #[test]
+    fn fallback_progress_keeps_the_newest_entries() {
+        let prior = format!(
+            "Goal{PROGRESS_START}{}{PROGRESS_END}",
+            "old progress ".repeat(150)
+        );
+        let mut messages = vec![
+            system(),
+            user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+        ];
+        for index in 0..3 {
+            messages.push(assistant(&format!("entry {index} {}", "x".repeat(2_000))));
+        }
+        messages.push(assistant("NEWEST_ENTRY"));
+        let summary = mechanical_digest(&messages[1..], None);
+        assert!(summary.contains("NEWEST_ENTRY"));
+        assert!(summary.contains("old progress"));
     }
 
     #[test]
