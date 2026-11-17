@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::store::{self, ContextUsage, Event, EventPayload, NewUserTurn, RunEnd, Session, Store};
 use crate::tools::{CancelHandle, FileDiff};
@@ -812,7 +812,7 @@ pub async fn session_compact(
         chat: &state.chat,
         session_id: session_id.clone(),
     };
-    let result = compact_session(state.inner(), &session_id, &cancel).await;
+    let result = compact_session(window.app_handle(), state.inner(), &session_id, &cancel).await;
     drop(slot);
 
     let (session, before, after, compacted) = result?;
@@ -850,6 +850,7 @@ pub fn session_compact_cancel(
 }
 
 async fn compact_session(
+    app: &AppHandle,
     state: &SharedState,
     session_id: &str,
     cancel: &crate::tools::Cancel,
@@ -892,7 +893,40 @@ async fn compact_session(
         return Ok((load_window(state, session_id).await?, before, before, false));
     };
 
-    let after = context::estimate_tokens(&surface);
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
+    let mut tools = crate::tools::ToolRegistry::with_host_tools(app, &config, cancel).await;
+    let measure_config = config.clone();
+    let measure_store = state.chat.store.clone();
+    let measure_id = session_id.to_string();
+    let (before_overhead, after_overhead) = tauri::async_runtime::spawn_blocking(move || {
+        let workspace = Path::new(&measure_config.workspace);
+        let instructions = crate::instructions::WorkspaceInstructions::load(workspace).render();
+        let sources = crate::architecture::prompt_model_sources(workspace);
+        let history = crate::tools::history::HistoryRead::new(
+            measure_store,
+            measure_id,
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let had_history = history.has_entries();
+        let overhead = |tools: &crate::tools::ToolRegistry| {
+            crate::agent::context_overhead(
+                &measure_config,
+                tools,
+                &sources,
+                instructions.as_deref(),
+            )
+        };
+        let before = overhead(&tools);
+        tools.push(Box::new(history));
+        let after = overhead(&tools);
+        (if had_history { after } else { before }, after)
+    })
+    .await
+    .map_err(|error| format!("Could not measure the compacted context: {error}"))?;
+    let before = before + before_overhead;
+    let after = context::estimate_tokens(&surface) + after_overhead;
     let store = state.chat.store.clone();
     let id = session_id.to_string();
     if cancel.is_cancelled() {

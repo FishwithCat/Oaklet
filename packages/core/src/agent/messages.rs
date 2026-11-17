@@ -38,6 +38,18 @@ pub(super) fn initial_messages(
     messages
 }
 
+pub(crate) fn context_overhead(
+    config: &AppConfig,
+    tools: &ToolRegistry,
+    model_sources: &[String],
+    instructions: Option<&str>,
+) -> usize {
+    crate::context::estimate_message(&json!({
+        "role": "system",
+        "content": system_prompt(config, tools, model_sources, instructions),
+    })) + crate::context::estimate_text(&tools.schemas().to_string())
+}
+
 pub(super) fn assistant_message(content: &str, reasoning: &str, calls: &[ToolCall]) -> Value {
     let mut message = json!({
         "role": "assistant",
@@ -140,6 +152,37 @@ pub(super) fn system_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_compaction_counts_the_same_envelope_as_an_agent_request() {
+        let config = AppConfig::default();
+        let mut tools = crate::compaction::test_support::large_tool_registry();
+        let sources = vec!["model.c4".to_string()];
+        let instructions = Some("Never commit without approval. 保留旧格式。");
+        let before = vec![json!({"role":"user", "content":"old work ".repeat(2_000)})];
+        let after = vec![crate::store::checkpoint(
+            json!({"role":"user", "content":"summary"}),
+        )];
+        for (history, archived) in [(&before, false), (&after, true)] {
+            if archived {
+                tools.push(Box::new(crate::tools::history::HistoryRead::new(
+                    crate::store::Store::in_memory().unwrap(),
+                    "s".into(),
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                )));
+            }
+            let request =
+                initial_messages(&config, &tools, &sources, instructions, history.clone());
+            let expected = crate::context::estimate_tokens(&request)
+                + crate::context::estimate_text(&tools.schemas().to_string());
+            assert_eq!(
+                crate::context::estimate_tokens(history)
+                    + context_overhead(&config, &tools, &sources, instructions),
+                expected,
+            );
+            assert!(expected > crate::context::estimate_tokens(history) + 5_000);
+        }
+    }
 
     #[test]
     fn rebuilds_the_system_prompt_and_drops_stale_ones() {

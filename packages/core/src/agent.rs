@@ -20,6 +20,7 @@ use crate::instructions::WorkspaceInstructions;
 use crate::repeat::RepeatGuard;
 use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace};
 
+pub(crate) use messages::context_overhead;
 use messages::{assistant_message, image_message, initial_messages, strip_system, system_prompt};
 
 #[derive(Default)]
