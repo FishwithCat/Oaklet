@@ -417,8 +417,10 @@ fn surface_messages_with(
     }
     let trims = tool_trims(&read_events(
         conn,
-        "SELECT seq, payload, created_at FROM session_events WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim' ORDER BY seq",
-        &[&session_id],
+        "SELECT seq, payload, created_at FROM session_events \
+         WHERE session_id = ?1 AND seq > ?2 AND json_extract(payload, '$.type') = 'tool_trim' \
+         ORDER BY seq",
+        &[&session_id, &start],
     )?);
     let mut statement = conn
         .prepare(
@@ -858,7 +860,12 @@ impl Store {
         if status == "running" {
             append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
             if let Some(compaction) = &end.compaction {
-                let events = decode_events(&tx, &end.session_id)?;
+                // The compacted surface only retains messages after the previous
+                // boundary, so the archive does not need the whole log.
+                let through = latest_compaction(&tx, &end.session_id)?
+                    .map(|(_, through)| through)
+                    .unwrap_or(0);
+                let events = read_from(&tx, &end.session_id, through + 1)?;
                 let trims = tool_trims(&events);
                 let mut replacements = Vec::new();
                 let mut remaining = events.as_slice();
@@ -886,7 +893,7 @@ impl Store {
                 }
                 append_events(&tx, &end.session_id, &replacements, end.finished_at)?;
                 if let Some(summary) = &compaction.summary {
-                    let shadowed_through = shadow_for(&events, &compaction.surface);
+                    let shadowed_through = shadow_for(&events, &compaction.surface).max(through);
                     append_events(
                         &tx,
                         &end.session_id,
