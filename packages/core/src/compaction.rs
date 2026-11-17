@@ -59,7 +59,9 @@ pub struct Compacted {
 /// requested next, so keep a reserve and stop at 80% at the latest.
 pub fn trigger_at(window: usize) -> usize {
     let reserve = OUTPUT_RESERVE.min(window / 4);
-    window.saturating_sub(reserve).min(window * 4 / 5)
+    window
+        .saturating_sub(reserve)
+        .min(window - window.div_ceil(5))
 }
 
 /// How much recent history a compaction keeps verbatim.

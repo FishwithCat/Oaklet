@@ -65,6 +65,12 @@ pub(super) async fn request(
                 *overflow_retried = true;
                 match compaction::force(client, config, messages, tools, cancel).await {
                     Ok(Some(compacted)) => {
+                        if estimate_tokens(&compacted.messages)
+                            + crate::context::estimate_text(&tools.schemas().to_string())
+                            > config.context_window
+                        {
+                            return Err("The current request and tool schemas still exceed the context window.".into());
+                        }
                         ctx.mark_compacted(estimate_tokens(messages));
                         note_compaction(
                             estimate_tokens(messages),

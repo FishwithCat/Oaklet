@@ -127,6 +127,9 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         }
         retry_directly = false;
 
+        meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
+        let _ = meter.prepare(&messages);
+
         // Report the size the next request will be billed for, after any
         // compaction and while the estimate is still fresh.
         window::report(&ctx, &config, &meter, &messages);

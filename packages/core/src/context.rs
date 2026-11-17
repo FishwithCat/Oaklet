@@ -82,9 +82,7 @@ pub(crate) fn estimate_message(message: &Value) -> usize {
 
 /// Estimate the tokens in the whole message array sent to the model.
 ///
-/// Tool schemas and the rebuilt system prompt are not included on the first
-/// request; the provider anchor corrects for them as soon as one response
-/// reports usage.
+/// Includes the system message; tool schemas are priced separately by `Meter`.
 pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages.iter().map(estimate_message).sum()
 }
@@ -114,14 +112,19 @@ pub struct Meter {
     anchor_prompt_tokens: Option<usize>,
     anchor_estimate: usize,
     pending_estimate: usize,
+    schema_tokens: usize,
 }
 
 impl Meter {
+    pub fn set_schema_tokens(&mut self, tokens: usize) {
+        self.schema_tokens = tokens;
+    }
+
     /// Record the estimate for the request about to be sent and return the
     /// pressure it is sent under.
     pub fn prepare(&mut self, messages: &[Value]) -> usize {
         let pressure = self.pressure(messages);
-        self.pending_estimate = estimate_tokens(messages);
+        self.pending_estimate = estimate_tokens(messages).saturating_add(self.schema_tokens);
         pressure
     }
 
@@ -133,12 +136,11 @@ impl Meter {
 
     /// Token pressure of the conversation as it stands.
     pub fn pressure(&self, messages: &[Value]) -> usize {
-        let estimate = estimate_tokens(messages);
+        let estimate = estimate_tokens(messages).saturating_add(self.schema_tokens);
         match self.anchor_prompt_tokens {
-            Some(anchor) => {
-                let delta = estimate as i64 - self.anchor_estimate as i64;
-                (anchor as i64 + delta).max(0) as usize
-            }
+            Some(anchor) => anchor
+                .saturating_add(estimate.saturating_sub(self.anchor_estimate))
+                .saturating_sub(self.anchor_estimate.saturating_sub(estimate)),
             None => estimate,
         }
     }
@@ -244,6 +246,23 @@ mod tests {
 mod request_budget_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn schemas_are_counted_before_usage_and_as_a_delta_after_usage() {
+        let messages = vec![json!({"role":"system", "content":"a".repeat(400)})];
+        let mut meter = Meter::default();
+        meter.set_schema_tokens(1000);
+        assert_eq!(meter.prepare(&messages), 1104);
+        meter.record_prompt_tokens(1200);
+        assert_eq!(meter.pressure(&messages), 1200);
+        meter.set_schema_tokens(1300);
+        assert_eq!(meter.pressure(&messages), 1500);
+        meter.prepare(&messages);
+        meter.record_prompt_tokens(1500);
+        assert_eq!(meter.pressure(&messages), 1500);
+        meter.set_schema_tokens(1000);
+        assert_eq!(meter.pressure(&messages), 1200);
+    }
 
     #[test]
     fn checkpoint_identity_is_removed_from_provider_messages() {

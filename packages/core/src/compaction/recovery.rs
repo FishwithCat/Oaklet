@@ -49,7 +49,9 @@ pub async fn force(
     if cancel.is_cancelled() {
         return Err("Stopped.".into());
     }
-    let target = force_retain_at(config.context_window);
+    let schemas = crate::context::estimate_text(&tools.schemas().to_string());
+    let target = force_retain_at(config.context_window)
+        .min(super::trigger_at(config.context_window).saturating_sub(schemas));
     let (mut next, mut replaced) = trim_tool_outputs(
         messages,
         FORCE_TOOL_OUTPUT_CHARS,
