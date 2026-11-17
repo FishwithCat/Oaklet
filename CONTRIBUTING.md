@@ -199,19 +199,27 @@ first tries trimming each oversized tool result to at most 4,500 characters;
 the untrimmed originals stay in the event log. If that alone relieves the
 pressure, no summary model is called. Otherwise it asks the model to replace
 older history with a short
-checkpoint, using the history from before that trimming attempt. That summary
-request replays the system prompt, tool schemas, and
-older messages unchanged, then appends one instruction, so the provider can
-reuse its prefix cache instead of re-billing the whole history. The system
-prompt and the current turn are never summarized. The
+checkpoint. It first tries replaying the original system prompt, tool schemas,
+and older messages unchanged, then appends one instruction so the provider can
+reuse its prefix cache. If that request is too large, it tries trimmed tool
+results and then omits tool schemas before falling back to a mechanical
+checkpoint. Summary requests reserve 512–4,096 output tokens according to the
+window; truncated or oversized summaries are rejected. The system prompt and
+current user request stay verbatim; overflow recovery may summarize completed
+tool work inside the current turn. The
 composer shows the estimated size of the next request against the window as a
 small plant; clicking it while idle folds every turn except the current one into
 a checkpoint immediately. The visible thread stays, while the next request sends
-the shorter history. If the provider still rejects a prompt for context length,
+the shorter history. Manual compaction reads only this model surface, without
+loading archived events. If the provider still rejects a prompt for context length,
 the run trims old tool output, compacts with a smaller retained tail, drops the
 oldest turn when even that is too large, and retries the request once. The same
 check runs before the first request of a run, so switching to a model with a
-smaller window compacts the saved history before it is sent.
+smaller window compacts the saved history before it is sent. Request pressure
+includes tool schemas even before the first usage report, and later schema
+changes are priced as a delta against that report. Compaction notices compare
+local estimates of complete requests at compaction time; the live gauge uses
+provider usage when available.
 
 If an automatic summary fails or does not shrink the history, Oaklet uses a
 mechanical checkpoint with user requirements, assistant text, tool signatures,
@@ -228,7 +236,11 @@ compaction event records a `shadowed_through` boundary, and the next surface
 starts after it. Once a chat has archived history, the agent also gets a
 `history_read(offset, limit)` tool that pages those originals back as a
 transcript, so an aggressive summary can hide an exact command or error without
-making it unrecoverable.
+making it unrecoverable. Live and saved archives use event sequence numbers to
+keep ordering and deduplication consistent. A single oversized history message
+uses the existing spill file and `read_file` paging path. Checkpoint identity is
+internal metadata, stripped before provider requests; user text quoting a
+checkpoint marker remains ordinary conversation.
 
 A run has no fixed step limit. Three cheaper controls bound the cost: every
 potentially slow tool call has its own timeout (`run_command` 120 seconds, MCP
