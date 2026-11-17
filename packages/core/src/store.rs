@@ -2,10 +2,11 @@
 //!
 //! `session_events` is the only conversation store: an append-only log of
 //! messages, notices, and compaction records. The model-facing history and the
-//! rendered transcript are both projections of that log, so neither is written
-//! a second time and a turn only appends rows. The UI reads bounded windows;
+//! rendered transcript are both projections of that log. Tool trims append
+//! model-only replacements while preserving the original transcript. The UI reads bounded windows;
 //! a run start reads only the post-compaction model tail.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +34,8 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display: Option<Value>,
     },
+    /// A model-only replacement; the original message remains available for recall.
+    ToolTrim { original_seq: i64, message: Value },
     /// User-visible text that is not part of the conversation.
     Notice { tone: String, text: String },
     /// A summary replacing the transcript prefix through `shadowed_through`.
@@ -143,7 +146,8 @@ pub struct RunEnd {
 /// A compaction record to append after this run's messages.
 #[derive(Clone, Debug)]
 pub struct CompactionEnd {
-    pub summary: Value,
+    /// Absent when only tool output was trimmed.
+    pub summary: Option<Value>,
     /// Model history after compaction; the retained tail determines the
     /// shadow boundary.
     pub surface: Vec<Value>,
@@ -411,25 +415,45 @@ fn surface_messages_with(
         messages.push(summary);
         start = through;
     }
+    let trims = tool_trims(&read_events(
+        conn,
+        "SELECT seq, payload, created_at FROM session_events WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim' ORDER BY seq",
+        &[&session_id],
+    )?);
     let mut statement = conn
         .prepare(
-            "SELECT payload FROM session_events \
+            "SELECT seq, payload FROM session_events \
              WHERE session_id = ?1 AND seq > ?2 \
                AND json_extract(payload, '$.type') = 'message' \
              ORDER BY seq",
         )
         .map_err(|error| format!("Could not read the transcript: {error}"))?;
     let rows = statement
-        .query_map(params![session_id, start], |row| row.get::<_, String>(0))
+        .query_map(params![session_id, start], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|error| format!("Could not read the transcript: {error}"))?;
     for row in rows {
-        let raw = row.map_err(|error| format!("Could not read the transcript: {error}"))?;
+        let (seq, raw) = row.map_err(|error| format!("Could not read the transcript: {error}"))?;
         let EventPayload::Message { message, .. } = decode_event(0, &raw, 0)?.payload else {
             continue;
         };
-        messages.push(message);
+        messages.push(trims.get(&seq).cloned().unwrap_or(message));
     }
     Ok(Some(messages))
+}
+
+pub(crate) fn tool_trims(events: &[Event]) -> HashMap<i64, Value> {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolTrim {
+                original_seq,
+                message,
+            } => Some((*original_seq, message.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A compaction checkpoint is user-visible history, not conversation.
@@ -628,16 +652,18 @@ impl Store {
         Self::get_window_with(&conn, id, before_seq, limit)
     }
 
-    /// Number of messages a compaction summary replaced.
+    /// Number of original messages replaced by summaries or tool trims.
     pub fn history_count(&self, session_id: &str) -> Result<usize, String> {
         let conn = self.connection()?;
-        let Some((_, through)) = latest_compaction(&conn, session_id)? else {
-            return Ok(0);
-        };
+        let through = latest_compaction(&conn, session_id)?
+            .map(|(_, through)| through)
+            .unwrap_or(0);
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session_events \
-                 WHERE session_id = ?1 AND seq <= ?2 \
+                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
+                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
+                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
                    AND json_extract(payload, '$.type') = 'message'",
                 params![session_id, through],
                 |row| row.get(0),
@@ -646,7 +672,7 @@ impl Store {
         Ok(count.max(0) as usize)
     }
 
-    /// One 1-based page of messages replaced by compaction.
+    /// One 1-based page of original messages replaced by summaries or tool trims.
     pub fn read_history(
         &self,
         session_id: &str,
@@ -654,13 +680,15 @@ impl Store {
         limit: usize,
     ) -> Result<(Vec<(i64, Value)>, usize), String> {
         let conn = self.connection()?;
-        let Some((_, through)) = latest_compaction(&conn, session_id)? else {
-            return Ok((Vec::new(), 0));
-        };
+        let through = latest_compaction(&conn, session_id)?
+            .map(|(_, through)| through)
+            .unwrap_or(0);
         let total: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM session_events \
-                 WHERE session_id = ?1 AND seq <= ?2 \
+                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
+                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
+                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
                    AND json_extract(payload, '$.type') = 'message'",
                 params![session_id, through],
                 |row| row.get(0),
@@ -670,7 +698,9 @@ impl Store {
         let mut statement = conn
             .prepare(
                 "SELECT seq, payload FROM session_events \
-                 WHERE session_id = ?1 AND seq <= ?2 \
+                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
+                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
+                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
                    AND json_extract(payload, '$.type') = 'message' \
                  ORDER BY seq LIMIT ?3 OFFSET ?4",
             )
@@ -809,18 +839,46 @@ impl Store {
             append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
             if let Some(compaction) = &end.compaction {
                 let events = decode_events(&tx, &end.session_id)?;
-                let shadowed_through = shadow_for(&events, &compaction.surface);
-                append_events(
-                    &tx,
-                    &end.session_id,
-                    &[EventPayload::Compaction {
-                        summary: compaction.summary.clone(),
-                        shadowed_through,
-                        before: compaction.before,
-                        after: compaction.after,
-                    }],
-                    end.finished_at,
-                )?;
+                let trims = tool_trims(&events);
+                let mut replacements = Vec::new();
+                let mut remaining = events.as_slice();
+                for message in compaction.surface.iter().rev() {
+                    if let Some(index) = remaining.iter().rposition(|event| {
+                        matches!(
+                            &event.payload, EventPayload::Message { message: original, .. }
+                            if same_surface_message(original, message)
+                        )
+                    }) {
+                        let event = &remaining[index];
+                        if let EventPayload::Message {
+                            message: original, ..
+                        } = &event.payload
+                            && message["role"] == "tool"
+                            && trims.get(&event.seq).unwrap_or(original) != message
+                        {
+                            replacements.push(EventPayload::ToolTrim {
+                                original_seq: event.seq,
+                                message: message.clone(),
+                            });
+                        }
+                        remaining = &remaining[..index];
+                    }
+                }
+                append_events(&tx, &end.session_id, &replacements, end.finished_at)?;
+                if let Some(summary) = &compaction.summary {
+                    let shadowed_through = shadow_for(&events, &compaction.surface);
+                    append_events(
+                        &tx,
+                        &end.session_id,
+                        &[EventPayload::Compaction {
+                            summary: summary.clone(),
+                            shadowed_through,
+                            before: compaction.before,
+                            after: compaction.after,
+                        }],
+                        end.finished_at,
+                    )?;
+                }
             }
             let changed = tx
                 .execute(
@@ -1034,6 +1092,98 @@ mod tests {
             display: None,
             title: title.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn tool_only_compaction_survives_reopen_and_keeps_originals_readable() {
+        let dir = std::env::temp_dir().join(format!(
+            "oaklet-trim-{}-{}",
+            std::process::id(),
+            super::now_ms()
+        ));
+        let path = dir.join("oaklet.db");
+        let store = Store::open(&path).unwrap();
+        store.create_session("s1", "/tmp", 1).unwrap();
+        store
+            .begin_run("s1", "r1", &turn("inspect", None), 2)
+            .unwrap();
+        let call = json!({"role": "assistant", "content": "", "tool_calls": [{"id":"call-1", "type":"function", "function":{"name":"read_file", "arguments":"{}"}}]});
+        let original = json!({"role":"tool", "tool_call_id":"call-1", "content":"original output".repeat(1000)});
+        let mut trimmed = original.clone();
+        trimmed["content"] = json!("trimmed output");
+        let surface = vec![turn("inspect", None).message, call.clone(), trimmed.clone()];
+        let end = RunEnd {
+            session_id: "s1".into(),
+            run_id: "r1".into(),
+            start_seq: 1,
+            status: "done",
+            finished_at: 3,
+            appended: vec![call.clone(), original.clone()]
+                .into_iter()
+                .map(|message| EventPayload::Message {
+                    message,
+                    display: None,
+                })
+                .collect(),
+            compaction: Some(CompactionEnd {
+                summary: None,
+                surface: surface.clone(),
+                before: 4000,
+                after: 100,
+            }),
+            context: None,
+            error: None,
+        };
+        store.finish_run(&end).unwrap();
+        store.finish_run(&end).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let next = store
+            .begin_run("s1", "r2", &turn("continue", None), 4)
+            .unwrap();
+        assert_eq!(next.prior_messages, surface);
+        assert_eq!(store.history_count("s1").unwrap(), 1);
+        assert_eq!(store.read_history("s1", 1, 10).unwrap().0[0].1, original);
+        let session = store.get_session("s1").unwrap().unwrap();
+        assert_eq!(
+            session
+                .events
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::ToolTrim { .. }))
+                .count(),
+            1
+        );
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r2".into(),
+                start_seq: next.start_seq,
+                status: "done",
+                finished_at: 5,
+                appended: vec![],
+                compaction: Some(CompactionEnd {
+                    summary: None,
+                    surface: next.prior_messages,
+                    before: 100,
+                    after: 100,
+                }),
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .get_session("s1")
+                .unwrap()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::ToolTrim { .. }))
+                .count(),
+            1
+        );
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1267,7 +1417,7 @@ mod tests {
                     display: None,
                 }],
                 compaction: Some(CompactionEnd {
-                    summary: summary.clone(),
+                    summary: Some(summary.clone()),
                     surface: vec![
                         summary,
                         json!({ "role": "user", "content": "new" }),
@@ -1352,8 +1502,8 @@ mod tests {
                     })
                     .collect(),
                 compaction: Some(CompactionEnd {
-                    summary: summary.clone(),
-                    surface: vec![summary.clone(), call.clone(), trimmed_tool],
+                    summary: Some(summary.clone()),
+                    surface: vec![summary.clone(), call.clone(), trimmed_tool.clone()],
                     before: 10000,
                     after: 100,
                 }),
@@ -1367,7 +1517,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             next.prior_messages,
-            vec![summary, call, original_tool, partial]
+            vec![summary, call, trimmed_tool, partial]
         );
         let (archived, _) = store.read_history("s1", 1, 10).unwrap();
         assert_eq!(archived[0].1["content"], "old request");
@@ -1528,7 +1678,7 @@ mod tests {
                     display: None,
                 }],
                 compaction: Some(CompactionEnd {
-                    summary: summary.clone(),
+                    summary: Some(summary.clone()),
                     surface: vec![
                         summary.clone(),
                         json!({ "role": "user", "content": "new" }),

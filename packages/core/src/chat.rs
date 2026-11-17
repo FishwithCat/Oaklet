@@ -408,6 +408,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
 
     for event in events {
         match &event.payload {
+            EventPayload::ToolTrim { .. } => {},
             EventPayload::Notice { tone, text } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,
@@ -554,8 +555,11 @@ fn surface_messages(events: &[Event]) -> Vec<Value> {
     {
         messages.push(summary.clone());
     }
+    let trims = store::tool_trims(events);
     messages.extend(events.iter().filter_map(|event| match &event.payload {
-        EventPayload::Message { message, .. } if event.seq > start => Some(message.clone()),
+        EventPayload::Message { message, .. } if event.seq > start => {
+            Some(trims.get(&event.seq).unwrap_or(message).clone())
+        }
         _ => None,
     }));
     trim_incomplete_tool_block(messages)
@@ -1990,23 +1994,22 @@ impl RunContext {
             view.clone()
         };
 
-        let compaction = if self.compacted.load(Ordering::SeqCst) {
-            messages
-                .iter()
-                .find(|message| store::is_checkpoint(message))
-                .map(|summary| store::CompactionEnd {
-                    summary: summary.clone(),
-                    surface: messages.clone(),
-                    before: self
-                        .compaction_before
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .unwrap_or(0),
-                    after: context::estimate_tokens(&messages),
-                })
-        } else {
-            None
-        };
+        let compaction = self
+            .compacted
+            .load(Ordering::SeqCst)
+            .then(|| store::CompactionEnd {
+                summary: messages
+                    .iter()
+                    .find(|message| store::is_checkpoint(message))
+                    .cloned(),
+                surface: messages.clone(),
+                before: self
+                    .compaction_before
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or(0),
+                after: context::estimate_tokens(&messages),
+            });
         let end = Arc::new(RunEnd {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
@@ -2825,6 +2828,52 @@ mod tests {
         assert_eq!(model[0]["content"], "one");
         assert_eq!(model[1]["content"], "first");
         assert_eq!(model[2]["content"], "two");
+    }
+
+    #[test]
+    fn tool_trims_change_model_history_without_changing_the_transcript() {
+        let user = json!({"role":"user", "content":"inspect"});
+        let call = json!({"role":"assistant", "content":"", "tool_calls":[{"id":"call-1", "type":"function", "function":{"name":"read_file", "arguments":"{}"}}]});
+        let original =
+            json!({"role":"tool", "tool_call_id":"call-1", "content":"full original output"});
+        let trimmed = json!({"role":"tool", "tool_call_id":"call-1", "content":"trimmed output"});
+        let mut events: Vec<Event> = [user.clone(), call.clone(), original]
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| Event {
+                seq: index as i64 + 1,
+                payload: EventPayload::Message {
+                    message,
+                    display: None,
+                },
+                created_at: 1,
+            })
+            .collect();
+        let transcript = project_events(&events);
+        events.push(Event {
+            seq: 4,
+            payload: EventPayload::ToolTrim {
+                original_seq: 3,
+                message: trimmed.clone(),
+            },
+            created_at: 2,
+        });
+        assert_eq!(
+            surface_messages(&events),
+            vec![user.clone(), call.clone(), trimmed]
+        );
+        assert_eq!(project_events(&events), transcript);
+        let smaller = json!({"role":"tool", "tool_call_id":"call-1", "content":"smaller"});
+        events.push(Event {
+            seq: 5,
+            payload: EventPayload::ToolTrim {
+                original_seq: 3,
+                message: smaller.clone(),
+            },
+            created_at: 3,
+        });
+        assert_eq!(surface_messages(&events), vec![user, call, smaller]);
+        assert_eq!(project_events(&events), transcript);
     }
 
     #[test]
