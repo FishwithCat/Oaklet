@@ -773,7 +773,7 @@ fn note_fallback(reason: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -834,7 +834,7 @@ mod tests {
         summary_server_with(vec![(200, SUMMARY_BODY)])
     }
 
-    fn summary_server_with(
+    pub(crate) fn summary_server_with(
         responses: Vec<(u16, &str)>,
     ) -> (String, Arc<StdMutex<Vec<String>>>, thread::JoinHandle<()>) {
         let responses: Vec<_> = responses

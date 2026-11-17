@@ -712,7 +712,7 @@ pub async fn session_send(
     };
 
     let ctx = RunContext {
-        app: app.clone(),
+        app: Some(app.clone()),
         state: state.inner().clone(),
         session_id,
         run_id: run_id.clone(),
@@ -1491,7 +1491,7 @@ struct StoppedEvent {
 /// Everything the agent loop needs to record and emit one run.
 #[derive(Clone)]
 pub struct RunContext {
-    app: AppHandle,
+    app: Option<AppHandle>,
     state: SharedState,
     session_id: String,
     run_id: String,
@@ -1520,7 +1520,7 @@ struct PartialReply {
 
 impl RunContext {
     pub fn app(&self) -> &AppHandle {
-        &self.app
+        self.app.as_ref().expect("Desktop runs have an app handle")
     }
 
     pub fn state(&self) -> &SharedState {
@@ -1627,7 +1627,37 @@ impl RunContext {
     }
 
     fn emit<T: Serialize + Clone>(&self, event: &str, payload: T) {
-        let _ = self.app.emit_to(&self.window_label, event, payload);
+        if let Some(app) = &self.app {
+            let _ = app.emit_to(&self.window_label, event, payload);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn without_window(
+        state: SharedState,
+        session_id: &str,
+        run_id: &str,
+        started: store::RunStart,
+    ) -> Self {
+        // Exercise real requests and persistence without starting a native window.
+        let mut view = view_from_window(started.window, false);
+        view.running = true;
+        view.active_run_id = Some(run_id.into());
+        Self {
+            app: None,
+            state,
+            session_id: session_id.into(),
+            run_id: run_id.into(),
+            window_label: "test".into(),
+            start_seq: started.start_seq,
+            view: Arc::new(Mutex::new(view)),
+            finished: Arc::new(AtomicBool::new(false)),
+            archived: Arc::new(Mutex::new(Vec::new())),
+            pending: Arc::new(Mutex::new(Vec::new())),
+            partial: Arc::new(Mutex::new(PartialReply::default())),
+            compacted: Arc::new(AtomicBool::new(false)),
+            compaction_before: Arc::new(Mutex::new(None)),
+        }
     }
 
     fn update_view(&self, update: impl FnOnce(&mut SessionView)) {
