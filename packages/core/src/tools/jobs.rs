@@ -16,12 +16,13 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::oneshot;
 
 use crate::store;
 
+#[cfg(unix)]
+use super::shell::ProcessGroupGuard;
 use super::shell::shell_command;
-use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{Cancel, CancelHandle, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const MAX_JOB_OUTPUT: usize = 1_000_000;
 /// Finished jobs kept for `job_output` and `job_list`. Running jobs are never
@@ -30,11 +31,11 @@ const MAX_FINISHED_JOBS: usize = 32;
 const WAIT_DEFAULT_MS: u64 = 10_000;
 const WAIT_MAX_MS: u64 = 30_000;
 const JOB_OUTPUT_TIMEOUT: Duration = Duration::from_secs(60);
-const KILL_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JobStatus {
     Running,
+    Stopping,
     Succeeded,
     Failed,
     Killed,
@@ -44,6 +45,7 @@ impl JobStatus {
     fn label(self, exit: Option<i32>) -> String {
         match self {
             Self::Running => "running".into(),
+            Self::Stopping => "stopping".into(),
             Self::Succeeded => "succeeded".into(),
             Self::Failed => match exit {
                 Some(code) => format!("failed (exit {code})"),
@@ -54,7 +56,7 @@ impl JobStatus {
     }
 
     fn running(self) -> bool {
-        self == Self::Running
+        matches!(self, Self::Running | Self::Stopping)
     }
 }
 
@@ -72,10 +74,45 @@ struct Job {
     command: String,
     started_at: u64,
     state: Mutex<JobState>,
-    kill: Mutex<Option<oneshot::Sender<()>>>,
+    cancel: CancelHandle,
+    #[cfg(unix)]
+    group: Mutex<ProcessGroupGuard>,
 }
 
 impl Job {
+    fn stop(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.status.running() {
+            return false;
+        }
+        state.status = JobStatus::Stopping;
+        self.cancel.cancel();
+        #[cfg(unix)]
+        self.group
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .kill();
+        true
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_group(&self) {
+        loop {
+            if !self
+                .group
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .running()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     fn append(&self, bytes: &[u8]) {
         let text = String::from_utf8_lossy(bytes);
         let mut state = self
@@ -144,12 +181,8 @@ impl Job {
         }
     }
 
-    async fn wait_finished(&self, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if !self.snapshot().0.running() || Instant::now() >= deadline {
-                return;
-            }
+    async fn wait_finished(&self) {
+        while self.snapshot().0.running() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -196,7 +229,7 @@ impl JobRegistry {
             store::now_ms(),
             self.next_id.fetch_add(1, Ordering::Relaxed) + 1
         );
-        let (kill_tx, kill_rx) = oneshot::channel();
+        let (cancel, cancellation) = CancelHandle::new();
         let job = Arc::new(Job {
             id: id.clone(),
             workspace: workspace.to_path_buf(),
@@ -209,14 +242,16 @@ impl JobRegistry {
                 exit: None,
                 truncated: false,
             }),
-            kill: Mutex::new(Some(kill_tx)),
+            cancel,
+            #[cfg(unix)]
+            group: Mutex::new(ProcessGroupGuard::new(child.id())),
         });
         self.jobs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id.clone(), job.clone());
 
-        tokio::spawn(run_job(job, child, kill_rx));
+        tokio::spawn(run_job(job, child, cancellation));
         Ok(id)
     }
 
@@ -336,25 +371,17 @@ impl JobRegistry {
         reason: Option<&str>,
     ) -> Result<String, String> {
         let job = self.get(workspace, id)?;
-        if !job.snapshot().0.running() {
+        if !job.stop() {
             return Ok(format!("Job {id} has already finished."));
         }
-        let sender = job
-            .kill
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        let Some(sender) = sender else {
-            return Ok(format!("Job {id} has already finished."));
-        };
-        let _ = sender.send(());
-        job.wait_finished(KILL_GRACE).await;
         let reason = reason
             .map(str::trim)
             .filter(|reason| !reason.is_empty())
             .map(|reason| format!(" ({reason})"))
             .unwrap_or_default();
-        Ok(format!("Stopped job {id}{reason}."))
+        Ok(format!(
+            "Requested cancellation of job {id}{reason}. Use job_output to confirm it has stopped."
+        ))
     }
 
     /// Stop running jobs started in one workspace.
@@ -368,14 +395,7 @@ impl JobRegistry {
             .cloned()
             .collect();
         for job in jobs {
-            if let Some(sender) = job
-                .kill
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-            {
-                let _ = sender.send(());
-            }
+            job.stop();
         }
     }
 
@@ -389,33 +409,45 @@ impl JobRegistry {
             .cloned()
             .collect();
         for job in jobs {
-            if let Some(sender) = job
-                .kill
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-            {
-                let _ = sender.send(());
-            }
+            job.stop();
+        }
+    }
+
+    pub async fn wait_for_exit(&self, workspace: Option<&Path>) {
+        let jobs: Vec<_> = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|job| workspace.is_none_or(|workspace| job.workspace == workspace))
+            .cloned()
+            .collect();
+        for job in jobs {
+            job.wait_finished().await;
         }
     }
 }
 
-async fn run_job(job: Arc<Job>, mut child: tokio::process::Child, kill: oneshot::Receiver<()>) {
+async fn run_job(job: Arc<Job>, mut child: tokio::process::Child, cancel: Cancel) {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_job = job.clone();
-    let err_job = job.clone();
-    let out = tokio::spawn(async move { read_stream(stdout, out_job).await });
-    let err = tokio::spawn(async move { read_stream(stderr, err_job).await });
-
     let (status, exit) = tokio::select! {
-        _ = kill => {
-            kill_tree(&mut child).await;
+        biased;
+        _ = cancel.cancelled() => {
+            let _ = child.kill().await;
             let _ = child.wait().await;
+            #[cfg(unix)]
+            job.wait_for_group().await;
             (JobStatus::Killed, None)
         }
-        status = child.wait() => match status {
+        status = async {
+            let (status, _, _) = tokio::join!(
+                child.wait(), read_stream(stdout, job.clone()), read_stream(stderr, job.clone()),
+            );
+            #[cfg(unix)]
+            job.wait_for_group().await;
+            status
+        } => match status {
             Ok(status) => (
                 if status.success() { JobStatus::Succeeded } else { JobStatus::Failed },
                 status.code(),
@@ -423,23 +455,7 @@ async fn run_job(job: Arc<Job>, mut child: tokio::process::Child, kill: oneshot:
             Err(_) => (JobStatus::Failed, None),
         },
     };
-    let _ = out.await;
-    let _ = err.await;
     job.finish(status, exit);
-}
-
-/// Kill the whole process group, so a background pipeline or dev server does
-/// not leave children holding the output pipes open after its shell exits.
-async fn kill_tree(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // The child was spawned with `process_group(0)`, so its pid is the
-        // group id and a negative pid signals every member.
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGKILL);
-        }
-    }
-    let _ = child.kill().await;
 }
 
 async fn read_stream<R: AsyncRead + Unpin>(reader: Option<R>, job: Arc<Job>) {
@@ -699,7 +715,9 @@ mod tests {
                             exit: Some(0),
                             truncated: false,
                         }),
-                        kill: Mutex::new(None),
+                        cancel: crate::tools::CancelHandle::new().0,
+                        #[cfg(unix)]
+                        group: Mutex::new(super::ProcessGroupGuard::new(None)),
                     }),
                 );
             }
@@ -722,8 +740,56 @@ mod tests {
         let root = std::env::temp_dir();
         let id = registry.start(&root, "sleep 30").expect("job should start");
         let message = registry.kill(&root, &id, Some("test")).await.unwrap();
-        assert!(message.contains("Stopped job"));
+        assert!(message.contains("Requested cancellation"));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            registry.wait_for_exit(Some(&root)),
+        )
+        .await
+        .unwrap();
         let output = registry.output(&root, &id, false, None).await.unwrap();
         assert!(output.contains("killed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_a_job_after_its_shell_exits_kills_the_remaining_process_group() {
+        let registry = JobRegistry::new();
+        let root = std::env::temp_dir();
+        let id = registry.start(&root, "sleep 30 & echo shell-done").unwrap();
+        let job = registry.get(&root, &id).unwrap();
+        job.wait_for_output(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(job.snapshot().0, JobStatus::Running);
+        let message = registry.kill(&root, &id, None).await.unwrap();
+        assert!(message.contains("Requested cancellation"));
+        tokio::time::timeout(std::time::Duration::from_secs(2), job.wait_finished())
+            .await
+            .unwrap();
+        assert_eq!(job.snapshot().0, JobStatus::Killed);
+        assert!(!job.group.lock().unwrap().running());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_a_workspace_stops_descendants_with_redirected_output() {
+        let registry = JobRegistry::new();
+        let root = std::env::temp_dir();
+        let id = registry
+            .start(&root, "sleep 30 >/dev/null 2>&1 & echo shell-done")
+            .unwrap();
+        let job = registry.get(&root, &id).unwrap();
+        job.wait_for_output(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(job.snapshot().0, JobStatus::Running);
+        registry.kill_workspace(&root);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            registry.wait_for_exit(Some(&root)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(job.snapshot().0, JobStatus::Killed);
+        assert!(!job.group.lock().unwrap().running());
     }
 }

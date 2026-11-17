@@ -246,6 +246,9 @@ to 200,000 characters and reduces HTML to readable text.
   no timeout and are stopped when Oaklet exits. **Settings → Commands → Run
   commands without approval** is on by default, so commands run without an
   approval card; turn it off to see each command first.
+- `job_kill` requests cancellation and reports the job as stopping until its
+  processes exit. A shell exiting before its child processes does not release
+  the background job; closing the workspace also stops those processes.
 - `web_fetch` reads any HTTP(S) URL and returns bounded text. It can reach
   localhost and private addresses, so treat fetched content as untrusted data.
 - **Allow all in workspace** on an approval card stops prompting in that
