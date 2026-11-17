@@ -72,7 +72,8 @@ impl HistoryRead {
             let (rows, _) = self.store.read_history(&self.session_id, offset, take)?;
             page.extend(
                 rows.into_iter()
-                    .map(|(seq, message)| (seq as usize, message)),
+                    .enumerate()
+                    .map(|(index, (_, message))| (offset + index, message)),
             );
         }
         if page.len() < limit {
@@ -321,6 +322,79 @@ mod tests {
                 2,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn archive_numbers_follow_offsets_across_event_gaps() {
+        let store = Store::in_memory().unwrap();
+        store.create_session("s1", "/tmp", 1).unwrap();
+        archive(
+            &store,
+            "s1",
+            vec![
+                json!({"role":"user", "content":"first"}),
+                json!({"role":"assistant", "content":"second"}),
+            ],
+        );
+        let start = store
+            .begin_run(
+                "s1",
+                "r2",
+                &crate::store::NewUserTurn {
+                    message: json!({"role":"user", "content":"third"}),
+                    display: None,
+                    title: None,
+                },
+                3,
+            )
+            .unwrap();
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r2".into(),
+                start_seq: start.start_seq,
+                status: "done",
+                finished_at: 4,
+                appended: vec![
+                    EventPayload::Notice {
+                        tone: "muted".into(),
+                        text: "gap".into(),
+                    },
+                    EventPayload::Message {
+                        message: json!({"role":"assistant", "content":"fourth"}),
+                        display: None,
+                    },
+                ],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        store.apply_compaction("s1", &crate::store::CompactionRecord {
+            summary:json!({"role":"user", "content":"<compacted-summary>all</compacted-summary>"}),
+            shadowed_through:start.start_seq + 2, before:10, after:1, context:ContextUsage {used:1, window:10},
+        }, 5).unwrap();
+        let tool = HistoryRead::new(
+            store,
+            "s1".into(),
+            Arc::new(Mutex::new(vec![
+                json!({"role":"user", "content":"pending"}),
+            ])),
+        );
+        let page = tool.page(3, 2).unwrap();
+        assert!(page.contains("--- 3. User ---\nthird"));
+        assert!(page.contains("--- 4. Assistant ---\nfourth"));
+        assert!(page.contains("offset=5"));
+        assert!(
+            tool.page(5, 1)
+                .unwrap()
+                .contains("--- 5. User ---\npending")
+        );
+        assert!(
+            tool.page(4, 1)
+                .unwrap()
+                .contains("--- 4. Assistant ---\nfourth")
+        );
     }
 
     #[test]
