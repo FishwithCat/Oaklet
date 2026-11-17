@@ -68,7 +68,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         ctx.finish_stopped(strip_system(&input)).await;
         return;
     }
-    ensure_history_tool(&mut tools, &ctx);
+    ensure_history_tool(&mut tools, &ctx).await;
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
@@ -265,7 +265,7 @@ fn reload_instructions(
 }
 
 /// Add `history_read` only once this chat has archived originals to read.
-fn ensure_history_tool(tools: &mut ToolRegistry, ctx: &RunContext) {
+async fn ensure_history_tool(tools: &mut ToolRegistry, ctx: &RunContext) {
     if tools.get("history_read").is_some() {
         return;
     }
@@ -274,7 +274,9 @@ fn ensure_history_tool(tools: &mut ToolRegistry, ctx: &RunContext) {
         ctx.session_id().to_string(),
         ctx.archived(),
     );
-    if tool.has_entries() {
+    if let Ok(Some(tool)) =
+        tauri::async_runtime::spawn_blocking(move || tool.has_entries().then_some(tool)).await
+    {
         tools.push(Box::new(tool));
     }
 }

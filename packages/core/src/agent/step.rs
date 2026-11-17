@@ -65,20 +65,18 @@ pub(super) async fn request(
                 *overflow_retried = true;
                 match compaction::force(client, config, messages, tools, cancel).await {
                     Ok(Some(compacted)) => {
-                        if estimate_tokens(&compacted.messages)
-                            + crate::context::estimate_text(&tools.schemas().to_string())
-                            > config.context_window
-                        {
+                        let before = estimate_tokens(messages)
+                            + crate::context::estimate_text(&tools.schemas().to_string());
+                        ctx.mark_compacted(before);
+                        *messages = compacted.messages;
+                        ctx.record_archived(messages).await?;
+                        ensure_history_tool(tools, ctx).await;
+                        let after = estimate_tokens(messages)
+                            + crate::context::estimate_text(&tools.schemas().to_string());
+                        note_compaction(before, after);
+                        if after > config.context_window {
                             return Err("The current request and tool schemas still exceed the context window.".into());
                         }
-                        ctx.mark_compacted(estimate_tokens(messages));
-                        note_compaction(
-                            estimate_tokens(messages),
-                            estimate_tokens(&compacted.messages),
-                        );
-                        ctx.record_archived(&compacted.replaced);
-                        ensure_history_tool(tools, ctx);
-                        *messages = compacted.messages;
                         return Ok(Next::Retry);
                     }
                     Ok(None) => {
@@ -193,7 +191,8 @@ mod tests {
         let mut messages = vec![json!({"role": "system", "content": "You are Oaklet."})];
         messages.extend(started.prior_messages.clone());
         messages.push(current);
-        let before = estimate_tokens(&messages);
+        let before = estimate_tokens(&messages)
+            + crate::context::estimate_text(&ToolRegistry::new().schemas().to_string());
         assert!(before < compaction::trigger_at(config.context_window));
         let ctx = RunContext::without_window(state, "s1", "r2", started);
         let (_handle, cancel) = CancelHandle::new();

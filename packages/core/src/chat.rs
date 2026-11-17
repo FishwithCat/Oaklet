@@ -1416,26 +1416,6 @@ fn find_tool_item<'a>(items: &'a mut [Value], id: &str) -> Option<&'a mut Value>
     })
 }
 
-/// Append originals without repeating a tool call: a later compaction can see
-/// an already-trimmed copy of a result whose full text is archived.
-fn append_archived(archived: &mut Vec<Value>, messages: &[Value]) {
-    let mut seen: HashSet<String> = archived
-        .iter()
-        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
-        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect();
-    for message in messages {
-        if message.get("role").and_then(Value::as_str) == Some("tool")
-            && let Some(id) = message.get("tool_call_id").and_then(Value::as_str)
-            && !seen.insert(id.to_string())
-        {
-            continue;
-        }
-        archived.push(message.clone());
-    }
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeltaEvent {
@@ -1543,7 +1523,7 @@ pub struct RunContext {
     finished: Arc<AtomicBool>,
     /// Originals replaced by automatic compaction during this run, exposed to
     /// `history_read` until the compaction record is durable.
-    archived: Arc<Mutex<Vec<Value>>>,
+    archived: Arc<Mutex<Vec<(i64, Value)>>>,
     /// Append-only events this run produced, in order.
     pending: Arc<Mutex<Vec<EventPayload>>>,
     /// Text from the current model stream, kept until the stream settles.
@@ -1589,7 +1569,7 @@ impl RunContext {
         self.state.jobs.clone()
     }
 
-    pub fn archived(&self) -> Arc<Mutex<Vec<Value>>> {
+    pub fn archived(&self) -> Arc<Mutex<Vec<(i64, Value)>>> {
         self.archived.clone()
     }
 
@@ -1642,17 +1622,27 @@ impl RunContext {
         });
     }
 
-    /// Remember one compaction's originals. `finish` writes them in the same
-    /// transaction as the compacted history.
-    pub fn record_archived(&self, messages: &[Value]) {
-        if messages.is_empty() {
-            return;
-        }
-        let mut archived = self
-            .archived
+    /// Project live originals with the same event identities used at finish.
+    pub async fn record_archived(&self, surface: &[Value]) -> Result<(), String> {
+        let appended = self
+            .pending
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        append_archived(&mut archived, messages);
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let surface = surface
+            .iter()
+            .filter(|message| message["role"] != "system")
+            .cloned()
+            .collect::<Vec<_>>();
+        let store = self.store();
+        let id = self.session_id.clone();
+        let rows = tauri::async_runtime::spawn_blocking(move || {
+            store.pending_archive(&id, &appended, &surface)
+        })
+        .await
+        .map_err(|error| format!("Could not read archived history: {error}"))??;
+        *self.archived.lock().unwrap_or_else(|p| p.into_inner()) = rows;
+        Ok(())
     }
 
     /// Give every unanswered assistant tool call a durable error result.
@@ -2041,7 +2031,7 @@ impl RunContext {
                 before: self
                     .compaction_before
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or_else(|p| p.into_inner())
                     .unwrap_or(0),
                 after: context::estimate_tokens(&messages),
             });
@@ -2201,23 +2191,6 @@ mod tests {
         };
         drop(slot);
         assert!(state.live().compacting.is_empty());
-    }
-
-    #[test]
-    fn archiving_a_retrimmed_tool_result_keeps_the_first_copy() {
-        let mut archived = Vec::new();
-        let original = json!({
-            "role": "tool", "tool_call_id": "call-1", "content": "the full output",
-        });
-        let later = json!({
-            "role": "tool", "tool_call_id": "call-2", "content": "another result",
-        });
-        let trimmed = json!({
-            "role": "tool", "tool_call_id": "call-1", "content": "the full...",
-        });
-        super::append_archived(&mut archived, &[original.clone(), later.clone()]);
-        super::append_archived(&mut archived, &[trimmed]);
-        assert_eq!(archived, vec![original, later]);
     }
 
     #[tokio::test]

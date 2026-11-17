@@ -470,7 +470,7 @@ pub(crate) fn checkpoint(mut message: Value) -> Value {
 
 /// Seq of the last message a compaction summary replaces. The retained tail is
 /// matched from the end, so notices do not shift the boundary.
-pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> Option<i64> {
+fn shadow_for(events: &[Event], surface: &[Value]) -> Option<i64> {
     let pairs: Vec<(i64, &Value)> = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -713,62 +713,132 @@ impl Store {
         checked_shadow(&events, surface, through)
     }
 
-    /// Number of original messages replaced by summaries or tool trims.
-    pub fn history_count(&self, session_id: &str) -> Result<usize, String> {
+    pub fn has_history(&self, session_id: &str) -> Result<bool, String> {
         let conn = self.connection()?;
         let through = latest_compaction(&conn, session_id)?
-            .map(|(_, through)| through)
+            .map(|(_, seq)| seq)
             .unwrap_or(0);
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_events \
-                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
-                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
-                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
-                   AND json_extract(payload, '$.type') = 'message'",
-                params![session_id, through],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not read the transcript: {error}"))?;
-        Ok(count.max(0) as usize)
+        conn.query_row(
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND seq <= ?2 \
+               AND json_extract(payload, '$.type') = 'message') THEN 1 ELSE EXISTS(\
+               SELECT 1 FROM session_events t JOIN session_events m \
+               ON m.session_id = t.session_id AND m.seq = json_extract(t.payload, '$.original_seq') \
+               WHERE t.session_id = ?1 AND json_extract(t.payload, '$.type') = 'tool_trim' \
+               AND json_extract(m.payload, '$.type') = 'message') END",
+            params![session_id, through], |row| row.get(0),
+        ).map_err(|error| format!("Could not read the transcript: {error}"))
     }
 
-    /// One 1-based page of original messages replaced by summaries or tool trims.
+    /// Originals newly archived by the live surface, keyed by their durable event sequence.
+    pub fn pending_archive(
+        &self,
+        session_id: &str,
+        appended: &[EventPayload],
+        surface: &[Value],
+    ) -> Result<Vec<(i64, Value)>, String> {
+        let conn = self.connection()?;
+        let through = latest_compaction(&conn, session_id)?
+            .map(|(_, seq)| seq)
+            .unwrap_or(0);
+        let mut events = read_from(&conn, session_id, through + 1)?;
+        let previous_trims = tool_trims(&events);
+        let start = next_seq(&conn, session_id)?;
+        events.extend(
+            appended
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, payload)| Event {
+                    seq: start + index as i64,
+                    payload,
+                    created_at: 0,
+                }),
+        );
+        let boundary = if surface.first().is_some_and(is_checkpoint) {
+            checked_shadow(&events, surface, through)?
+        } else {
+            through
+        };
+        let trimmed: HashSet<_> = surface_trims(&events, surface)
+            .into_iter()
+            .filter_map(|payload| match payload {
+                EventPayload::ToolTrim { original_seq, .. } => Some(original_seq),
+                _ => None,
+            })
+            .collect();
+        Ok(events
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::Message { message, .. }
+                    if !previous_trims.contains_key(&event.seq)
+                        && (event.seq <= boundary || trimmed.contains(&event.seq)) =>
+                {
+                    Some((event.seq, message))
+                }
+                _ => None,
+            })
+            .collect())
+    }
+
+    #[cfg(test)]
+    pub fn history_count(&self, session_id: &str) -> Result<usize, String> {
+        self.read_history(session_id, 1, 1).map(|(_, total)| total)
+    }
+
+    #[cfg(test)]
     pub fn read_history(
         &self,
         session_id: &str,
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<(i64, Value)>, usize), String> {
+        self.read_history_pending(session_id, offset, limit, &[])
+    }
+
+    /// Merge live and durable originals by event sequence before paging.
+    pub fn read_history_pending(
+        &self,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+        pending: &[(i64, Value)],
+    ) -> Result<(Vec<(i64, Value)>, usize), String> {
+        const ARCHIVE: &str = "WITH stored AS (\
+            SELECT seq FROM session_events \
+            WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
+                SELECT json_extract(payload, '$.original_seq') FROM session_events \
+                WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
+                AND json_extract(payload, '$.type') = 'message'), \
+            archived AS (SELECT seq, NULL AS message FROM stored UNION ALL \
+                SELECT json_extract(value, '$[0]') AS seq, json_extract(value, '$[1]') AS message \
+                FROM json_each(?3) WHERE json_extract(value, '$[0]') NOT IN (SELECT seq FROM stored)) ";
         let conn = self.connection()?;
         let through = latest_compaction(&conn, session_id)?
-            .map(|(_, through)| through)
+            .map(|(_, seq)| seq)
             .unwrap_or(0);
+        let pending = serde_json::to_string(pending).map_err(|error| error.to_string())?;
         let total: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM session_events \
-                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
-                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
-                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
-                   AND json_extract(payload, '$.type') = 'message'",
-                params![session_id, through],
+                &format!("{ARCHIVE} SELECT COUNT(*) FROM archived"),
+                params![session_id, through, pending],
                 |row| row.get(0),
             )
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
-        let start = offset.max(1) - 1;
         let mut statement = conn
-            .prepare(
-                "SELECT seq, payload FROM session_events \
-                 WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
-                   SELECT json_extract(payload, '$.original_seq') FROM session_events \
-                   WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
-                   AND json_extract(payload, '$.type') = 'message' \
-                 ORDER BY seq LIMIT ?3 OFFSET ?4",
-            )
+            .prepare(&format!(
+                "{ARCHIVE} SELECT a.seq, COALESCE(a.message, json_extract(e.payload, '$.message')) FROM archived a \
+                 LEFT JOIN session_events e ON e.session_id = ?1 AND e.seq = a.seq ORDER BY a.seq LIMIT ?4 OFFSET ?5"
+            ))
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
         let rows = statement
             .query_map(
-                params![session_id, through, limit.max(1) as i64, start as i64],
+                params![
+                    session_id,
+                    through,
+                    pending,
+                    limit.max(1) as i64,
+                    (offset.max(1) - 1) as i64
+                ],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
@@ -776,10 +846,11 @@ impl Store {
         for row in rows {
             let (seq, raw) =
                 row.map_err(|error| format!("Could not read the transcript: {error}"))?;
-            let EventPayload::Message { message, .. } = decode_event(seq, &raw, 0)?.payload else {
-                continue;
-            };
-            page.push((seq, message));
+            page.push((
+                seq,
+                serde_json::from_str(&raw)
+                    .map_err(|error| format!("Could not read the transcript: {error}"))?,
+            ));
         }
         Ok((page, total.max(0) as usize))
     }
@@ -2010,6 +2081,114 @@ mod compaction_regressions {
                 window: 8192,
             },
         }
+    }
+
+    #[test]
+    fn pending_archives_match_durable_order_after_trimming_then_summarizing() {
+        let store = seeded();
+        let (_, mut surface) = store.model_surface("s").unwrap().unwrap();
+        surface[2]["content"] = json!("trimmed A");
+        surface[6]["content"] = json!("trimmed B");
+        let first = store.pending_archive("s", &[], &surface).unwrap();
+        assert_eq!(
+            first.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            [3, 7]
+        );
+        // A retained tool may already belong to the durable archive.
+        append_events(
+            &store.connection().unwrap(),
+            "s",
+            &[EventPayload::ToolTrim {
+                original_seq: 7,
+                message: surface[6].clone(),
+            }],
+            2,
+        )
+        .unwrap();
+        let summary = checkpoint(
+            json!({"role":"user", "content":"<compacted-summary>old work</compacted-summary>\n\nsame request"}),
+        );
+        let mut next = vec![summary.clone()];
+        next.extend_from_slice(&surface[5..]);
+        let pending = store.pending_archive("s", &[], &next).unwrap();
+        let before = store.read_history_pending("s", 1, 50, &pending).unwrap();
+        assert_eq!(before.1, 6);
+        assert_eq!(
+            before.0.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 7]
+        );
+        assert_eq!(before.0[0].1, before.0[4].1);
+        assert!(before.0.iter().all(|(_, value)| !is_checkpoint(value)));
+        // Persist the retained A trim and the summary, as finish_run does.
+        let through = store.shadow_boundary("s", &next).unwrap();
+        assert_eq!(through, 5);
+        store
+            .apply_compaction("s", &record(summary, through), 3)
+            .unwrap();
+        assert_eq!(store.read_history("s", 1, 50).unwrap(), before);
+        assert_eq!(
+            store.read_history_pending("s", 1, 50, &pending).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn pending_new_messages_keep_their_event_identity_across_finish() {
+        let store = seeded();
+        let start = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: json!({"role":"user", "content":"continue"}),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let appended = vec![
+            message(json!({"role":"assistant", "content":"work A"})),
+            EventPayload::Notice {
+                tone: "muted".into(),
+                text: "gap".into(),
+            },
+            message(json!({"role":"assistant", "content":"work B"})),
+        ];
+        let summary = checkpoint(
+            json!({"role":"user", "content":"<compacted-summary>all work</compacted-summary>"}),
+        );
+        let surface = vec![
+            summary.clone(),
+            json!({"role":"assistant", "content":"work B"}),
+        ];
+        let pending = store.pending_archive("s", &appended, &surface).unwrap();
+        let before = store.read_history_pending("s", 1, 50, &pending).unwrap();
+        assert!(
+            before
+                .0
+                .iter()
+                .any(|(seq, value)| *seq == 10 && value["content"] == "work A")
+        );
+        store
+            .finish_run(&RunEnd {
+                session_id: "s".into(),
+                run_id: "r".into(),
+                start_seq: start.start_seq,
+                status: "done",
+                finished_at: 3,
+                appended,
+                compaction: Some(CompactionEnd {
+                    summary: Some(summary),
+                    surface,
+                    before: 100,
+                    after: 10,
+                }),
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        assert_eq!(store.read_history("s", 1, 50).unwrap(), before);
     }
 
     #[test]

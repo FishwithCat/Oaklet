@@ -17,19 +17,19 @@ use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const DEFAULT_PAGE: usize = 8;
 const MAX_PAGE: usize = 50;
-/// Keep one page under the pipeline's oversized-output threshold so the model
-/// receives the whole page inline.
+/// Pack small messages inline; a single oversized message uses the pipeline's recoverable spill file.
 const PAGE_CHARS: usize = 10_000;
 
+#[derive(Clone)]
 pub struct HistoryRead {
     store: Store,
     session_id: String,
     /// Compactions from the current run, not yet written by `finish_run`.
-    pending: Arc<Mutex<Vec<Value>>>,
+    pending: Arc<Mutex<Vec<(i64, Value)>>>,
 }
 
 impl HistoryRead {
-    pub fn new(store: Store, session_id: String, pending: Arc<Mutex<Vec<Value>>>) -> Self {
+    pub fn new(store: Store, session_id: String, pending: Arc<Mutex<Vec<(i64, Value)>>>) -> Self {
         Self {
             store,
             session_id,
@@ -43,53 +43,34 @@ impl HistoryRead {
             .lock()
             .map(|pending| !pending.is_empty())
             .unwrap_or(false)
-            || self.store.history_count(&self.session_id).unwrap_or(0) > 0
+            || self.store.has_history(&self.session_id).unwrap_or(false)
     }
 
     fn page(&self, offset: usize, limit: usize) -> Result<String, String> {
-        let stored = self.store.history_count(&self.session_id)?;
         let pending = self
             .pending
             .lock()
             .map_err(|_| "The archived history is unavailable.".to_string())?
             .clone();
-        let total = stored + pending.len();
+        let offset = offset.max(1);
+        let limit = limit.clamp(1, MAX_PAGE);
+        let (rows, total) =
+            self.store
+                .read_history_pending(&self.session_id, offset, limit, &pending)?;
         if total == 0 {
             return Ok("No archived history in this chat.".into());
         }
 
-        let offset = offset.max(1);
         if offset > total {
             return Ok(format!(
                 "Archived history has {total} messages; offset {offset} is past the end."
             ));
         }
-        let limit = limit.clamp(1, MAX_PAGE);
-
-        let mut page: Vec<(usize, Value)> = Vec::new();
-        if offset <= stored {
-            let take = limit.min(stored - offset + 1);
-            let (rows, _) = self.store.read_history(&self.session_id, offset, take)?;
-            page.extend(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(index, (_, message))| (offset + index, message)),
-            );
-        }
-        if page.len() < limit {
-            let next = offset + page.len();
-            if next > stored {
-                let start = next - stored - 1;
-                for (index, message) in pending
-                    .into_iter()
-                    .skip(start)
-                    .take(limit - page.len())
-                    .enumerate()
-                {
-                    page.push((stored + start + index + 1, message));
-                }
-            }
-        }
+        let page: Vec<_> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, message))| (offset + index, message))
+            .collect();
         if page.is_empty() {
             return Ok(format!("No archived messages at offset {offset}."));
         }
@@ -154,9 +135,16 @@ impl Tool for HistoryRead {
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let args: HistoryReadArgs = parse_args(args)?;
-            self.page(args.offset.unwrap_or(1), args.limit.unwrap_or(DEFAULT_PAGE))
-                .map_err(ToolError::Failed)
-                .map(ToolOutput::text)
+            let tool = self.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                tool.page(args.offset.unwrap_or(1), args.limit.unwrap_or(DEFAULT_PAGE))
+            })
+            .await
+            .map_err(|error| {
+                ToolError::Failed(format!("Could not read archived history: {error}"))
+            })?
+            .map_err(ToolError::Failed)
+            .map(ToolOutput::text)
         })
     }
 }
@@ -377,9 +365,10 @@ mod tests {
         let tool = HistoryRead::new(
             store,
             "s1".into(),
-            Arc::new(Mutex::new(vec![
+            Arc::new(Mutex::new(vec![(
+                100,
                 json!({"role":"user", "content":"pending"}),
-            ])),
+            )])),
         );
         let page = tool.page(3, 2).unwrap();
         assert!(page.contains("--- 3. User ---\nthird"));
@@ -467,11 +456,14 @@ mod tests {
         let tool = HistoryRead::new(
             store,
             "s1".into(),
-            Arc::new(Mutex::new(vec![json!({
-                "role": "tool",
-                "tool_call_id": "call_2",
-                "content": "fresh but uncommitted"
-            })])),
+            Arc::new(Mutex::new(vec![(
+                100,
+                json!({
+                    "role": "tool",
+                    "tool_call_id": "call_2",
+                    "content": "fresh but uncommitted"
+                }),
+            )])),
         );
 
         let first = tool.page(1, 2).unwrap();
@@ -507,5 +499,32 @@ mod tests {
         assert!(page.contains("second"));
         assert!(!page.contains("first"));
         std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(test)]
+mod oversized_history_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_single_message_remains_recoverable_through_the_spill_pipeline() {
+        let store = Store::in_memory().unwrap();
+        store.create_session("s", "/tmp", 1).unwrap();
+        let full = format!("HEAD{}MIDDLE{}TAIL", "x".repeat(20000), "y".repeat(20000));
+        let tool = HistoryRead::new(
+            store,
+            "s".into(),
+            Arc::new(Mutex::new(vec![(
+                1,
+                json!({"role":"user", "content":full}),
+            )])),
+        );
+        let page = tool.page(1, 1).unwrap();
+        let (ctx, root, _handle) = crate::tools::test_support::context("history-spill");
+        let output = ctx.bound_output("history_read", "call-history", page.clone());
+        let path = crate::tools::spill_pointer(&output).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), page);
+        assert!(output.contains("Use read_file with offset and limit"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

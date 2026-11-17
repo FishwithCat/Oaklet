@@ -35,7 +35,8 @@ pub(super) async fn make_room(
     let mut replaced = Vec::new();
     // A forced pass can fail after a normal pass already shrank the history.
     // Report the size the run started from instead of a zero gauge.
-    let before = meter.pressure(messages);
+    let before =
+        estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
     let outcome = compact_before_request(
         client,
         config,
@@ -46,11 +47,20 @@ pub(super) async fn make_room(
         &mut replaced,
     )
     .await;
-    let before = outcome.as_ref().ok().copied().flatten().unwrap_or(before);
-    if !replaced.is_empty() {
+    let after =
+        estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
+    if after != before {
         ctx.mark_compacted(before);
-        ctx.record_archived(&replaced);
-        ensure_history_tool(tools, ctx);
+        ctx.record_archived(messages).await?;
+        ensure_history_tool(tools, ctx).await;
+        meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
+        ctx.mark_compacted(before);
+    }
+    if meter.pressure(messages) > config.context_window {
+        return Err(
+            "The current request and tool schemas exceed the context window after compaction."
+                .into(),
+        );
     }
     outcome.map(|_| ())
 }
