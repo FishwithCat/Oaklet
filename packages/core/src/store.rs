@@ -470,7 +470,7 @@ pub(crate) fn checkpoint(mut message: Value) -> Value {
 
 /// Seq of the last message a compaction summary replaces. The retained tail is
 /// matched from the end, so notices do not shift the boundary.
-pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> i64 {
+pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> Option<i64> {
     let pairs: Vec<(i64, &Value)> = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -500,10 +500,10 @@ pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> i64 {
         })
         .collect();
     if retained.is_empty() {
-        return pairs.last().map(|(seq, _)| *seq).unwrap_or(0);
+        return Some(pairs.last().map(|(seq, _)| *seq).unwrap_or(0));
     }
     if retained.len() > pairs.len() {
-        return 0;
+        return None;
     }
     // The surface tail can sit before trailing events that were not persisted
     // as model messages (a cancelled tool call, for example), so search for the
@@ -518,10 +518,38 @@ pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> i64 {
             .zip(&retained)
             .all(|(pair, expected)| same_surface_message(pair.1, expected))
         {
-            return if start == 0 { 0 } else { pairs[start - 1].0 };
+            return Some(if start == 0 { 0 } else { pairs[start - 1].0 });
         }
     }
-    0
+    None
+}
+
+fn checked_shadow(events: &[Event], surface: &[Value], previous: i64) -> Result<i64, String> {
+    shadow_for(events, surface)
+        .map(|seq| seq.max(previous))
+        .ok_or_else(|| "The retained history could not be matched; nothing was compacted.".into())
+}
+
+fn surface_trims(events: &[Event], surface: &[Value]) -> Vec<EventPayload> {
+    let trims = tool_trims(events);
+    let mut replacements = Vec::new();
+    let mut remaining = events;
+    for message in surface
+        .iter()
+        .rev()
+        .filter(|message| !is_checkpoint(message))
+    {
+        if let Some(index) = remaining.iter().rposition(|event| matches!(
+            &event.payload, EventPayload::Message { message: original, .. } if same_surface_message(original, message))) {
+            let event = &remaining[index];
+            if let EventPayload::Message { message: original, .. } = &event.payload
+                && message["role"] == "tool" && trims.get(&event.seq).unwrap_or(original) != message {
+                replacements.push(EventPayload::ToolTrim { original_seq: event.seq, message: message.clone() });
+            }
+            remaining = &remaining[..index];
+        }
+    }
+    replacements
 }
 
 fn same_surface_message(original: &Value, retained: &Value) -> bool {
@@ -638,6 +666,7 @@ impl Store {
         }))
     }
 
+    #[cfg(test)]
     pub fn get_session(&self, id: &str) -> Result<Option<Session>, String> {
         let conn = self.connection()?;
         Self::get_with(&conn, id)
@@ -658,6 +687,30 @@ impl Store {
     ) -> Result<Option<SessionWindow>, String> {
         let conn = self.connection()?;
         Self::get_window_with(&conn, id, before_seq, limit)
+    }
+
+    /// Read only the model projection, independent of the archived log's size.
+    pub fn model_surface(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(SessionMeta, Vec<Value>)>, String> {
+        let conn = self.connection()?;
+        let Some(meta) = Self::get_meta_with(&conn, session_id)? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            meta,
+            surface_messages_with(&conn, session_id)?.unwrap_or_default(),
+        )))
+    }
+
+    pub fn shadow_boundary(&self, session_id: &str, surface: &[Value]) -> Result<i64, String> {
+        let conn = self.connection()?;
+        let through = latest_compaction(&conn, session_id)?
+            .map(|(_, seq)| seq)
+            .unwrap_or(0);
+        let events = read_from(&conn, session_id, through + 1)?;
+        checked_shadow(&events, surface, through)
     }
 
     /// Number of original messages replaced by summaries or tool trims.
@@ -852,34 +905,10 @@ impl Store {
                     .map(|(_, through)| through)
                     .unwrap_or(0);
                 let events = read_from(&tx, &end.session_id, through + 1)?;
-                let trims = tool_trims(&events);
-                let mut replacements = Vec::new();
-                let mut remaining = events.as_slice();
-                for message in compaction.surface.iter().rev() {
-                    if let Some(index) = remaining.iter().rposition(|event| {
-                        matches!(
-                            &event.payload, EventPayload::Message { message: original, .. }
-                            if same_surface_message(original, message)
-                        )
-                    }) {
-                        let event = &remaining[index];
-                        if let EventPayload::Message {
-                            message: original, ..
-                        } = &event.payload
-                            && message["role"] == "tool"
-                            && trims.get(&event.seq).unwrap_or(original) != message
-                        {
-                            replacements.push(EventPayload::ToolTrim {
-                                original_seq: event.seq,
-                                message: message.clone(),
-                            });
-                        }
-                        remaining = &remaining[..index];
-                    }
-                }
+                let replacements = surface_trims(&events, &compaction.surface);
                 append_events(&tx, &end.session_id, &replacements, end.finished_at)?;
                 if let Some(summary) = &compaction.summary {
-                    let shadowed_through = shadow_for(&events, &compaction.surface).max(through);
+                    let shadowed_through = checked_shadow(&events, &compaction.surface, through)?;
                     append_events(
                         &tx,
                         &end.session_id,
@@ -954,6 +983,13 @@ impl Store {
             .map_err(|error| format!("Could not read the session: {error}"))?;
         if exists.is_none() {
             return Err("This session no longer exists.".into());
+        }
+        let previous = latest_compaction(&tx, session_id)?
+            .map(|(_, seq)| seq)
+            .unwrap_or(0);
+        let next = next_seq(&tx, session_id)?;
+        if record.shadowed_through < previous || record.shadowed_through >= next {
+            return Err("Invalid compaction boundary; nothing was compacted.".into());
         }
         append_events(
             &tx,
@@ -1931,5 +1967,90 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(test)]
+mod compaction_regressions {
+    use super::*;
+    use serde_json::json;
+
+    fn message(value: Value) -> EventPayload {
+        EventPayload::Message {
+            message: value,
+            display: None,
+        }
+    }
+
+    fn seeded() -> Store {
+        let store = Store::in_memory().unwrap();
+        store.create_session("s", "/tmp", 1).unwrap();
+        let events = vec![
+            message(json!({"role":"user", "content":"same request"})),
+            message(json!({"role":"assistant", "content":"reading A"})),
+            message(json!({"role":"tool", "tool_call_id":"A", "content":"original A"})),
+            message(json!({"role":"assistant", "content":"done"})),
+            message(json!({"role":"user", "content":"same request"})),
+            message(json!({"role":"assistant", "content":"reading B"})),
+            message(json!({"role":"tool", "tool_call_id":"B", "content":"original B"})),
+            message(json!({"role":"assistant", "content":"latest"})),
+        ];
+        append_events(&store.connection().unwrap(), "s", &events, 1).unwrap();
+        store
+    }
+
+    fn record(summary: Value, through: i64) -> CompactionRecord {
+        CompactionRecord {
+            summary,
+            shadowed_through: through,
+            before: 100,
+            after: 10,
+            context: ContextUsage {
+                used: 10,
+                window: 8192,
+            },
+        }
+    }
+
+    #[test]
+    fn rejects_regressing_or_future_boundaries_without_writing() {
+        let store = seeded();
+        let summary = checkpoint(json!({"role":"user", "content":"checkpoint"}));
+        store
+            .apply_compaction("s", &record(summary.clone(), 2), 2)
+            .unwrap();
+        let count = store.get_session("s").unwrap().unwrap().events.len();
+        for through in [0, 100] {
+            assert!(
+                store
+                    .apply_compaction("s", &record(summary.clone(), through), 3)
+                    .is_err()
+            );
+            assert_eq!(store.get_session("s").unwrap().unwrap().events.len(), count);
+        }
+        assert!(
+            store
+                .shadow_boundary(
+                    "s",
+                    &[summary, json!({"role":"assistant", "content":"missing"})]
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn model_surface_does_not_decode_the_archived_log() {
+        let store = seeded();
+        let summary = checkpoint(json!({"role":"user", "content":"checkpoint"}));
+        store
+            .apply_compaction("s", &record(summary.clone(), 5), 2)
+            .unwrap();
+        // Corruption in an archived event makes a full-log read fail.
+        store.connection().unwrap().execute("UPDATE session_events SET payload = 'invalid json' WHERE session_id = 's' AND seq = 1", []).unwrap();
+        assert!(store.get_session("s").is_err());
+        let (_, surface) = store.model_surface("s").unwrap().unwrap();
+        assert_eq!(surface.len(), 4);
+        assert_eq!(surface[0], summary);
+        assert_eq!(store.shadow_boundary("s", &surface).unwrap(), 5);
     }
 }

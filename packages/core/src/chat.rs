@@ -537,6 +537,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
 
 /// Model-facing history: the latest summary plus every message after its
 /// boundary. Display-only data never crosses this line.
+#[cfg(test)]
 fn surface_messages(events: &[Event]) -> Vec<Value> {
     let through = events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::Compaction {
@@ -860,21 +861,27 @@ async fn compact_session(
         .clone();
     let store = state.chat.store.clone();
     let id = session_id.to_string();
-    let session = tauri::async_runtime::spawn_blocking(move || store.get_session(&id))
-        .await
-        .map_err(|error| format!("Could not read the session: {error}"))??
-        .ok_or_else(|| "This session no longer exists.".to_string())?;
+    let (session, base, before) = tauri::async_runtime::spawn_blocking(move || {
+        store.model_surface(&id).map(|session| {
+            session.map(|(meta, messages)| {
+                let messages = trim_incomplete_tool_block(messages);
+                let before = context::estimate_tokens(&messages);
+                (meta, messages, before)
+            })
+        })
+    })
+    .await
+    .map_err(|error| format!("Could not read the session: {error}"))??
+    .ok_or_else(|| "This session no longer exists.".to_string())?;
     if !Path::new(&session.workspace).is_dir() {
         return Err(format!("Workspace is unavailable: {}", session.workspace));
     }
     config.workspace = session.workspace.clone();
 
-    let base = surface_messages(&session.events);
     if base.is_empty() {
         return Ok((load_window(state, session_id).await?, 0, 0, false));
     }
 
-    let before = context::estimate_tokens(&base);
     let next =
         compaction::compact_messages(&reqwest::Client::new(), &config, &base, cancel).await?;
     let Some(compacted) = next else {
@@ -886,13 +893,13 @@ async fn compact_session(
     };
 
     let after = context::estimate_tokens(&surface);
-    let shadowed_through = store::shadow_for(&session.events, &surface);
     let store = state.chat.store.clone();
     let id = session_id.to_string();
     if cancel.is_cancelled() {
         return Err("Stopped.".into());
     }
     let compacted = tauri::async_runtime::spawn_blocking(move || {
+        let shadowed_through = store.shadow_boundary(&id, &surface)?;
         store.apply_compaction(
             &id,
             &store::CompactionRecord {

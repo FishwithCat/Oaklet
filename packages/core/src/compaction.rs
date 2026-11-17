@@ -261,16 +261,22 @@ pub async fn compact_messages(
     if cancel.is_cancelled() {
         return Err("Stopped.".into());
     }
-    let mut history = Vec::with_capacity(messages.len() + 1);
-    history.push(json!({ "role": "system", "content": "" }));
-    history.extend_from_slice(messages);
-
-    let Some(cut) = select_latest_turn(&history) else {
+    let input = messages.to_vec();
+    let plan = tauri::async_runtime::spawn_blocking(move || {
+        let mut history = Vec::with_capacity(input.len() + 1);
+        history.push(json!({ "role": "system", "content": "" }));
+        history.extend(input);
+        let cut = select_latest_turn(&history)?;
+        (estimate_tokens(&history[1..cut]) >= MIN_REPLACED).then_some((history, cut))
+    })
+    .await
+    .map_err(|error| format!("Could not prepare compaction: {error}"))?;
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
+    let Some((history, cut)) = plan else {
         return Ok(None);
     };
-    if estimate_tokens(&history[1..cut]) < MIN_REPLACED {
-        return Ok(None);
-    }
 
     let compacted = compact_at(
         client,
