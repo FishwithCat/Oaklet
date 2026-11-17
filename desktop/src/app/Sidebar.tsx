@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import {
   FolderOpenRegular,
   FolderTreeRegular,
-  MindMapRegular,
+  LighthouseRegular,
   GitCommitHorizontalRegular,
   Message4Regular,
   Settings5Regular,
@@ -100,7 +100,7 @@ export function Sidebar({
         aria-pressed={view === "architecture"}
         title="Architecture"
       >
-        <MindMapRegular size={18} />
+        <LighthouseRegular size={18} />
       </button>
       <button
         type="button"

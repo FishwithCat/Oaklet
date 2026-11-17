@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import {
   EyeRegular,
-  MindMapRegular,
+  LighthouseRegular,
   Refresh3Regular,
   Sparkles3Regular,
 } from "@mingcute/react/core-regular";
@@ -107,7 +107,7 @@ export default function Architecture({
     >
       <header className="arch-head">
         <span className="arch-icon" aria-hidden="true">
-          <MindMapRegular size={14} />
+          <LighthouseRegular size={14} />
         </span>
         <span className="arch-title">Architecture</span>
 

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import {
-  MindMapRegular,
+  LighthouseRegular,
   Refresh3Regular,
   Sparkles3Regular,
   WarningRegular,
@@ -213,7 +213,7 @@ export function ArchitectureStatus({
   if (discovery.models.length === 0) {
     return (
       <div className="arch-empty">
-        <MindMapRegular size={28} />
+        <LighthouseRegular size={28} />
         <h2>No architecture model yet</h2>
         <p>
           Ask the configured agent to inspect this workspace and create{" "}
@@ -312,7 +312,7 @@ export function ArchitectureStatus({
   if (currentLoad.views.length === 0 || !selectedViewId) {
     return (
       <div className="arch-empty">
-        <MindMapRegular size={26} />
+        <LighthouseRegular size={26} />
         <h2>This model has no views</h2>
         <p>
           Add a view to the LikeC4 model, or ask the agent to add context and
