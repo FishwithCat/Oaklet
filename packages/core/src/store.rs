@@ -6,7 +6,7 @@
 //! model-only replacements while preserving the original transcript. The UI reads bounded windows;
 //! a run start reads only the post-compaction model tail.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -487,9 +487,26 @@ pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> i64 {
             _ => None,
         })
         .collect();
+    let persisted_tools: HashSet<&str> = pairs
+        .iter()
+        .filter_map(|(_, message)| {
+            (message.get("role").and_then(Value::as_str) == Some("tool"))
+                .then(|| message.get("tool_call_id").and_then(Value::as_str))
+                .flatten()
+        })
+        .collect();
     let retained: Vec<&Value> = surface
         .iter()
         .skip_while(|message| is_checkpoint(message))
+        // Replaying a crashed run inserts a synthetic result for an unanswered
+        // tool call. It has no event, so it cannot shift the boundary.
+        .filter(|message| {
+            message.get("role").and_then(Value::as_str) != Some("tool")
+                || message
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| persisted_tools.contains(id))
+        })
         .collect();
     if retained.is_empty() {
         return pairs.last().map(|(seq, _)| *seq).unwrap_or(0);
@@ -1455,6 +1472,98 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(history[0].1["content"], "old");
         assert_eq!(history[1].1["content"], "old answer");
+    }
+
+    #[test]
+    fn a_retained_synthetic_tool_result_does_not_reset_the_shadow_boundary() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store.begin_run("s1", "r1", &turn("old", None), 2).unwrap();
+        let call = json!({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                "name": "read_file", "arguments": "{}"
+            }}],
+        });
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                start_seq: 1,
+                status: "stopped",
+                finished_at: 3,
+                appended: vec![EventPayload::Message {
+                    message: call.clone(),
+                    display: None,
+                }],
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        store
+            .begin_run("s1", "r2", &turn("continue", None), 4)
+            .unwrap();
+
+        let summary = json!({
+            "role": "user",
+            "content": "<compacted-summary>old turn</compacted-summary>",
+        });
+        // Replaying the crashed tool call adds this result in memory only.
+        let synthetic = json!({
+            "role": "tool", "tool_call_id": "call-1",
+            "content": "The tool call was interrupted before it started.",
+        });
+        let session = store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r2".into(),
+                start_seq: 3,
+                status: "stopped",
+                finished_at: 5,
+                appended: vec![EventPayload::Message {
+                    message: json!({ "role": "assistant", "content": "done" }),
+                    display: None,
+                }],
+                compaction: Some(CompactionEnd {
+                    summary: Some(summary.clone()),
+                    surface: vec![
+                        summary.clone(),
+                        call.clone(),
+                        synthetic.clone(),
+                        json!({ "role": "user", "content": "continue" }),
+                        json!({ "role": "assistant", "content": "done" }),
+                    ],
+                    before: 100,
+                    after: 10,
+                }),
+                context: None,
+                error: None,
+            })
+            .unwrap();
+
+        let shadowed_through = session
+            .events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::Compaction {
+                    shadowed_through, ..
+                } => Some(*shadowed_through),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(shadowed_through, 1);
+        let next = store.begin_run("s1", "r3", &turn("next", None), 6).unwrap();
+        assert_eq!(
+            next.prior_messages,
+            vec![
+                summary,
+                call,
+                json!({ "role": "user", "content": "continue" }),
+                json!({ "role": "assistant", "content": "done" })
+            ]
+        );
+        assert!(!next.prior_messages.contains(&synthetic));
     }
 
     #[test]
