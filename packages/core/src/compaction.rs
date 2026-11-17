@@ -345,6 +345,9 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<u
         return None;
     }
 
+    if start == 1 {
+        return Some((assemble(messages, end, DROPPED), start..end));
+    }
     let mut next = Vec::with_capacity(messages.len() - (end - start));
     next.extend_from_slice(&messages[..start]);
     next.extend_from_slice(&messages[end..]);
@@ -1248,6 +1251,96 @@ pub(crate) mod tests {
             messages.push(assistant(&"more progress ".repeat(2_000)));
             messages.push(user("finish"));
         }
+    }
+
+    fn assert_compaction_restores(original: &[Value], compacted: &Compacted) {
+        use crate::store::{CompactionEnd, EventPayload, NewUserTurn, RunEnd, Store};
+        let store = Store::in_memory().unwrap();
+        store.create_session("s", "/tmp", 1).unwrap();
+        let turn = |message| NewUserTurn {
+            message,
+            display: None,
+            title: None,
+        };
+        let start = store
+            .begin_run("s", "r1", &turn(original[1].clone()), 2)
+            .unwrap();
+        let surface = compacted.messages[1..].to_vec();
+        let end = RunEnd {
+            session_id: "s".into(),
+            run_id: "r1".into(),
+            start_seq: start.start_seq,
+            status: "done",
+            finished_at: 3,
+            appended: original[2..]
+                .iter()
+                .cloned()
+                .map(|message| EventPayload::Message {
+                    message,
+                    display: None,
+                })
+                .collect(),
+            compaction: Some(CompactionEnd {
+                summary: surface
+                    .iter()
+                    .find(|message| is_checkpoint(message))
+                    .cloned(),
+                surface: surface.clone(),
+                before: estimate_tokens(original),
+                after: estimate_tokens(&surface),
+            }),
+            context: None,
+            error: None,
+        };
+        store.finish_run(&end).unwrap();
+        store.finish_run(&end).unwrap();
+        let restored = store
+            .begin_run("s", "r2", &turn(user("continue")), 4)
+            .unwrap();
+        assert_eq!(restored.prior_messages, surface);
+        let (archived, total) = store.read_history("s", 1, original.len()).unwrap();
+        assert!(total > 0);
+        assert_eq!(archived[0].1, original[1]);
+    }
+
+    #[tokio::test]
+    async fn forced_short_turn_drop_is_durable() {
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let current = "c".repeat(3_600);
+        let messages = vec![
+            system(),
+            user(&"o".repeat(1_200)),
+            assistant("done"),
+            user(&current),
+        ];
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            next.messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains(DROPPED)
+        );
+        assert!(
+            next.messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with(&current)
+        );
+        assert_compaction_restores(&messages, &next);
     }
 
     #[tokio::test]
