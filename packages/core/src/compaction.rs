@@ -1,9 +1,9 @@
 //! Trim tool output before replacing old conversation with a checkpoint when
 //! the prompt approaches the configured context window.
 //!
-//! The system prompt and the newest turn stay untouched; everything between
-//! them becomes one `user` message so the run can continue instead of failing
-//! with a context-length error. The history is a plain array here, so a failed
+//! The system prompt and newest user request stay untouched; older conversation
+//! and completed tool work can become one `user` checkpoint so the run can
+//! continue instead of failing with a context-length error. The history is a plain array here, so a failed
 //! compaction never leaves a half-written state behind.
 //!
 //! The summary request replays the untouched prefix and appends one directive,
@@ -231,6 +231,58 @@ pub async fn force(
         };
         replaced.extend(origins.drain(removed).flatten());
         next = dropped;
+    }
+
+    // Keep the request verbatim while checkpointing completed work inside a long turn.
+    if estimate_tokens(&next) > target {
+        let current = latest_user(&next);
+        let mut suffix = estimate_tokens(&next);
+        let cut = next
+            .iter()
+            .enumerate()
+            .find_map(|(index, message)| {
+                let fits =
+                    index > current + 1 && role(message) == Some("assistant") && suffix <= target;
+                suffix = suffix.saturating_sub(estimate_message(message));
+                fits.then_some(index)
+            })
+            .or_else(|| (next.len() > current + 2).then_some(next.len()));
+        if let Some(cut) = cut {
+            let mut request = next[current].clone();
+            match &mut request["content"] {
+                Value::String(text) => *text = checkpoint_parts(text).1,
+                Value::Array(parts) => {
+                    parts.retain_mut(|part| {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            let (summary, plain) = checkpoint_parts(text);
+                            if !summary.is_empty() {
+                                if plain.is_empty() {
+                                    return false;
+                                }
+                                part["text"] = json!(plain);
+                            }
+                        }
+                        true
+                    });
+                }
+                _ => {}
+            }
+            let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
+                <= trigger_at(config.context_window);
+            let mut compacted = if prefix_fits {
+                compact_at(client, config, &next, cut, Some(tools), cancel, true)
+                    .await?
+                    .messages
+            } else {
+                assemble(&next, cut, &fallback_summary(&next, cut))
+            };
+            prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
+            compacted[1] = request;
+            if estimate_tokens(&compacted) < estimate_tokens(&next) {
+                replaced.extend(origins[1..cut].iter().flatten().copied());
+                next = compacted;
+            }
+        }
     }
 
     if next == messages {
@@ -1301,6 +1353,105 @@ pub(crate) mod tests {
         let (archived, total) = store.read_history("s", 1, original.len()).unwrap();
         assert!(total > 0);
         assert_eq!(archived[0].1, original[1]);
+    }
+
+    #[tokio::test]
+    async fn force_compacts_completed_tools_inside_the_current_turn() {
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let request = json!({"role":"user", "content":[
+            {"type":"text", "text":"  Fix the build; never commit.  "},
+            {"type":"image_url", "image_url":{"url":"data:image/png;base64,AA"}}
+        ]});
+        let mut messages = vec![system(), request.clone()];
+        for index in 0..20 {
+            messages.push(json!({"role":"assistant", "content":"", "tool_calls":[{
+                "id":format!("call_{index}"), "type":"function", "function":{"name":"read_file", "arguments":"{}"}
+            }]}));
+            messages.push(tool(&format!("call_{index}"), &"x".repeat(2_000)));
+        }
+        assert!(estimate_tokens(&messages) > config.context_window);
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(estimate_tokens(&next.messages) <= trigger_at(config.context_window));
+        assert_eq!(&next.messages[2..], &messages[messages.len() - 2..]);
+        assert_eq!(
+            &next.messages[1]["content"].as_array().unwrap()[1..],
+            request["content"].as_array().unwrap().as_slice()
+        );
+        assert_eq!(next.messages[1]["content"][0]["type"], "text");
+        assert_compaction_restores(&messages, &next);
+        let mut longer = next.messages;
+        longer.extend_from_slice(&messages[2..]);
+        let again = force(
+            &reqwest::Client::new(),
+            &config,
+            &longer,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(estimate_tokens(&again.messages) < estimate_tokens(&longer));
+        assert_eq!(
+            &again.messages[1]["content"].as_array().unwrap()[1..],
+            request["content"].as_array().unwrap().as_slice()
+        );
+        assert!(
+            !again.messages[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("<compacted-summary>\n<compacted-summary>")
+        );
+    }
+
+    #[tokio::test]
+    async fn current_turn_compaction_uses_model_summary_when_the_prefix_fits() {
+        let (base_url, seen, server) = summary_server();
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url,
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let request = "  Fix the build; never commit.  ";
+        let mut messages = vec![system(), user(request)];
+        for index in 0..10 {
+            messages.push(json!({"role":"assistant", "content":"", "tool_calls":[{
+                "id":format!("call_{index}"), "type":"function", "function":{"name":"read_file", "arguments":"{}"}
+            }]}));
+            messages.push(tool(&format!("call_{index}"), &"x".repeat(1_000)));
+        }
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let checkpoint = next.messages[1]["content"].as_str().unwrap();
+        assert!(checkpoint.contains("Goal: ship compaction."));
+        assert!(checkpoint.ends_with(request));
+        assert!(estimate_tokens(&next.messages) < estimate_tokens(&messages));
+        assert_compaction_restores(&messages, &next);
     }
 
     #[tokio::test]
