@@ -3,7 +3,7 @@ import {
   FolderOpenRegular,
   FolderTreeRegular,
   MindMapRegular,
-  GitBranch2Regular,
+  GitCommitHorizontalRegular,
   Message4Regular,
   Settings5Regular,
   Sparkles3Regular,
@@ -83,7 +83,7 @@ export function Sidebar({
             : "Source control"
         }
       >
-        <GitBranch2Regular size={18} />
+        <GitCommitHorizontalRegular size={18} />
         {unstaged !== null && unstaged > 0 && (
           <span className="sc-badge" aria-hidden="true">
             {unstaged > 99 ? "99+" : unstaged}
