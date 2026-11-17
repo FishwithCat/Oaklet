@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::{SharedState, architecture, chat, tools, workspace_for_window};
+use crate::{SharedState, WindowRegistry, architecture, chat, tools};
 
 #[derive(Default, PartialEq)]
 pub enum ExitState {
@@ -18,7 +18,7 @@ pub async fn close_workspace(
     window: WebviewWindow,
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace = workspace_to_close(&state.windows, window.label())?;
     chat::stop_window(&state, window.label());
     state.jobs.close_workspace(&workspace);
     state.jobs.kill_workspace(&workspace);
@@ -26,6 +26,19 @@ pub async fn close_workspace(
     state.chat.drain(Some(window.label())).await?;
     state.jobs.wait_for_exit(Some(&workspace)).await;
     Ok(())
+}
+
+fn workspace_to_close(
+    windows: &Mutex<WindowRegistry>,
+    label: &str,
+) -> Result<std::path::PathBuf, String> {
+    // Cleanup uses the original binding even if the directory has disappeared.
+    windows
+        .lock()
+        .map_err(|_| "Window state is unavailable.".to_string())?
+        .workspace(label)
+        .cloned()
+        .ok_or_else(|| "This window has no workspace.".into())
 }
 
 pub fn request_exit(app: &AppHandle, api: &tauri::ExitRequestApi) {
@@ -129,6 +142,17 @@ pub fn install_native_quit(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_removed_workspace_can_still_be_closed() {
+        let root = crate::tools::test_support::temp_root("close-removed-workspace");
+        let mut windows = WindowRegistry::default();
+        windows.register("main".into(), root.clone()).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let windows = Mutex::new(windows);
+        assert_eq!(workspace_to_close(&windows, "main").unwrap(), root);
+        assert!(workspace_to_close(&windows, "other-window").is_err());
+    }
 
     #[test]
     fn repeated_exit_requests_cannot_start_multiple_drains() {
