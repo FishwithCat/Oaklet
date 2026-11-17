@@ -53,7 +53,6 @@ const FORCE_TOOL_OUTPUT_MARKER: &str = "\n\n[... tool output trimmed for context
 /// a sixth of the window; a provider rejection means that budget was too big.
 const FORCE_RETAIN_TOKENS: usize = 2_000;
 
-const SUMMARY_MAX_TOKENS: usize = 4_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
 /// Bound new log excerpts; a prior checkpoint is retained in full during fallback.
 const DIGEST_TEXT_CHARS: usize = 4_000;
@@ -870,8 +869,6 @@ async fn summarize(
         "model": summary_model(config),
         "messages": summary_messages(prefix),
         "stream": false,
-        "temperature": 0.2,
-        "max_tokens": SUMMARY_MAX_TOKENS,
     });
     if let Some(tools) = tools {
         body["tools"] = tools.schemas();
@@ -1648,7 +1645,7 @@ pub(crate) mod tests {
             "progress ".repeat(700)
         );
         assert!(summary.split_whitespace().count() < 800);
-        assert!(estimate_text(&summary) < SUMMARY_MAX_TOKENS);
+        assert!(estimate_text(&summary) < 4_000);
         let config = AppConfig {
             base_url: "invalid://summary".into(),
             ..AppConfig::default()
@@ -2608,6 +2605,9 @@ pub(crate) mod tests {
         let body: Value = serde_json::from_str(&seen[0]).unwrap();
         assert_eq!(body["tool_choice"], "none");
         assert!(body.get("tools").is_some());
+        // Sampling parameters are optional; some providers reject them.
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[tokio::test]
