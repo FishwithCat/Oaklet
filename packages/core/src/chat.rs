@@ -877,6 +877,9 @@ async fn compact_session(
     let shadowed_through = store::shadow_for(&session.events, &surface);
     let store = state.chat.store.clone();
     let id = session_id.to_string();
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
     let compacted = tauri::async_runtime::spawn_blocking(move || {
         store.apply_compaction(
             &id,

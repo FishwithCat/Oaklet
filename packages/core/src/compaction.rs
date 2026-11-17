@@ -750,16 +750,18 @@ async fn post_summary(
         request = request.bearer_auth(&config.api_key);
     }
 
-    let response = tokio::select! {
+    tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Err("Stopped.".into()),
-        response = request.send() => response
-            .map_err(|err| format!("Could not reach {}: {err}", config.base_url))?,
-    };
-
-    let status = response.status();
-    let payload = response.text().await.unwrap_or_default();
-    Ok((status, payload))
+        _ = cancel.cancelled() => Err("Stopped.".into()),
+        result = async {
+            let response = request.send().await
+                .map_err(|err| format!("Could not reach {}: {err}", config.base_url))?;
+            let status = response.status();
+            let payload = response.text().await
+                .map_err(|err| format!("Could not read summary response: {err}"))?;
+            Ok((status, payload))
+        } => result,
+    }
 }
 
 fn tool_params_rejected(status: reqwest::StatusCode, detail: &str) -> bool {
@@ -2026,5 +2028,54 @@ pub(crate) mod tests {
         let result = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_summary_after_headers_does_not_wait_for_its_body() {
+        use crate::tools::CancelHandle;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (headers_sent, headers_received) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut byte = [0];
+            while !raw.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                raw.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                .unwrap();
+            headers_sent.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(5));
+        });
+        let config = AppConfig {
+            base_url: format!("http://{address}"),
+            ..AppConfig::default()
+        };
+        let (handle, cancel) = CancelHandle::new();
+        let client = reqwest::Client::new();
+        let body = json!({});
+        let request = post_summary(&client, &config, &body, &cancel);
+        tokio::pin!(request);
+        tokio::select! {
+            _ = headers_received => {},
+            _ = &mut request => panic!("summary finished before its body arrived"),
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            _ = &mut request => panic!("summary finished before cancellation"),
+        }
+        handle.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), request).await;
+        let _ = release.send(());
+        server.join().unwrap();
+        assert_eq!(result.unwrap().unwrap_err(), "Stopped.");
     }
 }

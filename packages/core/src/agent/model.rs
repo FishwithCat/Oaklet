@@ -284,7 +284,11 @@ pub(super) async fn stream_step(
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = retry_after(response.headers());
-        let detail = response.text().await.unwrap_or_default();
+        let detail = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(RequestError::stream("Stopped.".into())),
+            detail = response.text() => detail.unwrap_or_default(),
+        };
         let detail = cap(detail, 2_000);
         if is_transient_status(status) {
             return Err(RequestError::response_retry(status, detail, retry_after));

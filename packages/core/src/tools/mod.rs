@@ -369,7 +369,11 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Tools that need host state beyond the workspace: MCP servers (including
     /// LikeC4) and, when a search key is configured, web search.
-    pub async fn with_host_tools(app: &tauri::AppHandle, config: &crate::AppConfig) -> Self {
+    pub async fn with_host_tools(
+        app: &tauri::AppHandle,
+        config: &crate::AppConfig,
+        cancel: &Cancel,
+    ) -> Self {
         let mut registry = Self::new();
 
         let workspace = PathBuf::from(&config.workspace);
@@ -389,8 +393,12 @@ impl ToolRegistry {
             node: crate::architecture::find_node(),
             helper: crate::architecture::find_helper(app),
         }));
-        let (tools, warnings) =
-            mcp::discover(&config.mcp_servers, std::path::Path::new(&config.workspace)).await;
+        let (tools, warnings) = mcp::discover(
+            &config.mcp_servers,
+            std::path::Path::new(&config.workspace),
+            cancel,
+        )
+        .await;
         registry.tools.extend(tools);
         registry.warnings = warnings;
         let search_key = if config.search_api_key.trim().is_empty() {
