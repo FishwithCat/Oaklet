@@ -1413,6 +1413,26 @@ fn find_tool_item<'a>(items: &'a mut [Value], id: &str) -> Option<&'a mut Value>
     })
 }
 
+/// Append originals without repeating a tool call: a later compaction can see
+/// an already-trimmed copy of a result whose full text is archived.
+fn append_archived(archived: &mut Vec<Value>, messages: &[Value]) {
+    let mut seen: HashSet<String> = archived
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) == Some("tool")
+            && let Some(id) = message.get("tool_call_id").and_then(Value::as_str)
+            && !seen.insert(id.to_string())
+        {
+            continue;
+        }
+        archived.push(message.clone());
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeltaEvent {
@@ -1629,7 +1649,7 @@ impl RunContext {
             .archived
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        archived.extend_from_slice(messages);
+        append_archived(&mut archived, messages);
     }
 
     /// Give every unanswered assistant tool call a durable error result.
@@ -2178,6 +2198,23 @@ mod tests {
         };
         drop(slot);
         assert!(state.live().compacting.is_empty());
+    }
+
+    #[test]
+    fn archiving_a_retrimmed_tool_result_keeps_the_first_copy() {
+        let mut archived = Vec::new();
+        let original = json!({
+            "role": "tool", "tool_call_id": "call-1", "content": "the full output",
+        });
+        let later = json!({
+            "role": "tool", "tool_call_id": "call-2", "content": "another result",
+        });
+        let trimmed = json!({
+            "role": "tool", "tool_call_id": "call-1", "content": "the full...",
+        });
+        super::append_archived(&mut archived, &[original.clone(), later.clone()]);
+        super::append_archived(&mut archived, &[trimmed]);
+        assert_eq!(archived, vec![original, later]);
     }
 
     #[tokio::test]
