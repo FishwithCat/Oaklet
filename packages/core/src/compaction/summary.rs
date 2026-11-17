@@ -100,6 +100,15 @@ pub(super) async fn summarize(
 
     let value: Value = serde_json::from_str(&payload)
         .map_err(|err| format!("Malformed summary response: {err}"))?;
+    if let Some(reason) = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        && reason != "stop"
+    {
+        return Err(format!(
+            "The summary did not finish ({reason}); nothing was compacted."
+        ));
+    }
     let summary = value
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)

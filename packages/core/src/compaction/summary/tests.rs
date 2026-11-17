@@ -110,3 +110,27 @@ async fn cancelling_a_summary_after_headers_does_not_wait_for_its_body() {
     server.join().unwrap();
     assert_eq!(result.unwrap().unwrap_err(), "Stopped.");
 }
+
+#[tokio::test]
+async fn rejects_truncated_summary_responses() {
+    let response =
+        r#"{"choices":[{"finish_reason":"length","message":{"content":"PARTIAL SUMMARY"}}]}"#;
+    let (base_url, _, server) = summary_server_with(vec![(200, response)]);
+    let config = AppConfig {
+        base_url,
+        ..AppConfig::default()
+    };
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    assert!(
+        summarize(
+            &reqwest::Client::new(),
+            &config,
+            &[system(), user("old")],
+            None,
+            &cancel
+        )
+        .await
+        .is_err()
+    );
+    server.join().unwrap();
+}
