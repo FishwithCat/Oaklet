@@ -67,12 +67,17 @@ pub(super) async fn request(
                     Ok(Some(compacted)) => {
                         let before = estimate_tokens(messages)
                             + crate::context::estimate_text(&tools.schemas().to_string());
-                        ctx.mark_compacted(before);
+                        ctx.mark_compacted(
+                            before,
+                            estimate_tokens(&compacted.messages)
+                                + crate::context::estimate_text(&tools.schemas().to_string()),
+                        );
                         *messages = compacted.messages;
                         ctx.record_archived(messages).await?;
                         ensure_history_tool(tools, ctx).await;
                         let after = estimate_tokens(messages)
                             + crate::context::estimate_text(&tools.schemas().to_string());
+                        ctx.mark_compacted(before, after);
                         note_compaction(before, after);
                         if after > config.context_window {
                             return Err("The current request and tool schemas still exceed the context window.".into());
@@ -220,6 +225,8 @@ mod tests {
         assert!(overflow_retried);
         assert!(tools.get("history_read").is_some());
         assert!(crate::store::is_checkpoint(&messages[1]));
+        let compacted_size = estimate_tokens(&messages)
+            + crate::context::estimate_text(&tools.schemas().to_string());
         let Next::Reply(reply) = request(
             &client,
             &config,
@@ -263,6 +270,9 @@ mod tests {
         );
 
         let reopened = Store::open(&database).unwrap();
+        let saved = reopened.get_session("s1").unwrap().unwrap();
+        assert!(saved.events.iter().any(|event| matches!(event.payload,
+            EventPayload::Compaction { after, .. } if after == compacted_size)));
         let next = reopened
             .begin_run(
                 "s1",

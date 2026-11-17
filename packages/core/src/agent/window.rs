@@ -50,11 +50,14 @@ pub(super) async fn make_room(
     let after =
         estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
     if after != before {
-        ctx.mark_compacted(before);
+        ctx.mark_compacted(before, after);
         ctx.record_archived(messages).await?;
         ensure_history_tool(tools, ctx).await;
         meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
-        ctx.mark_compacted(before);
+        ctx.mark_compacted(
+            before,
+            estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string()),
+        );
     }
     if meter.pressure(messages) > config.context_window {
         return Err(

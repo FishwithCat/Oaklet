@@ -729,7 +729,7 @@ pub async fn session_send(
         pending: Arc::new(Mutex::new(Vec::new())),
         partial: Arc::new(Mutex::new(PartialReply::default())),
         compacted: Arc::new(AtomicBool::new(false)),
-        compaction_before: Arc::new(Mutex::new(None)),
+        compaction_sizes: Arc::new(Mutex::new(None)),
     };
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
@@ -1530,8 +1530,8 @@ pub struct RunContext {
     partial: Arc<Mutex<PartialReply>>,
     /// Set once compaction replaced part of the model history.
     compacted: Arc<AtomicBool>,
-    /// Prompt size before the first compaction in this run.
-    compaction_before: Arc<Mutex<Option<usize>>>,
+    /// Local request sizes at the first and last compaction in this run.
+    compaction_sizes: Arc<Mutex<Option<(usize, usize)>>>,
 }
 
 #[derive(Default)]
@@ -1573,15 +1573,14 @@ impl RunContext {
         self.archived.clone()
     }
 
-    pub fn mark_compacted(&self, before: usize) {
+    pub fn mark_compacted(&self, before: usize, after: usize) {
         self.compacted.store(true, Ordering::SeqCst);
         let mut recorded = self
-            .compaction_before
+            .compaction_sizes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if recorded.is_none() {
-            *recorded = Some(before);
-        }
+        let first = recorded.map(|(first, _)| first).unwrap_or(before);
+        *recorded = Some((first, after));
     }
 
     pub fn record(&self, payload: EventPayload) {
@@ -1688,7 +1687,7 @@ impl RunContext {
             pending: Arc::new(Mutex::new(Vec::new())),
             partial: Arc::new(Mutex::new(PartialReply::default())),
             compacted: Arc::new(AtomicBool::new(false)),
-            compaction_before: Arc::new(Mutex::new(None)),
+            compaction_sizes: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -2019,6 +2018,10 @@ impl RunContext {
             view.clone()
         };
 
+        let sizes = *self
+            .compaction_sizes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let compaction = self
             .compacted
             .load(Ordering::SeqCst)
@@ -2028,12 +2031,8 @@ impl RunContext {
                     .find(|message| store::is_checkpoint(message))
                     .cloned(),
                 surface: messages.clone(),
-                before: self
-                    .compaction_before
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .unwrap_or(0),
-                after: context::estimate_tokens(&messages),
+                before: sizes.map(|(before, _)| before).unwrap_or(0),
+                after: sizes.map(|(_, after)| after).unwrap_or(0),
             });
         let end = Arc::new(RunEnd {
             session_id: self.session_id.clone(),
