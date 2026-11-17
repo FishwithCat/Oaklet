@@ -907,7 +907,11 @@ async fn git_switch(
     state: State<'_, SharedState>,
     branch: String,
 ) -> Result<(), String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let label = window.label().to_string();
+    if state.chat.window_busy(&label) {
+        return Err("Stop the running chat before switching branches.".into());
+    }
+    let workspace = workspace_for_window(&state, &label)?;
     tauri::async_runtime::spawn_blocking(move || git::switch(&workspace, &branch))
         .await
         .map_err(|error| format!("Could not switch branches: {error}"))?

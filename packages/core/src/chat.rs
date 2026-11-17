@@ -246,6 +246,11 @@ impl ChatState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// True while any chat in this window is still producing a turn.
+    pub fn window_busy(&self, window: &str) -> bool {
+        self.live().runs.values().any(|run| run.window == window)
+    }
+
     fn view(&self, window: store::SessionWindow) -> SessionView {
         let compacting = self.live().compacting.contains_key(&window.id);
         view_from_window(window, compacting)
