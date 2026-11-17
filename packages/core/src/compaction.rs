@@ -713,16 +713,26 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let compacted = compact_at(
-        client,
-        config,
-        &history,
-        cut,
-        None,
-        cancel,
-        CompactMode::Manual,
-    )
-    .await?;
+    let prefix_fits = estimate_tokens(&history[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
+        <= trigger_at(config.context_window);
+    let compacted = if prefix_fits {
+        compact_at(
+            client,
+            config,
+            &history,
+            cut,
+            None,
+            cancel,
+            CompactMode::Manual,
+        )
+        .await?
+    } else {
+        note_fallback("summary prefix would not fit");
+        Compacted {
+            messages: assemble(&history, cut, &fallback_summary(&history, cut, None)),
+            replaced: history[1..cut].to_vec(),
+        }
+    };
     Ok(Some(Compacted {
         messages: compacted.messages[1..].to_vec(),
         replaced: compacted.replaced,
@@ -2810,7 +2820,7 @@ pub(crate) mod tests {
 
         let config = AppConfig {
             base_url,
-            context_window: 8_192,
+            context_window: 32_768,
             ..AppConfig::default()
         };
         let (_handle, cancel) = CancelHandle::new();
@@ -2949,6 +2959,32 @@ pub(crate) mod tests {
         let result = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_uses_a_digest_when_the_summary_prefix_does_not_fit() {
+        use crate::tools::CancelHandle;
+
+        let mut messages = Vec::new();
+        for step in 0..10 {
+            messages.push(user(&format!("request {step} {}", "u".repeat(3_000))));
+            messages.push(assistant(&"a".repeat(3_000)));
+        }
+        messages.push(user("finish the task"));
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = compact_messages(&reqwest::Client::new(), &config, &messages, &cancel)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+        let checkpoint = compacted.messages[0]["content"].as_str().unwrap();
+        assert!(checkpoint.starts_with("<compacted-summary>"));
+        assert!(checkpoint.ends_with("finish the task"));
     }
 
     #[tokio::test]
