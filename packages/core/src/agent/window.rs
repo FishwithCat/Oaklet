@@ -33,6 +33,9 @@ pub(super) async fn make_room(
     ctx: &RunContext,
 ) -> Result<(), String> {
     let mut replaced = Vec::new();
+    // A forced pass can fail after a normal pass already shrank the history.
+    // Report the size the run started from instead of a zero gauge.
+    let before = meter.pressure(messages);
     let outcome = compact_before_request(
         client,
         config,
@@ -43,7 +46,7 @@ pub(super) async fn make_room(
         &mut replaced,
     )
     .await;
-    let before = outcome.as_ref().ok().copied().flatten().unwrap_or(0);
+    let before = outcome.as_ref().ok().copied().flatten().unwrap_or(before);
     if !replaced.is_empty() {
         ctx.mark_compacted(before);
         ctx.record_archived(&replaced);
