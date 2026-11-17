@@ -564,12 +564,7 @@ fn mechanical_digest(messages: &[Value]) -> String {
         }
     }
     let mut checkpoint = checkpoints.join("\n\n");
-    let mut unique_requests = Vec::new();
-    for request in requests {
-        if !unique_requests.contains(&request) {
-            unique_requests.push(request);
-        }
-    }
+    let unique_requests = bounded_requests(requests);
     if !unique_requests.is_empty() {
         checkpoint.push_str(REQUESTS_START);
         checkpoint.push_str(&serde_json::to_string(&unique_requests).unwrap());
@@ -595,6 +590,32 @@ fn mechanical_digest(messages: &[Value]) -> String {
     } else {
         format!("{checkpoint}{PROGRESS_START}{recent}{PROGRESS_END}")
     }
+}
+
+/// Deduplicate folded requests and keep the goal plus the newest ones.
+///
+/// This block is re-serialized into every later checkpoint, so an unbounded
+/// list makes each fallback larger than the history it replaces. Individual
+/// requests are capped too; the originals stay in the archive.
+fn bounded_requests(requests: Vec<String>) -> Vec<String> {
+    const REQUEST_MAX_CHARS: usize = 1_000;
+    let mut unique: Vec<String> = Vec::new();
+    for request in requests {
+        let request = cap(request, REQUEST_MAX_CHARS);
+        if !unique.contains(&request) {
+            unique.push(request);
+        }
+    }
+    while unique.len() > 2
+        && unique
+            .iter()
+            .map(|request| request.chars().count() + 4)
+            .sum::<usize>()
+            > DIGEST_TEXT_CHARS
+    {
+        unique.remove(1);
+    }
+    unique
 }
 
 /// Keep prior checkpoints outside the log budget, and retain any merged user request.
@@ -1830,6 +1851,41 @@ pub(crate) mod tests {
         assert!(summary.contains("Also preserve the old file format."));
         assert!(summary.contains("verified"));
         assert!(summary.contains("still working"));
+    }
+
+    #[test]
+    fn repeated_fallbacks_keep_the_request_block_bounded() {
+        let mut prior = "Goal: ship it.".to_string();
+        let mut sizes = Vec::new();
+        for index in 0..8 {
+            let messages = vec![
+                system(),
+                user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+                user(&format!("request {index}: {}", "a".repeat(3_000))),
+                assistant("done"),
+            ];
+            let digest = mechanical_digest(&messages[1..]);
+            let encoded = digest
+                .split_once(REQUESTS_START)
+                .unwrap()
+                .1
+                .split_once(REQUESTS_END)
+                .unwrap()
+                .0;
+            let requests: Vec<String> = serde_json::from_str(encoded).unwrap();
+            assert!(requests.len() <= 3);
+            assert!(requests[0].starts_with("request 0:"));
+            assert!(
+                requests
+                    .last()
+                    .unwrap()
+                    .starts_with(&format!("request {index}:"))
+            );
+            assert!(digest.contains("Goal: ship it."));
+            sizes.push(digest.chars().count());
+            prior = digest;
+        }
+        assert!(sizes.iter().all(|size| *size < 8_000), "{sizes:?}");
     }
 
     #[tokio::test]
