@@ -55,7 +55,7 @@ const FORCE_RETAIN_TOKENS: usize = 2_000;
 
 const SUMMARY_MAX_TOKENS: usize = 4_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
-/// Bound both each text message and the whole fallback, so many short turns cannot overflow it.
+/// Bound new log excerpts; a prior checkpoint is retained in full during fallback.
 const DIGEST_TEXT_CHARS: usize = 4_000;
 const DIGEST_TOOL_CHARS: usize = 500;
 const ARCHIVE_NOTICE: &str = "Earlier messages replaced by this checkpoint are archived; call \
@@ -404,7 +404,8 @@ async fn compact_at(
 fn fallback_summary(messages: &[Value], cut: usize) -> String {
     let digest = mechanical_digest(&messages[1..cut]);
     if !digest.is_empty()
-        && estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages)
+        && (messages[1..cut].iter().any(is_checkpoint)
+            || estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages))
     {
         digest
     } else {
@@ -414,6 +415,7 @@ fn fallback_summary(messages: &[Value], cut: usize) -> String {
 
 fn mechanical_digest(messages: &[Value]) -> String {
     let mut entries = Vec::new();
+    let mut checkpoints = Vec::new();
     for message in messages {
         let content = match message.get("content") {
             Some(Value::String(text)) => text.clone(),
@@ -427,7 +429,11 @@ fn mechanical_digest(messages: &[Value]) -> String {
         match role(message) {
             Some("user" | "assistant") => {
                 let text = if role(message) == Some("user") {
-                    without_checkpoints(&content)
+                    let (summary, request) = checkpoint_parts(&content);
+                    if !summary.is_empty() {
+                        checkpoints.push(summary);
+                    }
+                    request
                 } else {
                     content
                 };
@@ -466,39 +472,44 @@ fn mechanical_digest(messages: &[Value]) -> String {
             _ => {}
         }
     }
+    let checkpoint = checkpoints.join("\n\n");
+    let budget = DIGEST_TEXT_CHARS.saturating_sub(checkpoint.chars().count());
     let digest = entries.join("\n\n");
-    if digest.chars().count() <= DIGEST_TEXT_CHARS {
-        return digest;
-    }
-    // Keep the goal at the head and recent progress at the tail when the fallback itself is long.
-    let preview = crate::spill::preview(
-        &digest,
-        usize::MAX,
-        0,
-        DIGEST_TEXT_CHARS * 3 / 5,
-        DIGEST_TEXT_CHARS / 4,
-    );
-    format!(
-        "{}\n\n[... digest middle omitted; use history_read for the original ...]\n\n{}",
-        preview.head, preview.tail
-    )
+    let recent = if budget == 0 {
+        String::new()
+    } else if digest.chars().count() <= budget {
+        digest
+    } else {
+        let preview = crate::spill::preview(&digest, usize::MAX, 0, budget * 3 / 5, budget / 4);
+        format!(
+            "{}\n\n[... digest middle omitted; use history_read for the original ...]\n\n{}",
+            preview.head, preview.tail
+        )
+    };
+    [checkpoint, recent]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-/// A checkpoint can share a user message with the actual request; retain that request.
-fn without_checkpoints(mut text: &str) -> String {
+/// Keep prior checkpoints outside the log budget, and retain any merged user request.
+fn checkpoint_parts(mut text: &str) -> (String, String) {
+    let mut summaries = Vec::new();
     let mut plain = String::new();
     while let Some((before, rest)) = text.split_once("<compacted-summary>") {
-        let Some((_, after)) = rest.split_once("</compacted-summary>") else {
+        let Some((summary, after)) = rest.split_once("</compacted-summary>") else {
             break;
         };
         plain.push_str(before);
+        summaries.push(summary.trim());
         text = after;
         if let Some(after_notice) = text.trim_start().strip_prefix(ARCHIVE_NOTICE) {
-            text = after_notice;
+            text = after_notice.strip_prefix("\n\n").unwrap_or(after_notice);
         }
     }
     plain.push_str(text);
-    plain.trim().to_string()
+    (summaries.join("\n\n"), plain)
 }
 
 /// Compact a conversation the UI owns, which starts at its first user message.
@@ -1161,7 +1172,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mechanical_digest_skips_old_checkpoints_but_keeps_merged_requests() {
+    fn mechanical_digest_preserves_old_checkpoints_and_merged_requests() {
         let merged = assemble(
             &[
                 system(),
@@ -1170,7 +1181,7 @@ pub(crate) mod tests {
                 json!({"role": "user", "content": [{"type": "text", "text": "REAL USER REQUIREMENT"}]}),
             ],
             3,
-            "OBSOLETE SUMMARY",
+            "Never commit without approval",
         );
         let mut messages = merged[1..].to_vec();
         messages.push(json!({
@@ -1180,7 +1191,7 @@ pub(crate) mod tests {
         let digest = mechanical_digest(&messages);
 
         assert!(digest.contains("REAL USER REQUIREMENT"));
-        assert!(!digest.contains("OBSOLETE SUMMARY"));
+        assert!(digest.contains("Never commit without approval"));
         assert!(!digest.contains(ARCHIVE_NOTICE));
         assert!(!digest.contains("TEXT BEYOND CAP"));
         assert!(!digest.contains("ARGS BEYOND CAP"));
@@ -1192,8 +1203,93 @@ pub(crate) mod tests {
         );
         assert_eq!(
             mechanical_digest(&[user("<compacted-summary>old</compacted-summary>")]),
-            ""
+            "old"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_recompaction_preserves_checkpoint_constraints() {
+        let config = AppConfig {
+            base_url: "invalid://no-summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let mut messages = assemble(
+            &[
+                system(),
+                user("earlier"),
+                assistant("done"),
+                user("continue"),
+            ],
+            3,
+            "Never commit without approval; preserve the old file format.",
+        );
+        messages.push(assistant(&"recent progress ".repeat(2_000)));
+        messages.push(user("finish"));
+        for _ in 0..2 {
+            let cut = messages.len() - 1;
+            let next = compact_at(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                cut,
+                None,
+                &cancel,
+                true,
+            )
+            .await
+            .unwrap();
+            let checkpoint = next.messages[1]["content"].as_str().unwrap();
+            assert!(checkpoint.contains("Never commit without approval"));
+            assert!(checkpoint.contains("preserve the old file format"));
+            assert!(checkpoint.contains("finish"));
+            assert!(!checkpoint.contains(DROPPED));
+            messages = next.messages;
+            messages.push(assistant(&"more progress ".repeat(2_000)));
+            messages.push(user("finish"));
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_keeps_long_checkpoint_constraints_across_repeated_failures() {
+        let summary = format!(
+            "## Goal\n{}\n## Decisions and constraints\nNever commit without approval\n## Remaining work\nPreserve the old file format",
+            "progress ".repeat(700)
+        );
+        assert!(summary.split_whitespace().count() < 800);
+        assert!(estimate_text(&summary) < SUMMARY_MAX_TOKENS);
+        let config = AppConfig {
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let mut messages = assemble(
+            &[system(), user("old"), assistant("done"), user("finish")],
+            3,
+            &summary,
+        );
+        for _ in 0..3 {
+            messages.push(assistant(&"recent progress ".repeat(2_000)));
+            messages.push(user("finish"));
+            let cut = messages.len() - 1;
+            let next = compact_at(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                cut,
+                None,
+                &cancel,
+                true,
+            )
+            .await
+            .unwrap();
+            let checkpoint = next.messages[1]["content"].as_str().unwrap();
+            assert!(checkpoint.contains(&summary));
+            assert!(checkpoint.ends_with("finish"));
+            assert!(!checkpoint.contains(DROPPED));
+            assert!(estimate_tokens(&next.messages) < estimate_tokens(&messages));
+            messages = next.messages;
+        }
     }
 
     #[test]
