@@ -69,6 +69,10 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
 - **Stop** cancels the model request, a running command, or a pending approval.
+- Closing a window or quitting with **⌘Q** asks before discarding unsaved file
+  edits or stopping a running chat. Oaklet waits for cancelled work and session
+  writes before exiting; if a reply cannot be saved, the window stays open and
+  closing it again retries the save.
 - Long transcripts open on the latest page; scroll up and choose **Load earlier**
   to bring in older turns without reading the whole log.
 - The plant in the composer's top-left corner estimates the next request against

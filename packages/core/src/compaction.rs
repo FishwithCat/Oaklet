@@ -1101,13 +1101,25 @@ mod tests {
             let store = Store::in_memory().unwrap();
             store.create_session("s1", "/tmp", 1).unwrap();
             store
+                .begin_run(
+                    "s1",
+                    "seed",
+                    &crate::store::NewUserTurn {
+                        message: messages[1].clone(),
+                        display: None,
+                        title: None,
+                    },
+                    1,
+                )
+                .unwrap();
+            store
                 .finish_run(&RunEnd {
                     session_id: "s1".into(),
                     run_id: "seed".into(),
                     start_seq: 1,
                     status: "done",
                     finished_at: 1,
-                    appended: messages[1..]
+                    appended: messages[2..]
                         .iter()
                         .map(|message| EventPayload::Message {
                             message: message.clone(),

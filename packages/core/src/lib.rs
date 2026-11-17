@@ -9,6 +9,7 @@ mod git;
 mod instructions;
 mod log;
 mod repeat;
+mod shutdown;
 mod spill;
 mod store;
 mod terminal;
@@ -30,6 +31,7 @@ pub type SharedState = Arc<AppState>;
 const MAX_WORKSPACE_WINDOWS: usize = 8;
 
 pub struct AppState {
+    pub exit: Mutex<shutdown::ExitState>,
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
     /// Serializes config file read/modify/write cycles across windows.
@@ -237,6 +239,10 @@ fn open_workspace_window(
     state: &AppState,
     workspace: PathBuf,
 ) -> Result<(), String> {
+    if *state.exit.lock().map_err(|_| "App state is unavailable.")? != shutdown::ExitState::Running
+    {
+        return Err("Oaklet is quitting.".into());
+    }
     state.jobs.open_workspace(&workspace);
     let existing = state
         .windows
@@ -1189,6 +1195,7 @@ pub fn run() {
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
             let state = Arc::new(AppState {
+                exit: Mutex::new(shutdown::ExitState::Running),
                 config: Mutex::new(config),
                 config_path,
                 config_write: Mutex::new(()),
@@ -1203,6 +1210,8 @@ pub fn run() {
                 ids: AtomicU64::new(0),
             });
             app.manage(state.clone());
+            #[cfg(target_os = "macos")]
+            shutdown::install_native_quit(app.handle()).map_err(std::io::Error::other)?;
             if cli_workspace {
                 let snapshot = state.config.lock().unwrap().clone();
                 let _write = state.config_write.lock().unwrap();
@@ -1218,6 +1227,7 @@ pub fn run() {
             load_config,
             window_workspace,
             open_workspace,
+            shutdown::close_workspace,
             save_config,
             connection::test_connection,
             chat::session_create,
@@ -1250,10 +1260,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            if matches!(
-                event,
-                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
-            ) {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                shutdown::request_exit(app, &api);
+            } else if matches!(event, tauri::RunEvent::Exit) {
                 architecture::cancel_all(app.state::<SharedState>().inner());
                 chat::stop_all(app.state::<SharedState>().inner());
                 app.state::<SharedState>().jobs.kill_all();

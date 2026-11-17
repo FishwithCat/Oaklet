@@ -123,6 +123,15 @@ trusting a path from the frontend. Agent runs inherit their session's workspace,
 and events, background jobs, terminals, MCP clients, and architecture loads are
 scoped to that workspace or window.
 
+Window close and application Quit share the frontend's file and chat
+confirmations. On macOS, a native application-delegate hook routes menu, ⌘Q,
+and Dock quit requests through Tauri's guarded exit path. Before destroying a
+window, `close_workspace` closes admission to new chat runs, cancels work, and
+waits for session writes and background process groups. Failed reply writes
+stay in memory for a close retry; finishing a run is idempotent so a retry does
+not duplicate its events. Forced process termination still cannot save an
+in-flight reply.
+
 `packages/core/src/agent.rs` is the turn coordinator: it owns the request/tool
 loop, context preflight, and tool-batch sequencing. Its private submodules each
 own one responsibility: `agent/model.rs` performs a single streamed completion

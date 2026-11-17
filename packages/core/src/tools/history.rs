@@ -268,6 +268,18 @@ mod tests {
     fn archive(store: &Store, session: &str, messages: Vec<serde_json::Value>) {
         let shadowed_through = messages.len() as i64;
         store
+            .begin_run(
+                session,
+                "r1",
+                &crate::store::NewUserTurn {
+                    message: messages[0].clone(),
+                    display: None,
+                    title: None,
+                },
+                1,
+            )
+            .unwrap();
+        store
             .finish_run(&RunEnd {
                 session_id: session.into(),
                 run_id: "r1".into(),
@@ -276,6 +288,7 @@ mod tests {
                 finished_at: 2,
                 appended: messages
                     .into_iter()
+                    .skip(1)
                     .map(|message| EventPayload::Message {
                         message,
                         display: None,

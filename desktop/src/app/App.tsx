@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { Chat, type ChatHandle } from "../features/chat/Chat";
 import { formatWorkdir } from "../features/chat/chat-model";
 import { SessionHistory } from "../features/chat/SessionHistory";
@@ -21,12 +22,15 @@ import { Sidebar, type AppView } from "./Sidebar";
 import { useWorkspaceConfig } from "./useWorkspaceConfig";
 import { useWindowWorkspace } from "./useWindowWorkspace";
 import { workspaceFileLink } from "../shared/file-link";
+import { errorText } from "../shared/error-text";
+import { createWindowCloseHandler } from "./close-window";
 import type { AppConfig } from "../features/settings/config";
 import "../styles/index.css";
 
 const Architecture = lazy(() => import("../features/architecture/Architecture"));
 
 function App() {
+  const [closing, setClosing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [home, setHome] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -181,6 +185,10 @@ function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (closing) {
+        event.preventDefault();
+        return;
+      }
       const action = agentShortcut(event, view, session.running);
       if (!action) return;
 
@@ -219,41 +227,52 @@ function App() {
   });
 
   useEffect(() => {
-    if (!workspace) return;
     const appWindow = getCurrentWindow();
     let disposed = false;
-    const unlisten = appWindow.onCloseRequested(async (event) => {
-      try {
-        if (disposed) return;
-        const busy = sessionBusyRef.current;
-        const dirty = filesRef.current?.hasUnsaved() ?? false;
-        if (!busy && !dirty) return;
-
-        event.preventDefault();
-        if (busy) {
-          const close = await confirm(
-            "This workspace still has a running chat. Close it and stop that work?",
-            {
-              title: "Close workspace",
-              kind: "warning",
-              okLabel: "Close and stop",
-              cancelLabel: "Keep working",
-            },
-          );
-          if (!close) return;
-        }
-        if (dirty && !(await filesRef.current?.canLeave())) return;
-        await appWindow.destroy();
-      } catch {
-        // Keep the window open if a confirmation could not be shown.
-      }
+    const close = createWindowCloseHandler({
+      isBusy: () => sessionBusyRef.current,
+      confirmStop: () => confirm(
+        "This workspace still has a running chat. Close it and stop that work?",
+        {
+          title: "Close workspace",
+          kind: "warning",
+          okLabel: "Close and stop",
+          cancelLabel: "Keep working",
+        },
+      ),
+      canLeave: async () => (await filesRef.current?.canLeave()) ?? true,
+      prepareClose: () => invoke("close_workspace"),
+      destroy: () => appWindow.destroy(),
+      onClosing: setClosing,
+      onError: async (error) => {
+        await message(`Could not close workspace: ${errorText(error)}`, {
+          title: "Oaklet", kind: "error",
+        }).catch((error) => console.error(error));
+      },
     });
-    unlisten.catch(() => {});
+    const releases: (() => void)[] = [];
+    async function register(listener: Promise<() => void>) {
+      const release = await listener;
+      if (disposed) release();
+      else releases.push(release);
+    }
+    void Promise.all([
+      register(appWindow.onCloseRequested((event) => {
+        if (disposed) return;
+        event.preventDefault();
+        void close();
+      })),
+      register(appWindow.listen("app://quit_requested", () => {
+        if (!disposed) void close();
+      })),
+    ]).catch((error) => {
+      console.error(`Could not install close handlers: ${errorText(error)}`);
+    });
     return () => {
       disposed = true;
-      void unlisten.then((stop) => stop()).catch(() => {});
+      for (const release of releases) release();
     };
-  }, [workspace]);
+  }, []);
 
   if (!config) {
     return (
@@ -276,7 +295,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" inert={closing}>
       <Sidebar
         view={view}
         onSelectView={selectView}

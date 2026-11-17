@@ -782,48 +782,57 @@ impl Store {
         })
     }
 
-    /// Append the finished turn and its run status in one transaction.
+    /// Append the finished turn once, so a failed close can safely retry saving.
     pub fn finish_run(&self, end: &RunEnd) -> Result<SessionWindow, String> {
         let mut conn = self.connection()?;
         let tx = conn
             .transaction()
             .map_err(|error| format!("Could not finish the run: {error}"))?;
-        append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
-        if let Some(compaction) = &end.compaction {
-            let events = decode_events(&tx, &end.session_id)?;
-            let shadowed_through = shadow_for(&events, &compaction.surface);
-            append_events(
-                &tx,
-                &end.session_id,
-                &[EventPayload::Compaction {
-                    summary: compaction.summary.clone(),
-                    shadowed_through,
-                    before: compaction.before,
-                    after: compaction.after,
-                }],
-                end.finished_at,
-            )?;
-        }
-        let changed = tx
-            .execute(
-                "UPDATE sessions SET context_used = ?2, context_window = ?3, \
-                 updated_at = ?4 WHERE id = ?1",
-                params![
-                    end.session_id,
-                    end.context.map(|context| context.used as i64),
-                    end.context.map(|context| context.window as i64),
-                    end.finished_at
-                ],
+        let status: String = tx
+            .query_row(
+                "SELECT status FROM runs WHERE id = ?1 AND session_id = ?2",
+                params![end.run_id, end.session_id],
+                |row| row.get(0),
             )
-            .map_err(|error| format!("Could not save the session: {error}"))?;
-        if changed == 0 {
-            return Err("This session no longer exists.".into());
+            .map_err(|error| format!("Could not read the run: {error}"))?;
+        if status == "running" {
+            append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
+            if let Some(compaction) = &end.compaction {
+                let events = decode_events(&tx, &end.session_id)?;
+                let shadowed_through = shadow_for(&events, &compaction.surface);
+                append_events(
+                    &tx,
+                    &end.session_id,
+                    &[EventPayload::Compaction {
+                        summary: compaction.summary.clone(),
+                        shadowed_through,
+                        before: compaction.before,
+                        after: compaction.after,
+                    }],
+                    end.finished_at,
+                )?;
+            }
+            let changed = tx
+                .execute(
+                    "UPDATE sessions SET context_used = ?2, context_window = ?3, \
+                 updated_at = ?4 WHERE id = ?1",
+                    params![
+                        end.session_id,
+                        end.context.map(|context| context.used as i64),
+                        end.context.map(|context| context.window as i64),
+                        end.finished_at
+                    ],
+                )
+                .map_err(|error| format!("Could not save the session: {error}"))?;
+            if changed == 0 {
+                return Err("This session no longer exists.".into());
+            }
+            tx.execute(
+                "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
+                params![end.run_id, end.status, end.finished_at, end.error],
+            )
+            .map_err(|error| format!("Could not update the run: {error}"))?;
         }
-        tx.execute(
-            "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
-            params![end.run_id, end.status, end.finished_at, end.error],
-        )
-        .map_err(|error| format!("Could not update the run: {error}"))?;
         tx.commit()
             .map_err(|error| format!("Could not finish the run: {error}"))?;
 
@@ -1149,6 +1158,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, ("done".into(), Some(9)));
+    }
+
+    #[test]
+    fn retrying_a_finished_write_does_not_duplicate_the_reply() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store
+            .begin_run("s1", "r1", &turn("hello", None), 2)
+            .unwrap();
+        let end = RunEnd {
+            session_id: "s1".into(),
+            run_id: "r1".into(),
+            start_seq: 1,
+            status: "stopped",
+            finished_at: 3,
+            appended: vec![EventPayload::Message {
+                message: json!({ "role": "assistant", "content": "partial answer" }),
+                display: None,
+            }],
+            compaction: None,
+            context: None,
+            error: None,
+        };
+        store.finish_run(&end).unwrap();
+        let retried = store.finish_run(&end).unwrap();
+        assert_eq!(retried.events.len(), 2);
+        assert_eq!(retried.events[1].seq, 2);
     }
 
     #[test]

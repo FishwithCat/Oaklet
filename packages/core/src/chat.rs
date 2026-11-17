@@ -181,6 +181,8 @@ enum SentAttachment {
 struct ChatLive {
     runs: HashMap<String, RunHandle>,
     compacting: HashMap<String, CompactionHandle>,
+    closing: HashSet<String>,
+    unsaved: HashMap<String, (String, Arc<RunEnd>)>,
 }
 
 struct RunHandle {
@@ -248,7 +250,47 @@ impl ChatState {
 
     /// True while any chat in this window is still producing a turn.
     pub fn window_busy(&self, window: &str) -> bool {
-        self.live().runs.values().any(|run| run.window == window)
+        let live = self.live();
+        live.runs.values().any(|run| run.window == window)
+            || live
+                .compacting
+                .values()
+                .any(|handle| handle.window == window)
+    }
+
+    /// Wait for cancelled work to finish saving, retrying any earlier failed writes.
+    pub async fn drain(&self, window: Option<&str>) -> Result<(), String> {
+        loop {
+            let busy = {
+                let live = self.live();
+                live.runs
+                    .values()
+                    .any(|run| window.is_none_or(|label| run.window == label))
+                    || live
+                        .compacting
+                        .values()
+                        .any(|handle| window.is_none_or(|label| handle.window == label))
+            };
+            if !busy {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let unsaved: Vec<_> = self
+            .live()
+            .unsaved
+            .iter()
+            .filter(|(_, (label, _))| window.is_none_or(|window| label == window))
+            .map(|(id, (_, end))| (id.clone(), end.clone()))
+            .collect();
+        for (id, end) in unsaved {
+            let store = self.store.clone();
+            tauri::async_runtime::spawn_blocking(move || store.finish_run(&end))
+                .await
+                .map_err(|error| format!("Could not save the chat: {error}"))??;
+            self.live().unsaved.remove(&id);
+        }
+        Ok(())
     }
 
     fn view(&self, window: store::SessionWindow) -> SessionView {
@@ -634,6 +676,14 @@ pub async fn session_send(
     // both start a run for the same session.
     let (view, start_seq, messages) = {
         let mut live = state.chat.live();
+        if live.closing.contains(window.label())
+            || live
+                .unsaved
+                .values()
+                .any(|(_, end)| end.session_id == session_id)
+        {
+            return Err("This window is closing or has an unsaved reply. Retry closing it to save the chat.".into());
+        }
         if live.compacting.contains_key(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
@@ -729,6 +779,14 @@ pub async fn session_compact(
     }
     let cancel = {
         let mut live = state.chat.live();
+        if live.closing.contains(window.label())
+            || live
+                .unsaved
+                .values()
+                .any(|(_, end)| end.session_id == session_id)
+        {
+            return Err("This window is closing or has an unsaved reply. Retry closing it to save the chat.".into());
+        }
         if live.compacting.contains_key(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
@@ -857,7 +915,7 @@ async fn load_window(
 /// Cancel every live run, for a workspace switch or app exit.
 pub fn stop_all(state: &AppState) {
     let run_ids: Vec<String> = {
-        let mut live = state.chat.live();
+        let live = state.chat.live();
         let run_ids = live
             .runs
             .iter()
@@ -866,11 +924,8 @@ pub fn stop_all(state: &AppState) {
                 run_id.clone()
             })
             .collect::<Vec<_>>();
-        let compacting_ids: Vec<String> = live.compacting.keys().cloned().collect();
-        for session_id in compacting_ids {
-            if let Some(handle) = live.compacting.remove(&session_id) {
-                handle.cancel();
-            }
+        for handle in live.compacting.values() {
+            handle.cancel();
         }
         run_ids
     };
@@ -883,6 +938,7 @@ pub fn stop_all(state: &AppState) {
 pub fn stop_window(state: &AppState, label: &str) {
     let run_ids = {
         let mut live = state.chat.live();
+        live.closing.insert(label.to_string());
         let run_ids: Vec<String> = live
             .runs
             .iter()
@@ -892,16 +948,12 @@ pub fn stop_window(state: &AppState, label: &str) {
                 run_id.clone()
             })
             .collect();
-        let compacting_ids: Vec<String> = live
+        for handle in live
             .compacting
-            .iter()
-            .filter(|(_, handle)| handle.window == label)
-            .map(|(session_id, _)| session_id.clone())
-            .collect();
-        for session_id in &compacting_ids {
-            if let Some(handle) = live.compacting.remove(session_id) {
-                handle.cancel();
-            }
+            .values()
+            .filter(|handle| handle.window == label)
+        {
+            handle.cancel();
         }
         run_ids
     };
@@ -1922,7 +1974,7 @@ impl RunContext {
         } else {
             None
         };
-        let end = RunEnd {
+        let end = Arc::new(RunEnd {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
             start_seq: self.start_seq,
@@ -1937,9 +1989,10 @@ impl RunContext {
             compaction,
             context: final_view.context,
             error: error.clone(),
-        };
+        });
         let store = self.state.chat.store.clone();
-        let saved = tauri::async_runtime::spawn_blocking(move || store.finish_run(&end)).await;
+        let saving = end.clone();
+        let saved = tauri::async_runtime::spawn_blocking(move || store.finish_run(&saving)).await;
 
         let (session, save_error) = match saved {
             Ok(Ok(session)) => (Some(self.state.chat.view(session)), None),
@@ -1961,6 +2014,10 @@ impl RunContext {
 
         {
             let mut live = self.state.chat.live();
+            if save_error.is_some() {
+                live.unsaved
+                    .insert(self.run_id.clone(), (self.window_label.clone(), end));
+            }
             live.runs.remove(&self.run_id);
         }
 
@@ -2029,6 +2086,77 @@ mod tests {
     };
     use crate::store::{self, Event, EventPayload};
     use crate::tools::CancelHandle;
+
+    #[tokio::test]
+    async fn draining_waits_for_cancelled_compaction_to_settle() {
+        let state = ChatState::in_memory();
+        state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+        let (handle, cancel) = CancelHandle::new();
+        state.live().compacting.insert(
+            "s1".into(),
+            super::CompactionHandle {
+                window: "main".into(),
+                cancel: handle,
+            },
+        );
+        state.live().compacting.get("s1").unwrap().cancel();
+        assert!(cancel.is_cancelled());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                state.drain(Some("main"))
+            )
+            .await
+            .is_err()
+        );
+        state.live().compacting.remove("s1");
+        state.drain(Some("main")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_close_retains_the_reply_until_a_retry_can_save_it() {
+        let state = ChatState::in_memory();
+        let end = Arc::new(store::RunEnd {
+            session_id: "s1".into(),
+            run_id: "r1".into(),
+            start_seq: 1,
+            status: "stopped",
+            finished_at: 3,
+            appended: vec![EventPayload::Message {
+                message: json!({ "role": "assistant", "content": "partial answer" }),
+                display: None,
+            }],
+            compaction: None,
+            context: None,
+            error: None,
+        });
+        state
+            .live()
+            .unsaved
+            .insert("r1".into(), ("main".into(), end));
+        assert!(state.drain(Some("main")).await.is_err());
+        assert!(state.live().unsaved.contains_key("r1"));
+        state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+        state
+            .store
+            .begin_run(
+                "s1",
+                "r1",
+                &store::NewUserTurn {
+                    message: json!({ "role": "user", "content": "hello" }),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        state.drain(Some("main")).await.unwrap();
+        assert!(state.live().unsaved.is_empty());
+        assert_eq!(
+            state.store.get_session("s1").unwrap().unwrap().events.len(),
+            2
+        );
+    }
 
     #[test]
     fn live_runs_override_the_persisted_view() {

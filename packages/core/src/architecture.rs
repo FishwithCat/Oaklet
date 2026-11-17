@@ -548,6 +548,7 @@ mod tests {
 
     fn test_state() -> Arc<crate::AppState> {
         Arc::new(crate::AppState {
+            exit: std::sync::Mutex::new(crate::shutdown::ExitState::Running),
             config: std::sync::Mutex::new(crate::AppConfig::default()),
             config_path: PathBuf::new(),
             config_write: std::sync::Mutex::new(()),
