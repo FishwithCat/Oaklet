@@ -5,6 +5,8 @@
 
 .sidebar {
   flex: none;
+  position: relative;
+  z-index: 20;
   width: 56px;
   display: flex;
   flex-direction: column;

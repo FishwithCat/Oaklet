@@ -10,7 +10,9 @@ import { useAgentSession } from "../features/chat/useAgentSession";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
 import { applyTheme } from "../features/settings/theme";
 import { SkillsPopup } from "../features/skills/SkillsPopup";
+import { BranchMenu } from "../features/source-control/BranchMenu";
 import { SourceControl } from "../features/source-control/SourceControl";
+import { useGitBranch } from "../features/source-control/useGitBranch";
 import { useGitChanges } from "../features/source-control/useGitChanges";
 import { Terminal, type TerminalHandle } from "../features/terminal/Terminal";
 import Files, { type FilesHandle } from "../features/files/Files";
@@ -101,6 +103,52 @@ function App() {
     workspace: workspace ?? "",
     refreshToken: workspaceTick + savedTick,
   });
+  const {
+    branch,
+    branches,
+    branchLoaded,
+    loading: branchLoading,
+    loadError: branchLoadError,
+    switchingBranch,
+    branchError,
+    switchBranch,
+    reload: reloadBranches,
+    reportBranchError,
+    clearBranchError,
+  } = useGitBranch({
+    active: config !== null && workspace !== null,
+    refreshToken: workspaceTick,
+    onRefresh: () => setWorkspaceTick((value) => value + 1),
+  });
+
+  async function switchWorkspaceBranch(nextBranch: string): Promise<boolean> {
+    if (session.running) {
+      reportBranchError("Stop the running chat before switching branches.");
+      return false;
+    }
+    const tracked =
+      changes?.some((change) => change.status !== "untracked") ?? false;
+    if (tracked) {
+      const proceed = await confirm(
+        "Uncommitted changes stay in this workspace and move to the new branch. Switch anyway?",
+        {
+          title: "Uncommitted changes",
+          kind: "warning",
+          okLabel: "Switch branch",
+          cancelLabel: "Cancel",
+        },
+      ).catch(() => false);
+      if (!proceed) return false;
+    }
+    if (filesRef.current) {
+      if (!(await filesRef.current.canLeave())) return false;
+      // The open file may not exist, or may have different contents, on the
+      // branch being checked out.
+      filesRef.current.closeDocument();
+    }
+
+    return switchBranch(nextBranch);
+  }
 
   function newChat() {
     setView("chat");
@@ -238,6 +286,23 @@ function App() {
         onChooseWorkspace={chooseWorkspace}
         browsingWorkspace={browsingWorkspace}
         workspace={workspace}
+        branchControl={
+          branchLoaded ? (
+            <BranchMenu
+              iconOnly
+              active
+              branch={branch}
+              branches={branches}
+              loading={branchLoading}
+              loadError={branchLoadError}
+              switchingBranch={switchingBranch}
+              branchError={branchError}
+              onSwitch={switchWorkspaceBranch}
+              onReload={reloadBranches}
+              onClearError={clearBranchError}
+            />
+          ) : null
+        }
         skillsOpen={skillsOpen}
         onToggleSkills={() => setSkillsOpen((open) => !open)}
         onOpenSettings={() => setSettingsOpen(true)}

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   FolderOpenRegular,
   FolderTreeRegular,
@@ -21,6 +22,7 @@ export function Sidebar({
   onChooseWorkspace,
   browsingWorkspace,
   workspace,
+  branchControl,
   skillsOpen,
   onToggleSkills,
   onOpenSettings,
@@ -33,6 +35,7 @@ export function Sidebar({
   onChooseWorkspace: () => void;
   browsingWorkspace: boolean;
   workspace: string;
+  branchControl?: ReactNode;
   skillsOpen: boolean;
   onToggleSkills: () => void;
   onOpenSettings: () => void;
@@ -131,6 +134,7 @@ export function Sidebar({
         >
           <FolderOpenRegular size={16} />
         </button>
+        {branchControl && <div className="sidebar-branch">{branchControl}</div>}
         <button
           type="button"
           className={`ghost icon-button skills-toggle${

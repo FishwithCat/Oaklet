@@ -16,6 +16,15 @@ export type GitLog = {
 
 export type ChangeInfo = { path: string; status: string; unstaged: boolean };
 
+export function filterBranches(
+  branches: readonly string[],
+  query: string,
+): string[] {
+  const term = query.trim().toLowerCase();
+  if (!term) return [...branches];
+  return branches.filter((branch) => branch.toLowerCase().includes(term));
+}
+
 const CHANGE_STATUS: Record<string, { label: string; title: string }> = {
   untracked: { label: "U", title: "Untracked" },
   added: { label: "A", title: "Added" },

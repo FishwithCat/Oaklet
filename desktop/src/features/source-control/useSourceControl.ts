@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ChangeInfo, GitLog } from "./git-model";
-import { useGitBranch } from "./useGitBranch";
 
 export function useSourceControl({
   active,
@@ -24,16 +23,6 @@ export function useSourceControl({
   const [diffError, setDiffError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const {
-    branch,
-    branches,
-    branchLoaded,
-    loadError,
-    switchingBranch,
-    branchError,
-    switchBranch,
-    clearBranchError,
-  } = useGitBranch({ active, refreshToken, onRefresh });
 
   useEffect(() => {
     if (!active || tab !== "commits") {
@@ -129,10 +118,8 @@ export function useSourceControl({
   return {
     tab,
     setTab,
-    hasLog: branchLoaded,
+    hasLog: log !== null || changes !== null,
     commits,
-    branches,
-    branch,
     commit,
     change,
     selectedCommit,
@@ -143,11 +130,7 @@ export function useSourceControl({
     diffReady,
     diffError,
     loading,
-    error: error || loadError,
-    switchingBranch,
-    branchError,
-    clearBranchError,
-    switchBranch,
+    error,
     refresh: onRefresh,
   };
 }

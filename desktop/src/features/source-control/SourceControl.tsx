@@ -5,7 +5,6 @@ import {
   Refresh3Regular,
 } from "@mingcute/react/core-regular";
 import { PaneResizer } from "../../shared/PaneResizer";
-import { BranchMenu } from "./BranchMenu";
 import { Diff } from "./Diff";
 import {
   fullDate,
@@ -34,8 +33,6 @@ export function SourceControl({
     hasLog,
     setTab,
     commits,
-    branches,
-    branch,
     commit,
     change,
     selectedCommit,
@@ -47,10 +44,6 @@ export function SourceControl({
     diffError,
     loading,
     error,
-    switchingBranch,
-    branchError,
-    clearBranchError,
-    switchBranch,
     refresh,
   } = useSourceControl({ active, changes, refreshToken, onRefresh });
   const [listWidth, setListWidth] = useState(300);
@@ -63,17 +56,6 @@ export function SourceControl({
           <GitBranch2Regular size={14} />
         </span>
         <span className="view-bar-title">Source control</span>
-        {hasLog && (
-          <BranchMenu
-            active={active}
-            branch={branch}
-            branches={branches}
-            switchingBranch={switchingBranch}
-            branchError={branchError}
-            onSwitch={switchBranch}
-            onClearError={clearBranchError}
-          />
-        )}
         <button
           type="button"
           className="ghost icon-button view-bar-refresh"

@@ -15,8 +15,6 @@ import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
 import { previewFontShortcut } from "../../app/shortcuts";
-import { BranchMenu } from "../source-control/BranchMenu";
-import { useGitBranch } from "../source-control/useGitBranch";
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
@@ -32,6 +30,7 @@ export type FilesHandle = {
   canLeave: () => Promise<boolean>;
   hasUnsaved: () => boolean;
   open: (path: string) => void;
+  closeDocument: () => void;
 };
 type Document = { path: string; original: string; content: string };
 
@@ -69,15 +68,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const dirty = document !== null && document.content !== editorText(document.original);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
-  const {
-    branch,
-    branches,
-    branchLoaded,
-    switchingBranch,
-    branchError,
-    switchBranch,
-    clearBranchError,
-  } = useGitBranch({ active, refreshToken, onRefresh });
 
   async function canLeave() {
     if (busyRef.current) return false;
@@ -99,6 +89,11 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     canLeave,
     hasUnsaved: () => dirtyRef.current || busyRef.current,
     open: (path) => { void openFile(path, isMarkdownPath(path)); },
+    closeDocument: () => {
+      setDocument(null);
+      setPreview(false);
+      dirtyRef.current = false;
+    },
   }));
 
   useEffect(() => {
@@ -155,15 +150,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     finally { busyRef.current = false; setBusy(false); }
   }
 
-  async function switchBranchSafely(next: string): Promise<boolean> {
-    if (!await canLeave()) return false;
-    // The open file may not exist, or may have different contents, on the
-    // branch being checked out.
-    setDocument(null);
-    dirtyRef.current = false;
-    return switchBranch(next);
-  }
-
   return (
     <section className="files-panel" hidden={!active} aria-label="Files" onKeyDown={(event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -176,22 +162,11 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           <FolderTreeRegular size={14} />
         </span>
         <span className="view-bar-title">Files</span>
-        {branchLoaded && (
-          <BranchMenu
-            active={active}
-            branch={branch}
-            branches={branches}
-            switchingBranch={switchingBranch}
-            branchError={branchError}
-            onSwitch={switchBranchSafely}
-            onClearError={clearBranchError}
-          />
-        )}
         <button
           type="button"
           className="ghost icon-button view-bar-refresh"
           onClick={onRefresh}
-          disabled={busy || switchingBranch !== null}
+          disabled={busy}
           aria-label="Refresh files"
           title="Refresh files"
         >

@@ -100,10 +100,15 @@ workspace.
 can be previewed, and **⌘S** saves.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
-**Commits** (current branch, last 100 commits, and the diff of each with
-per-file stats). The branch pill switches branches, and the sidebar badge counts
-files with unstaged changes. Diff previews are limited to 1 MiB, show one file
-at a time, and paginate at 200 lines.
+**Commits** (last 100 commits, and the diff of each with per-file stats). The
+sidebar badge counts files with unstaged changes. Diff previews are limited to
+1 MiB, show one file at a time, and paginate at 200 lines.
+
+The branch icon below the workspace button in the sidebar switches the
+workspace's branch. The menu filters branches as you type and refreshes them on
+open; its refresh button picks up branches created outside Oaklet. Switching is
+refused while a chat is running, asks before carrying uncommitted changes to the
+new branch, and closes the open file because its contents may change.
 
 **Architecture** discovers LikeC4 models in the workspace and renders their
 views. **Generate architecture** and **Update with agent** put an editable prompt
