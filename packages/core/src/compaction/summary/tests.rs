@@ -141,6 +141,30 @@ async fn rejects_truncated_and_oversized_summary_responses() {
 }
 
 #[tokio::test]
+async fn accepts_end_turn_as_a_completed_summary() {
+    let (base_url, _, server) = summary_server_with(vec![(
+        200,
+        r#"{"choices":[{"finish_reason":"end_turn","message":{"content":"Goal: done."}}]}"#,
+    )]);
+    let config = AppConfig {
+        base_url,
+        ..AppConfig::default()
+    };
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let summary = summarize(
+        &reqwest::Client::new(),
+        &config,
+        &[system(), user("old")],
+        None,
+        &cancel,
+    )
+    .await
+    .unwrap();
+    server.join().unwrap();
+    assert!(summary.contains("Goal: done."));
+}
+
+#[tokio::test]
 async fn summary_budget_accepts_a_prefix_above_the_main_trigger() {
     let (base_url, seen, server) = summary_server();
     let config = AppConfig {
@@ -225,6 +249,20 @@ fn summary_replay_preserves_image_information_and_strips_internal_identity() {
     let replayed = summary_messages(&[crate::store::checkpoint(user("old")), original.clone()]);
     assert_eq!(replayed[1], original);
     assert!(replayed[0].get("oaklet_checkpoint").is_none());
+}
+
+#[test]
+fn summary_replay_omits_oversized_image_data_urls() {
+    let large = format!("data:image/png;base64,{}", "A".repeat(20_000));
+    let image = json!({"role":"user", "content":[
+        {"type":"text", "text":"inspect this screenshot"},
+        {"type":"image_url", "image_url":{"url":large}},
+    ]});
+    let replayed = summary_messages(&[image]);
+    let text = replayed[0].to_string();
+    assert!(text.contains("image omitted"));
+    assert!(!text.contains(&"A".repeat(1_000)));
+    assert!(text.contains("inspect this screenshot"));
 }
 
 #[tokio::test]

@@ -10,6 +10,10 @@ use crate::tools::{Cancel, ToolRegistry, cap};
 
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Base64 data URLs above this are replaced in the replay; they are priced as
+/// one image but would still travel as megabytes in the request body.
+const REPLAY_IMAGE_CHARS: usize = 4_000;
+
 pub(super) fn output_limit(config: &AppConfig) -> usize {
     (config.context_window / 8).clamp(512, 4_096)
 }
@@ -115,7 +119,7 @@ pub(super) async fn summarize(
     if let Some(reason) = value
         .pointer("/choices/0/finish_reason")
         .and_then(Value::as_str)
-        && reason != "stop"
+        && !matches!(reason, "stop" | "end_turn" | "stop_sequence")
     {
         return Err(format!(
             "The summary did not finish ({reason}); nothing was compacted."
@@ -146,6 +150,7 @@ pub(super) async fn summarize(
 fn summary_messages(prefix: &[Value]) -> Vec<Value> {
     let mut messages: Vec<Value> = crate::context::request_messages(prefix)
         .into_iter()
+        .map(omit_oversized_images)
         .filter(|message| {
             !(role(message) == Some("system")
                 && message
@@ -156,6 +161,33 @@ fn summary_messages(prefix: &[Value]) -> Vec<Value> {
         .collect();
     messages.push(json!({ "role": "user", "content": COMPACTION_INSTRUCTION }));
     messages
+}
+
+fn omit_oversized_images(mut message: Value) -> Value {
+    let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return message;
+    };
+    for part in parts {
+        let is_image = matches!(
+            part.get("type").and_then(Value::as_str),
+            Some("image_url" | "input_image")
+        );
+        if !is_image {
+            continue;
+        }
+        let url = part
+            .pointer("/image_url/url")
+            .and_then(Value::as_str)
+            .or_else(|| part.get("image_url").and_then(Value::as_str))
+            .or_else(|| part.get("url").and_then(Value::as_str));
+        if url.is_some_and(|url| url.chars().count() > REPLAY_IMAGE_CHARS) {
+            *part = json!({
+                "type": "text",
+                "text": "[image omitted from the summary replay to keep the request bounded]",
+            });
+        }
+    }
+    message
 }
 
 /// Empty means the main model, which lets the summary request reuse that
