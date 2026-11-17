@@ -478,18 +478,28 @@ pub(crate) fn shadow_for(events: &[Event], surface: &[Value]) -> i64 {
     // latest place it matches instead of assuming it ends at the last event.
     for end in (retained.len()..=pairs.len()).rev() {
         let start = end - retained.len();
-        if pairs[end - 1].1 != retained[retained.len() - 1] {
+        if !same_surface_message(pairs[end - 1].1, retained[retained.len() - 1]) {
             continue;
         }
         if pairs[start..end]
             .iter()
             .zip(&retained)
-            .all(|(pair, expected)| pair.1 == *expected)
+            .all(|(pair, expected)| same_surface_message(pair.1, expected))
         {
             return if start == 0 { 0 } else { pairs[start - 1].0 };
         }
     }
     0
+}
+
+fn same_surface_message(original: &Value, retained: &Value) -> bool {
+    original == retained
+        // Context trimming changes tool text, but preserves the call identity.
+        || (original["role"] == "tool"
+            && retained["role"] == "tool"
+            && original["tool_call_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && retained["tool_call_id"] == id))
 }
 
 /// SQLite-backed session and run storage.
@@ -1295,6 +1305,81 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(history[0].1["content"], "old");
         assert_eq!(history[1].1["content"], "old answer");
+    }
+
+    #[test]
+    fn trimmed_tools_do_not_restore_shadowed_history_or_lose_a_partial_reply() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store
+            .begin_run("s1", "r1", &turn("old request", None), 2)
+            .unwrap();
+        let call = json!({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                "name": "read_file", "arguments": "{}"
+            }}],
+        });
+        let original_tool = json!({
+            "role": "tool", "tool_call_id": "call-1", "content": "output".repeat(2000),
+        });
+        let mut trimmed_tool = original_tool.clone();
+        trimmed_tool["content"] = json!("trimmed output");
+        let summary = json!({
+            "role": "user",
+            "content": "<compacted-summary>old work</compacted-summary>\ncurrent request",
+        });
+        let partial = json!({"role": "assistant", "content": "partial reply"});
+        let originals = [
+            json!({"role": "assistant", "content": "old answer"}),
+            json!({"role": "user", "content": "current request"}),
+            call.clone(),
+            original_tool.clone(),
+            partial.clone(),
+        ];
+        store
+            .finish_run(&RunEnd {
+                session_id: "s1".into(),
+                run_id: "r1".into(),
+                start_seq: 1,
+                status: "stopped",
+                finished_at: 3,
+                appended: originals
+                    .iter()
+                    .map(|message| EventPayload::Message {
+                        message: message.clone(),
+                        display: None,
+                    })
+                    .collect(),
+                compaction: Some(CompactionEnd {
+                    summary: summary.clone(),
+                    surface: vec![summary.clone(), call.clone(), trimmed_tool],
+                    before: 10000,
+                    after: 100,
+                }),
+                context: None,
+                error: None,
+            })
+            .unwrap();
+
+        let next = store
+            .begin_run("s1", "r2", &turn("continue", None), 4)
+            .unwrap();
+        assert_eq!(
+            next.prior_messages,
+            vec![summary, call, original_tool, partial]
+        );
+        let (archived, _) = store.read_history("s1", 1, 10).unwrap();
+        assert_eq!(archived[0].1["content"], "old request");
+        assert_eq!(archived[2].1["content"], "current request");
+        let session = store.get_session("s1").unwrap().unwrap();
+        assert_eq!(
+            session.events[4].payload,
+            EventPayload::Message {
+                message: originals[3].clone(),
+                display: None,
+            }
+        );
     }
 
     #[test]
