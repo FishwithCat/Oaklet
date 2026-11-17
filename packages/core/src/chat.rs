@@ -807,12 +807,12 @@ pub async fn session_compact(
         cancel
     };
 
+    let slot = CompactionSlot {
+        chat: &state.chat,
+        session_id: session_id.clone(),
+    };
     let result = compact_session(state.inner(), &session_id, &cancel).await;
-
-    {
-        let mut live = state.chat.live();
-        live.compacting.remove(&session_id);
-    }
+    drop(slot);
 
     let (session, before, after, compacted) = result?;
     Ok(CompactResult {
@@ -821,6 +821,18 @@ pub async fn session_compact(
         after,
         compacted,
     })
+}
+
+/// Clears the manual-compaction flag even if the command is dropped mid-way.
+struct CompactionSlot<'a> {
+    chat: &'a ChatState,
+    session_id: String,
+}
+
+impl Drop for CompactionSlot<'_> {
+    fn drop(&mut self) {
+        self.chat.live().compacting.remove(&self.session_id);
+    }
 }
 
 #[tauri::command]
@@ -2147,6 +2159,25 @@ mod tests {
         );
         state.live().compacting.remove("s1");
         state.drain(Some("main")).await.unwrap();
+    }
+
+    #[test]
+    fn dropping_a_compaction_slot_releases_the_session() {
+        let state = ChatState::in_memory();
+        let (handle, _cancel) = CancelHandle::new();
+        state.live().compacting.insert(
+            "s1".into(),
+            super::CompactionHandle {
+                window: "main".into(),
+                cancel: handle,
+            },
+        );
+        let slot = super::CompactionSlot {
+            chat: &state,
+            session_id: "s1".into(),
+        };
+        drop(slot);
+        assert!(state.live().compacting.is_empty());
     }
 
     #[tokio::test]
