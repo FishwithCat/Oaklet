@@ -10,7 +10,7 @@ use crate::tools::{Cancel, ToolRegistry, cap};
 
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
 
-pub(super) const COMPACTION_INSTRUCTION: &str = "\
+const COMPACTION_INSTRUCTION: &str = "\
 Condense the conversation above into a checkpoint that the same coding agent will read to continue \
 the task. Preserve the facts needed to keep working; drop greetings, repetition, and raw tool \
 output that no longer matters.

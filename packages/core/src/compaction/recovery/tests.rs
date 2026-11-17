@@ -1,6 +1,7 @@
 use super::super::history::TOOL_IMAGE_NOTICE;
 use super::*;
 use crate::compaction::test_support::*;
+use crate::compaction::trigger_at;
 
 #[test]
 fn forced_compaction_keeps_a_smaller_tail_than_normal_compaction() {
@@ -161,13 +162,13 @@ async fn dropped_middle_turn_restores_a_contiguous_tail_after_a_merged_checkpoin
     };
     store.begin_run("s", "seed", &turn(user("old")), 2).unwrap();
     let answer_a = assistant(&"a".repeat(400));
-    let request_b = user(&"b".repeat(200));
+    let request_b = user(&"b".repeat(800));
     let originals = vec![
         assistant("old done"),
         user("request A"),
         answer_a.clone(),
         request_b.clone(),
-        assistant(&"b".repeat(200)),
+        assistant(&"b".repeat(800)),
     ];
     store
         .finish_run(&RunEnd {
@@ -649,4 +650,70 @@ async fn force_keeps_a_bounded_digest_when_the_summary_prefix_would_overflow() {
             .is_some_and(|text| text.contains("user: request 0"))
     }));
     assert!(estimate_tokens(&next) <= trigger_at(config.context_window));
+}
+
+#[tokio::test]
+async fn long_turn_summary_budget_includes_tool_schemas() {
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let config = AppConfig {
+        base_url: format!("http://{}", listener.local_addr().unwrap()),
+        context_window: 8_192,
+        ..AppConfig::default()
+    };
+    let mut messages = tool_history(10);
+    messages.pop();
+    // Short results leave the prefix itself within budget; schemas push it over.
+    for message in &mut messages {
+        if role(message) == Some("tool") {
+            message["content"] = json!("x".repeat(1_000));
+        }
+    }
+    let tools = large_tool_registry();
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let client = reqwest::Client::builder()
+        .read_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let compacted = force(&client, &config, &messages, &tools, &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+    assert_compaction_restores(&messages, &compacted);
+}
+
+#[tokio::test]
+async fn forced_compaction_does_not_grow_history_when_the_system_prompt_dominates() {
+    let config = AppConfig {
+        context_window: 4_096,
+        base_url: "invalid://summary".into(),
+        ..AppConfig::default()
+    };
+    let messages = vec![
+        json!({"role": "system", "content": "s".repeat(8_000)}),
+        user("hi"),
+        assistant("hello"),
+        user("continue"),
+    ];
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    assert!(
+        force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
 }

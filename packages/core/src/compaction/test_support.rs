@@ -169,3 +169,33 @@ pub(super) fn assert_compaction_restores(original: &[Value], compacted: &Compact
     assert!(total > 0);
     assert_eq!(archived[0].1, original[1]);
 }
+
+pub(super) fn large_tool_registry() -> crate::tools::ToolRegistry {
+    use futures_util::future::BoxFuture;
+
+    use crate::tools::{Tool, ToolContext, ToolError, ToolOutput};
+
+    struct BigSchema(String);
+    impl Tool for BigSchema {
+        fn name(&self) -> &str {
+            "big_schema"
+        }
+        fn description(&self) -> &str {
+            &self.0
+        }
+        fn parameters(&self) -> Value {
+            json!({ "type": "object" })
+        }
+        fn execute<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            Box::pin(async { Ok(ToolOutput::text("")) })
+        }
+    }
+
+    let mut tools = crate::tools::ToolRegistry::new();
+    tools.push_for_test(Box::new(BigSchema("d".repeat(20_000))));
+    tools
+}

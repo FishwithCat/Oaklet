@@ -137,42 +137,47 @@ async fn compact_at(
     cancel: &Cancel,
     mode: CompactMode,
 ) -> Result<Compacted, String> {
-    let drop_on_failure = !matches!(mode, CompactMode::Manual);
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
+    let manual = matches!(mode, CompactMode::Manual);
     let skip_request = match mode {
         CompactMode::LongTurn(request) => Some(request),
         _ => None,
     };
     let replaced = messages[1..cut].to_vec();
-    let replaced_tokens = estimate_tokens(&replaced);
 
-    let summary = match summarize(client, config, &messages[..cut], tools, cancel).await {
-        Ok(summary) => summary,
-        Err(err) => {
-            if cancel.is_cancelled() {
-                return Err("Stopped.".into());
+    if prefix_fits(messages, cut, config, tools) {
+        match summarize(client, config, &messages[..cut], tools, cancel).await {
+            Ok(summary) => {
+                let compacted = assemble(messages, cut, &summary);
+                // Count checkpoint framing and the archive notice in the shrink check.
+                if estimate_tokens(&compacted) < estimate_tokens(messages) {
+                    return Ok(Compacted {
+                        messages: compacted,
+                        replaced,
+                    });
+                }
+                note_fallback("checkpoint would not shrink the history");
+                if manual {
+                    let replaced_tokens = estimate_tokens(&replaced);
+                    return Err(format!(
+                        "The checkpoint would not be smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
+                    ));
+                }
             }
-            note_fallback(&err);
-            if !drop_on_failure {
-                return Err(err);
+            Err(err) => {
+                if cancel.is_cancelled() {
+                    return Err("Stopped.".into());
+                }
+                note_fallback(&err);
+                if manual {
+                    return Err(err);
+                }
             }
-            fallback_summary(messages, cut, skip_request)
         }
-    };
-
-    let compacted = assemble(messages, cut, &summary);
-    if estimate_tokens(&compacted) < estimate_tokens(messages) {
-        return Ok(Compacted {
-            messages: compacted,
-            replaced,
-        });
-    }
-    // A summary can pass a text-only check yet grow the prompt once the
-    // checkpoint framing and archive notice are added. Compare the real result.
-    note_fallback("checkpoint would not shrink the history");
-    if !drop_on_failure {
-        return Err(format!(
-            "The checkpoint would not be smaller than the history it replaced ({replaced_tokens} tokens); nothing was compacted."
-        ));
+    } else {
+        note_fallback("summary prefix would not fit");
     }
     Ok(Compacted {
         messages: assemble(
@@ -197,6 +202,9 @@ pub async fn compact_messages(
     messages: &[Value],
     cancel: &Cancel,
 ) -> Result<Option<Compacted>, String> {
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
     let mut history = Vec::with_capacity(messages.len() + 1);
     history.push(json!({ "role": "system", "content": "" }));
     history.extend_from_slice(messages);
@@ -208,24 +216,16 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let compacted = if prefix_fits(&history, cut, config, None) {
-        compact_at(
-            client,
-            config,
-            &history,
-            cut,
-            None,
-            cancel,
-            CompactMode::Manual,
-        )
-        .await?
-    } else {
-        note_fallback("summary prefix would not fit");
-        Compacted {
-            messages: assemble(&history, cut, &fallback_summary(&history, cut, None)),
-            replaced: history[1..cut].to_vec(),
-        }
-    };
+    let compacted = compact_at(
+        client,
+        config,
+        &history,
+        cut,
+        None,
+        cancel,
+        CompactMode::Manual,
+    )
+    .await?;
     Ok(Some(Compacted {
         messages: compacted.messages[1..].to_vec(),
         replaced: compacted.replaced,

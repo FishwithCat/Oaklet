@@ -100,13 +100,13 @@ async fn pressure_trimming_observes_cancellation() {
 async fn insufficient_pressure_trimming_summarizes_the_original_prefix() {
     use crate::tools::CancelHandle;
 
-    // The second case fits locally, but provider-reported overhead still requires a summary.
-    for (count, overhead) in [(40, 0), (20, 8_000)] {
+    // Provider-reported overhead requires a summary even though trimming fits locally.
+    for (count, overhead) in [(40, 100_000), (20, 100_000)] {
         let (base_url, seen, server) = summary_server();
         let messages = tool_history(count);
         let config = AppConfig {
             base_url,
-            context_window: 32_768,
+            context_window: 131_072,
             ..AppConfig::default()
         };
         let cut = select_cut(&messages, retain_at(config.context_window), MIN_REPLACED).unwrap();
@@ -299,7 +299,7 @@ async fn replaces_the_middle_with_the_model_summary() {
 
     let config = AppConfig {
         base_url,
-        context_window: 8_192,
+        context_window: 32_768,
         ..AppConfig::default()
     };
     let (_handle, cancel) = CancelHandle::new();
@@ -385,7 +385,7 @@ async fn retries_without_tools_when_a_provider_rejects_tool_choice() {
     }
     let config = AppConfig {
         base_url,
-        context_window: 8_192,
+        context_window: 32_768,
         ..AppConfig::default()
     };
     let (_handle, cancel) = CancelHandle::new();
@@ -413,4 +413,66 @@ async fn retries_without_tools_when_a_provider_rejects_tool_choice() {
     assert!(second.get("tools").is_none());
     assert!(second.get("tool_choice").is_none());
     assert_eq!(second["messages"], first["messages"]);
+}
+
+#[tokio::test]
+async fn every_entry_observes_cancellation_before_rewriting_history() {
+    let config = AppConfig {
+        context_window: 1_024,
+        base_url: "invalid://summary".into(),
+        ..AppConfig::default()
+    };
+    let (handle, cancel) = crate::tools::CancelHandle::new();
+    handle.cancel();
+    let client = reqwest::Client::new();
+    let tools = ToolRegistry::new();
+    for messages in [Vec::new(), tool_history(20)] {
+        assert!(matches!(
+            force(&client, &config, &messages, &tools, &cancel).await,
+            Err(error) if error == "Stopped."
+        ));
+        assert!(matches!(
+            compact_messages(&client, &config, &messages, &cancel).await,
+            Err(error) if error == "Stopped."
+        ));
+    }
+}
+
+#[tokio::test]
+async fn automatic_compaction_skips_an_oversized_summary_prefix() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let config = AppConfig {
+        base_url: format!("http://{}", listener.local_addr().unwrap()),
+        context_window: 8_192,
+        ..AppConfig::default()
+    };
+    let messages = tool_history(20);
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let client = reqwest::Client::builder()
+        .read_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let compacted = compact(
+        &client,
+        &config,
+        &messages,
+        estimate_tokens(&messages),
+        &ToolRegistry::new(),
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(estimate_tokens(&compacted.messages) < estimate_tokens(&messages));
+    assert!(
+        compacted.messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Fix the build")
+    );
 }

@@ -50,9 +50,6 @@ pub(super) fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> Stri
     let mut requests = Vec::new();
     let mut previous_progress = Vec::new();
     for (index, message) in messages.iter().enumerate() {
-        if Some(index) == skip {
-            continue;
-        }
         let content = match message.get("content") {
             Some(Value::String(text)) => text.clone(),
             Some(Value::Array(parts)) => parts
@@ -88,7 +85,9 @@ pub(super) fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> Stri
                             previous_progress.push(progress.to_string());
                         }
                     }
-                    if !request.trim().is_empty() && !checkpoints.is_empty() {
+                    if Some(index) == skip {
+                        String::new()
+                    } else if !request.trim().is_empty() && !checkpoints.is_empty() {
                         requests.push(request);
                         String::new()
                     } else {

@@ -348,3 +348,15 @@ fn inserts_the_checkpoint_before_an_assistant_tail() {
     assert!(next[1]["content"].as_str().unwrap().contains("checkpoint"));
     assert_eq!(next[2]["content"], "kept");
 }
+
+#[test]
+fn skipping_the_live_request_still_preserves_its_checkpoint() {
+    let messages = [
+        user("<compacted-summary>Never deploy to production.</compacted-summary>\n\nLIVE_REQUEST"),
+        assistant("Completed the migration."),
+    ];
+    let digest = mechanical_digest(&messages, Some(0));
+    assert!(digest.contains("Never deploy to production."));
+    assert!(digest.contains("Completed the migration."));
+    assert!(!digest.contains("LIVE_REQUEST"));
+}

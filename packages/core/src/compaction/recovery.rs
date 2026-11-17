@@ -2,19 +2,14 @@
 
 use serde_json::{Value, json};
 
-use super::checkpoint::{
-    DROPPED, assemble, checkpoint_parts, fallback_summary, mechanical_digest, prepend_text,
-};
+use super::checkpoint::{DROPPED, assemble, checkpoint_parts, mechanical_digest, prepend_text};
 use super::history::{
     FORCE_TOOL_OUTPUT_CHARS, FORCE_TOOL_OUTPUT_HEAD_CHARS, FORCE_TOOL_OUTPUT_TAIL_CHARS,
     latest_user, role, select_cut, trim_tool_outputs,
 };
-use super::summary::{COMPACTION_INSTRUCTION, prefix_fits};
-use super::{
-    CompactMode, Compacted, MIN_REPLACED, compact_at, note_fallback, retain_at, trigger_at,
-};
+use super::{CompactMode, Compacted, MIN_REPLACED, compact_at, retain_at};
 use crate::AppConfig;
-use crate::context::{estimate_message, estimate_text, estimate_tokens};
+use crate::context::{estimate_message, estimate_tokens};
 use crate::store::is_checkpoint;
 use crate::tools::{Cancel, ToolRegistry};
 
@@ -51,6 +46,9 @@ pub async fn force(
     tools: &ToolRegistry,
     cancel: &Cancel,
 ) -> Result<Option<Compacted>, String> {
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
     let target = force_retain_at(config.context_window);
     let (mut next, mut replaced) = trim_tool_outputs(
         messages,
@@ -64,22 +62,17 @@ pub async fn force(
         && let Some(cut) = select_cut(&next, target, MIN_REPLACED.min(target))
     {
         let merged = cut < next.len() && role(&next[cut]) == Some("user");
-        next = if prefix_fits(&next, cut, config, Some(tools)) {
-            compact_at(
-                client,
-                config,
-                &next,
-                cut,
-                Some(tools),
-                cancel,
-                CompactMode::Auto,
-            )
-            .await?
-            .messages
-        } else {
-            note_fallback("summary prefix would not fit");
-            assemble(&next, cut, &fallback_summary(&next, cut, None))
-        };
+        next = compact_at(
+            client,
+            config,
+            &next,
+            cut,
+            Some(tools),
+            cancel,
+            CompactMode::Auto,
+        )
+        .await?
+        .messages;
         // Trim/summarize/drop rewrite or remove messages; collect their original
         // indices so the archive always holds the untrimmed text.
         replaced.extend(1..cut);
@@ -131,23 +124,17 @@ pub async fn force(
                 }
                 _ => {}
             }
-            let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
-                <= trigger_at(config.context_window);
-            let mut compacted = if prefix_fits {
-                compact_at(
-                    client,
-                    config,
-                    &next,
-                    cut,
-                    Some(tools),
-                    cancel,
-                    CompactMode::LongTurn(current),
-                )
-                .await?
-                .messages
-            } else {
-                assemble(&next, cut, &fallback_summary(&next, cut, Some(current)))
-            };
+            let mut compacted = compact_at(
+                client,
+                config,
+                &next,
+                cut,
+                Some(tools),
+                cancel,
+                CompactMode::LongTurn(current),
+            )
+            .await?
+            .messages;
             prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
             compacted[1] = request;
             if estimate_tokens(&compacted) < estimate_tokens(&next) {
@@ -157,7 +144,7 @@ pub async fn force(
         }
     }
 
-    if next == messages {
+    if estimate_tokens(&next) >= estimate_tokens(messages) {
         return Ok(None);
     }
     Ok(Some(Compacted {
