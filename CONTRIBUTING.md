@@ -215,18 +215,20 @@ smaller window compacts the saved history before it is sent.
 
 If an automatic summary fails or does not shrink the history, Oaklet uses a
 mechanical checkpoint with user requirements, assistant text, tool signatures,
-and short results. Older checkpoints and long tool bodies are omitted; text is
-capped at 4,000 characters per message and for the whole digest, keeping the
-goal at the head and recent progress at the tail when the digest is too long.
-Only when this checkpoint still cannot shrink history does it fall back to a drop notice.
-Manual compaction keeps the original history and reports summary failures.
+and short results. Prior checkpoints and long tool bodies are bounded; text is
+capped at 4,000 characters per message, the request block and the progress block
+each have their own budget, and only the tail of older progress survives so the
+newest entries are kept. Only when this checkpoint still cannot shrink history
+does it fall back to a drop notice. Manual compaction reports summary failures,
+but when the summary request itself cannot fit the window it writes a mechanical
+checkpoint instead.
 
-Compaction does not discard the originals. `apply_compaction` and a run's final
-write archive every replaced message in `session_history` in the same
-transaction that writes the shorter history. Once a chat has archived history,
-the agent also gets a `history_read(offset, limit)` tool that pages those
-originals back as a transcript, so an aggressive summary can hide an exact
-command or error without making it unrecoverable.
+Compaction does not discard the originals. They stay in `session_events`; the
+compaction event records a `shadowed_through` boundary, and the next surface
+starts after it. Once a chat has archived history, the agent also gets a
+`history_read(offset, limit)` tool that pages those originals back as a
+transcript, so an aggressive summary can hide an exact command or error without
+making it unrecoverable.
 
 A run has no fixed step limit. Three cheaper controls bound the cost: every
 potentially slow tool call has its own timeout (`run_command` 120 seconds, MCP
