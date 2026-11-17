@@ -58,6 +58,10 @@ const SUMMARY_TIMEOUT: Duration = Duration::from_secs(240);
 /// Bound new log excerpts; a prior checkpoint is retained in full during fallback.
 const DIGEST_TEXT_CHARS: usize = 4_000;
 const DIGEST_TOOL_CHARS: usize = 500;
+const PROGRESS_START: &str = "\n\n<checkpoint-progress>\n";
+const PROGRESS_END: &str = "\n</checkpoint-progress>";
+const REQUESTS_START: &str = "\n\n<checkpoint-requests>\n";
+const REQUESTS_END: &str = "\n</checkpoint-requests>";
 const ARCHIVE_NOTICE: &str = "Earlier messages replaced by this checkpoint are archived; call \
 history_read if you need their exact commands, errors, or file contents.";
 
@@ -229,13 +233,16 @@ pub async fn force(
         let Some((dropped, removed)) = drop_oldest_turn(&next) else {
             break;
         };
-        replaced.extend(origins.drain(removed).flatten());
+        replaced.extend(origins[removed.clone()].iter().flatten().copied());
+        origins = reassemble_origins(&origins, removed.end, true);
         next = dropped;
     }
 
     // Keep the request verbatim while checkpointing completed work inside a long turn.
     if estimate_tokens(&next) > target {
         let current = latest_user(&next);
+        let latest_block =
+            (current + 1..next.len()).rfind(|&index| role(&next[index]) == Some("assistant"));
         let mut suffix = estimate_tokens(&next);
         let cut = next
             .iter()
@@ -246,7 +253,7 @@ pub async fn force(
                 suffix = suffix.saturating_sub(estimate_message(message));
                 fits.then_some(index)
             })
-            .or_else(|| (next.len() > current + 2).then_some(next.len()));
+            .or_else(|| latest_block.filter(|&index| index > current + 1));
         if let Some(cut) = cut {
             let mut request = next[current].clone();
             match &mut request["content"] {
@@ -397,13 +404,16 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<u
         return None;
     }
 
-    if start == 1 {
-        return Some((assemble(messages, end, DROPPED), start..end));
-    }
-    let mut next = Vec::with_capacity(messages.len() - (end - start));
-    next.extend_from_slice(&messages[..start]);
-    next.extend_from_slice(&messages[end..]);
-    Some((next, start..end))
+    // Fold the kept prefix into the checkpoint so the persisted tail stays contiguous.
+    let kept = mechanical_digest(&messages[1..start]);
+    let summary = if kept.is_empty() {
+        DROPPED.to_string()
+    } else if kept.contains(DROPPED) {
+        kept
+    } else {
+        format!("{kept}\n\n{DROPPED}")
+    };
+    Some((assemble(messages, end, &summary), 1..end))
 }
 
 /// Summarize `messages[1..cut]` and replace that range with one checkpoint.
@@ -471,6 +481,8 @@ fn fallback_summary(messages: &[Value], cut: usize) -> String {
 fn mechanical_digest(messages: &[Value]) -> String {
     let mut entries = Vec::new();
     let mut checkpoints = Vec::new();
+    let mut requests = Vec::new();
+    let mut previous_progress = Vec::new();
     for message in messages {
         let content = match message.get("content") {
             Some(Value::String(text)) => text.clone(),
@@ -486,9 +498,33 @@ fn mechanical_digest(messages: &[Value]) -> String {
                 let text = if role(message) == Some("user") {
                     let (summary, request) = checkpoint_parts(&content);
                     if !summary.is_empty() {
-                        checkpoints.push(summary);
+                        let (mut prior, progress) =
+                            summary.split_once(PROGRESS_START).unwrap_or((&summary, ""));
+                        if let Some((base, encoded)) = prior.split_once(REQUESTS_START)
+                            && let Some(encoded) = encoded.strip_suffix(REQUESTS_END)
+                            && let Ok(saved) = serde_json::from_str::<Vec<String>>(encoded)
+                        {
+                            requests.extend(saved);
+                            prior = base;
+                        }
+                        checkpoints.push(prior.to_string());
+                        let progress = progress.strip_suffix(PROGRESS_END).unwrap_or(progress);
+                        // Legacy excerpts mixed user requirements with logs; keep that small block intact.
+                        if progress
+                            .split("\n\n")
+                            .any(|entry| entry.starts_with("user: "))
+                        {
+                            requests.push(progress.to_string());
+                        } else if !progress.is_empty() {
+                            previous_progress.push(progress.to_string());
+                        }
                     }
-                    request
+                    if !request.trim().is_empty() && !checkpoints.is_empty() {
+                        requests.push(request);
+                        String::new()
+                    } else {
+                        request
+                    }
                 } else {
                     content
                 };
@@ -527,12 +563,23 @@ fn mechanical_digest(messages: &[Value]) -> String {
             _ => {}
         }
     }
-    let checkpoint = checkpoints.join("\n\n");
-    let budget = DIGEST_TEXT_CHARS.saturating_sub(checkpoint.chars().count());
+    let mut checkpoint = checkpoints.join("\n\n");
+    let mut unique_requests = Vec::new();
+    for request in requests {
+        if !unique_requests.contains(&request) {
+            unique_requests.push(request);
+        }
+    }
+    if !unique_requests.is_empty() {
+        checkpoint.push_str(REQUESTS_START);
+        checkpoint.push_str(&serde_json::to_string(&unique_requests).unwrap());
+        checkpoint.push_str(REQUESTS_END);
+    }
+    let budget = DIGEST_TEXT_CHARS;
+    // New progress gets first claim on the budget; older entries fill any remaining space.
+    entries.extend(previous_progress);
     let digest = entries.join("\n\n");
-    let recent = if budget == 0 {
-        String::new()
-    } else if digest.chars().count() <= budget {
+    let recent = if digest.chars().count() <= budget {
         digest
     } else {
         let preview = crate::spill::preview(&digest, usize::MAX, 0, budget * 3 / 5, budget / 4);
@@ -541,11 +588,13 @@ fn mechanical_digest(messages: &[Value]) -> String {
             preview.head, preview.tail
         )
     };
-    [checkpoint, recent]
-        .into_iter()
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    if checkpoint.is_empty() {
+        recent
+    } else if recent.is_empty() {
+        checkpoint
+    } else {
+        format!("{checkpoint}{PROGRESS_START}{recent}{PROGRESS_END}")
+    }
 }
 
 /// Keep prior checkpoints outside the log budget, and retain any merged user request.
@@ -1250,7 +1299,13 @@ pub(crate) mod tests {
         assert!(!digest.contains(ARCHIVE_NOTICE));
         assert!(!digest.contains("TEXT BEYOND CAP"));
         assert!(!digest.contains("ARGS BEYOND CAP"));
-        assert!(digest.chars().count() <= DIGEST_TEXT_CHARS);
+        assert!(
+            digest.chars().count()
+                <= DIGEST_TEXT_CHARS
+                    + PROGRESS_START.len()
+                    + PROGRESS_END.len()
+                    + "Never commit without approval".len()
+        );
         assert!(
             digest
                 .lines()
@@ -1536,6 +1591,302 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dropped_middle_turn_restores_a_contiguous_tail_after_a_merged_checkpoint() {
+        use crate::store::{
+            CompactionEnd, CompactionRecord, ContextUsage, EventPayload, NewUserTurn, RunEnd, Store,
+        };
+        let store = Store::in_memory().unwrap();
+        store.create_session("s", "/tmp", 1).unwrap();
+        let turn = |message| NewUserTurn {
+            message,
+            display: None,
+            title: None,
+        };
+        store.begin_run("s", "seed", &turn(user("old")), 2).unwrap();
+        let answer_a = assistant(&"a".repeat(400));
+        let request_b = user(&"b".repeat(200));
+        let originals = vec![
+            assistant("old done"),
+            user("request A"),
+            answer_a.clone(),
+            request_b.clone(),
+            assistant(&"b".repeat(200)),
+        ];
+        store
+            .finish_run(&RunEnd {
+                session_id: "s".into(),
+                run_id: "seed".into(),
+                start_seq: 1,
+                status: "done",
+                finished_at: 3,
+                appended: originals
+                    .into_iter()
+                    .map(|message| EventPayload::Message {
+                        message,
+                        display: None,
+                    })
+                    .collect(),
+                compaction: None,
+                context: None,
+                error: None,
+            })
+            .unwrap();
+        let summary = user(
+            "<compacted-summary>Never commit without approval</compacted-summary>\n\nrequest A",
+        );
+        store
+            .apply_compaction(
+                "s",
+                &CompactionRecord {
+                    summary,
+                    shadowed_through: 3,
+                    before: 100,
+                    after: 10,
+                    context: ContextUsage {
+                        used: 10,
+                        window: 8192,
+                    },
+                },
+                4,
+            )
+            .unwrap();
+        let current = user(&"c".repeat(3600));
+        let start = store
+            .begin_run("s", "r1", &turn(current.clone()), 5)
+            .unwrap();
+        let mut messages = vec![system()];
+        messages.extend(start.prior_messages);
+        messages.push(current);
+        let config = AppConfig {
+            context_window: 8192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let next = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!next.messages.contains(&request_b));
+        let surface = next.messages[1..].to_vec();
+        let checkpoint = surface[0]["content"].as_str().unwrap();
+        assert!(checkpoint.contains("Never commit without approval"));
+        assert!(checkpoint.contains("request A"));
+        assert!(checkpoint.contains(answer_a["content"].as_str().unwrap()));
+        let end = RunEnd {
+            session_id: "s".into(),
+            run_id: "r1".into(),
+            start_seq: start.start_seq,
+            status: "done",
+            finished_at: 6,
+            appended: vec![],
+            compaction: Some(CompactionEnd {
+                summary: Some(surface[0].clone()),
+                surface: surface.clone(),
+                before: 2000,
+                after: 1000,
+            }),
+            context: None,
+            error: None,
+        };
+        store.finish_run(&end).unwrap();
+        store.finish_run(&end).unwrap();
+        let restored = store
+            .begin_run("s", "r2", &turn(user("continue")), 7)
+            .unwrap();
+        assert_eq!(restored.prior_messages, surface);
+        let (archived, total) = store.read_history("s", 1, 20).unwrap();
+        assert_eq!(total, 7);
+        assert!(archived.iter().any(|(_, message)| message == &request_b));
+        assert_eq!(store.history_count("s").unwrap(), total);
+    }
+
+    #[tokio::test]
+    async fn long_checkpoint_keeps_new_progress_without_growing_on_every_fallback() {
+        let summary = format!("{}\nNever commit without approval", "progress ".repeat(700));
+        let mut messages = assemble(
+            &[system(), user("old"), assistant("done"), user("finish")],
+            3,
+            &summary,
+        );
+        let config = AppConfig {
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let mut sizes = Vec::new();
+        for step in 0..6 {
+            messages.push(assistant(&format!(
+                "Migration {step} completed; do not run it again."
+            )));
+            messages.push(tool(
+                "latest",
+                &format!("LATEST_ERROR_{step}: deployment verification failed"),
+            ));
+            messages.push(assistant(&"old log ".repeat(2000)));
+            messages.push(user("finish"));
+            let cut = messages.len() - 1;
+            let next = compact_at(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                cut,
+                None,
+                &cancel,
+                true,
+            )
+            .await
+            .unwrap();
+            let text = next.messages[1]["content"].as_str().unwrap();
+            assert!(text.contains(&summary));
+            assert!(text.contains(&format!("Migration {step} completed")));
+            assert!(text.contains(&format!("LATEST_ERROR_{step}")));
+            assert!(text.ends_with("finish"));
+            assert_eq!(text.matches(PROGRESS_START).count(), 1);
+            assert!(text.chars().count() < summary.chars().count() + DIGEST_TEXT_CHARS + 500);
+            sizes.push(text.len());
+            messages = next.messages;
+        }
+        assert_eq!(sizes[1..].iter().min(), sizes[1..].iter().max());
+    }
+
+    #[tokio::test]
+    async fn new_user_constraints_survive_repeated_fallbacks_and_large_logs() {
+        let base =
+            user("<compacted-summary>Goal: finish migration.</compacted-summary>\n\ncontinue");
+        let constraint = "Use staging only; never deploy to production.\n保留旧格式，禁止提交。";
+        let mut messages = vec![
+            system(),
+            base,
+            user(constraint),
+            assistant("Latest verification failed."),
+            user("finish"),
+        ];
+        let config = AppConfig {
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        for step in 0..6 {
+            let cut = messages.len() - 1;
+            let next = compact_at(
+                &reqwest::Client::new(),
+                &config,
+                &messages,
+                cut,
+                None,
+                &cancel,
+                true,
+            )
+            .await
+            .unwrap();
+            let text = next.messages[1]["content"].as_str().unwrap();
+            let summary = checkpoint_parts(text).0;
+            let encoded = summary
+                .split_once(REQUESTS_START)
+                .unwrap()
+                .1
+                .split_once(REQUESTS_END)
+                .unwrap()
+                .0;
+            let requests: Vec<String> = serde_json::from_str(encoded).unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|text| text.as_str() == constraint)
+                    .count(),
+                1
+            );
+            assert!(text.contains("Goal: finish migration."));
+            assert!(text.chars().count() < DIGEST_TEXT_CHARS + 1000);
+            if step == 1 {
+                assert!(text.contains("Latest verification failed."));
+            }
+            messages = next.messages;
+            if step > 0 {
+                messages.push(assistant(&"new log ".repeat(2000)));
+            }
+            messages.push(user("finish"));
+        }
+    }
+
+    #[test]
+    fn legacy_progress_user_constraints_are_preserved() {
+        let prior = format!(
+            "Goal{PROGRESS_START}user: staging only; never deploy\n\nAlso preserve the old file format.\n\nassistant: verified{PROGRESS_END}"
+        );
+        let summary = mechanical_digest(&[
+            user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+            assistant("still working"),
+        ]);
+        assert!(summary.contains("staging only; never deploy"));
+        assert!(summary.contains("Also preserve the old file format."));
+        assert!(summary.contains("verified"));
+        assert!(summary.contains("still working"));
+    }
+
+    #[tokio::test]
+    async fn latest_tool_image_stays_with_its_call_even_above_the_retain_budget() {
+        let config = AppConfig {
+            context_window: 8192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let image = json!({"role":"user", "content":[{"type":"text","text":TOOL_IMAGE_NOTICE}, {"type":"image_url", "image_url":{"url":"data:image/png;base64,AA"}}]});
+        let call = json!({"role":"assistant", "content":"", "tool_calls":[{"id":"image", "type":"function", "function":{"name":"read_image", "arguments":"{}"}}]});
+        let result = tool("image", "Image loaded");
+        let recent = vec![call, result, image];
+        let mut single = vec![
+            json!({"role":"system","content":"s".repeat(24000)}),
+            user("Inspect screenshot"),
+        ];
+        single.extend(recent.clone());
+        assert!(estimate_tokens(&single) > trigger_at(config.context_window));
+        assert!(estimate_tokens(&single) < config.context_window);
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        assert!(
+            force(
+                &reqwest::Client::new(),
+                &config,
+                &single,
+                &ToolRegistry::new(),
+                &cancel
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        let mut longer = vec![system(), user("Inspect screenshot")];
+        for index in 0..20 {
+            longer.push(json!({"role":"assistant", "content":"", "tool_calls":[{"id":format!("old_{index}"),"type":"function","function":{"name":"read_file","arguments":"{}"}}]}));
+            longer.push(tool(&format!("old_{index}"), &"x".repeat(2000)));
+        }
+        longer.extend(recent.clone());
+        let compacted = force(
+            &reqwest::Client::new(),
+            &config,
+            &longer,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            &compacted.messages[compacted.messages.len() - recent.len()..],
+            recent.as_slice()
+        );
+        assert!(estimate_tokens(&compacted.messages) <= trigger_at(config.context_window));
+        assert_compaction_restores(&longer, &compacted);
+    }
+
     #[test]
     fn mechanical_fallback_drops_only_when_the_checkpoint_would_not_shrink() {
         let messages = vec![system(), user("hi"), assistant("hello"), user("continue")];
@@ -1632,8 +1983,8 @@ pub(crate) mod tests {
         let (next, removed) = drop_oldest_turn(&messages).unwrap();
         let removed = &messages[removed];
 
-        assert_eq!(next.len(), 4);
-        assert_eq!(removed, &[user("old request"), assistant("old answer")]);
+        assert_eq!(next.len(), 3);
+        assert_eq!(removed, &messages[1..4]);
         assert!(
             next[1]["content"]
                 .as_str()
@@ -1646,9 +1997,12 @@ pub(crate) mod tests {
                 .any(|message| message["content"] == "old request")
         );
         assert!(
-            next.iter()
-                .any(|message| message["content"] == "current request")
+            next[1]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("current request")
         );
+        assert!(next[1]["content"].as_str().unwrap().contains("old work"));
     }
 
     #[test]
@@ -1663,15 +2017,20 @@ pub(crate) mod tests {
 
         let (next, removed) = drop_oldest_turn(&messages).unwrap();
 
-        assert_eq!(next.len(), 3);
-        assert_eq!(removed.len(), 2);
+        assert_eq!(next.len(), 2);
+        assert_eq!(removed, 1..4);
         assert!(next[1]["content"].as_str().unwrap().contains(DROPPED));
         assert!(
             !next
                 .iter()
                 .any(|message| message["content"] == "old request")
         );
-        assert_eq!(next.last().unwrap()["content"], "current request");
+        assert!(
+            next.last().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("current request")
+        );
     }
 
     #[test]
