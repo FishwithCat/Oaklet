@@ -97,7 +97,7 @@ mod tests {
 
     use super::*;
     use crate::agent::messages::assistant_message;
-    use crate::compaction::tests::summary_server_with;
+    use crate::compaction::test_support::summary_server_with;
     use crate::store::{EventPayload, NewUserTurn, RunEnd, Store};
     use crate::tools::{CancelHandle, test_support::temp_root};
 
