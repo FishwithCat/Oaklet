@@ -178,7 +178,16 @@ pub async fn compact(
     };
 
     Ok(Some(
-        compact_at(client, config, messages, cut, Some(tools), cancel, true).await?,
+        compact_at(
+            client,
+            config,
+            messages,
+            cut,
+            Some(tools),
+            cancel,
+            CompactMode::Auto,
+        )
+        .await?,
     ))
 }
 
@@ -216,12 +225,20 @@ pub async fn force(
             <= trigger_at(config.context_window);
         let merged = cut < next.len() && role(&next[cut]) == Some("user");
         next = if prefix_fits {
-            let compacted =
-                compact_at(client, config, &next, cut, Some(tools), cancel, true).await?;
+            let compacted = compact_at(
+                client,
+                config,
+                &next,
+                cut,
+                Some(tools),
+                cancel,
+                CompactMode::Auto,
+            )
+            .await?;
             compacted.messages
         } else {
             note_fallback("summary prefix would not fit");
-            assemble(&next, cut, &fallback_summary(&next, cut))
+            assemble(&next, cut, &fallback_summary(&next, cut, None))
         };
         // Trim/summarize/drop rewrite or remove messages; collect their original
         // indices so the archive always holds the untrimmed text.
@@ -277,11 +294,19 @@ pub async fn force(
             let prefix_fits = estimate_tokens(&next[..cut]) + estimate_text(COMPACTION_INSTRUCTION)
                 <= trigger_at(config.context_window);
             let mut compacted = if prefix_fits {
-                compact_at(client, config, &next, cut, Some(tools), cancel, true)
-                    .await?
-                    .messages
+                compact_at(
+                    client,
+                    config,
+                    &next,
+                    cut,
+                    Some(tools),
+                    cancel,
+                    CompactMode::LongTurn(current),
+                )
+                .await?
+                .messages
             } else {
-                assemble(&next, cut, &fallback_summary(&next, cut))
+                assemble(&next, cut, &fallback_summary(&next, cut, Some(current)))
             };
             prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
             compacted[1] = request;
@@ -405,7 +430,7 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<u
     }
 
     // Fold the kept prefix into the checkpoint so the persisted tail stays contiguous.
-    let kept = mechanical_digest(&messages[1..start]);
+    let kept = mechanical_digest(&messages[1..start], None);
     let summary = if kept.is_empty() {
         DROPPED.to_string()
     } else if kept.contains(DROPPED) {
@@ -416,11 +441,18 @@ fn drop_oldest_turn(messages: &[Value]) -> Option<(Vec<Value>, std::ops::Range<u
     Some((assemble(messages, end, &summary), 1..end))
 }
 
+/// How compaction recovers when the model summary is unavailable or too large.
+#[derive(Clone, Copy)]
+enum CompactMode {
+    /// Keep an automatic run fitting the window; fall back to a digest.
+    Auto,
+    /// Report the failure and leave the history intact.
+    Manual,
+    /// Keep the live request verbatim and out of the mechanical digest.
+    LongTurn(usize),
+}
+
 /// Summarize `messages[1..cut]` and replace that range with one checkpoint.
-///
-/// `drop_on_failure` keeps an automatic run fitting the window when the model
-/// cannot produce a usable summary. Manual compaction passes `false`: it is not
-/// under pressure, so it reports the failure and leaves the history intact.
 async fn compact_at(
     client: &reqwest::Client,
     config: &AppConfig,
@@ -428,8 +460,13 @@ async fn compact_at(
     cut: usize,
     tools: Option<&ToolRegistry>,
     cancel: &Cancel,
-    drop_on_failure: bool,
+    mode: CompactMode,
 ) -> Result<Compacted, String> {
+    let drop_on_failure = !matches!(mode, CompactMode::Manual);
+    let skip_request = match mode {
+        CompactMode::LongTurn(request) => Some(request),
+        _ => None,
+    };
     let replaced = messages[1..cut].to_vec();
     let replaced_tokens = estimate_tokens(&replaced);
 
@@ -443,7 +480,7 @@ async fn compact_at(
             if !drop_on_failure {
                 return Err(err);
             }
-            fallback_summary(messages, cut)
+            fallback_summary(messages, cut, skip_request)
         }
     };
 
@@ -463,14 +500,19 @@ async fn compact_at(
         ));
     }
     Ok(Compacted {
-        messages: assemble(messages, cut, &fallback_summary(messages, cut)),
+        messages: assemble(
+            messages,
+            cut,
+            &fallback_summary(messages, cut, skip_request),
+        ),
         replaced,
     })
 }
 
 /// Deterministic fallback; include the checkpoint framing in the shrink check.
-fn fallback_summary(messages: &[Value], cut: usize) -> String {
-    let digest = mechanical_digest(&messages[1..cut]);
+fn fallback_summary(messages: &[Value], cut: usize, skip_request: Option<usize>) -> String {
+    let skip = skip_request.map(|index| index.saturating_sub(1));
+    let digest = mechanical_digest(&messages[1..cut], skip);
     if !digest.is_empty()
         && estimate_tokens(&assemble(messages, cut, &digest)) < estimate_tokens(messages)
     {
@@ -480,12 +522,15 @@ fn fallback_summary(messages: &[Value], cut: usize) -> String {
     }
 }
 
-fn mechanical_digest(messages: &[Value]) -> String {
+fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> String {
     let mut entries = Vec::new();
     let mut checkpoints = Vec::new();
     let mut requests = Vec::new();
     let mut previous_progress = Vec::new();
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
+        if Some(index) == skip {
+            continue;
+        }
         let content = match message.get("content") {
             Some(Value::String(text)) => text.clone(),
             Some(Value::Array(parts)) => parts
@@ -663,7 +708,16 @@ pub async fn compact_messages(
         return Ok(None);
     }
 
-    let compacted = compact_at(client, config, &history, cut, None, cancel, false).await?;
+    let compacted = compact_at(
+        client,
+        config,
+        &history,
+        cut,
+        None,
+        cancel,
+        CompactMode::Manual,
+    )
+    .await?;
     Ok(Some(Compacted {
         messages: compacted.messages[1..].to_vec(),
         replaced: compacted.replaced,
@@ -1222,7 +1276,7 @@ pub(crate) mod tests {
                 cut,
                 Some(&ToolRegistry::new()),
                 &cancel,
-                true,
+                CompactMode::Auto,
             )
             .await
             .unwrap();
@@ -1315,7 +1369,7 @@ pub(crate) mod tests {
             "role": "assistant", "content": format!("{}TEXT BEYOND CAP", "a".repeat(4_000)),
             "tool_calls": [{"function": {"name": "read_file", "arguments": format!("{}\nARGS BEYOND CAP", "x".repeat(500))}}]
         }));
-        let digest = mechanical_digest(&messages);
+        let digest = mechanical_digest(&messages, None);
 
         assert!(digest.contains("REAL USER REQUIREMENT"));
         assert!(digest.contains("Never commit without approval"));
@@ -1335,7 +1389,7 @@ pub(crate) mod tests {
                 .any(|line| line.starts_with("tool call: read_file(") && line.ends_with(')'))
         );
         assert_eq!(
-            mechanical_digest(&[user("<compacted-summary>old</compacted-summary>")]),
+            mechanical_digest(&[user("<compacted-summary>old</compacted-summary>")], None),
             "old"
         );
     }
@@ -1368,7 +1422,7 @@ pub(crate) mod tests {
                 cut,
                 None,
                 &cancel,
-                true,
+                CompactMode::Auto,
             )
             .await
             .unwrap();
@@ -1601,7 +1655,7 @@ pub(crate) mod tests {
                 cut,
                 None,
                 &cancel,
-                true,
+                CompactMode::Auto,
             )
             .await
             .unwrap();
@@ -1763,7 +1817,7 @@ pub(crate) mod tests {
                 cut,
                 None,
                 &cancel,
-                true,
+                CompactMode::Auto,
             )
             .await
             .unwrap();
@@ -1807,7 +1861,7 @@ pub(crate) mod tests {
                 cut,
                 None,
                 &cancel,
-                true,
+                CompactMode::Auto,
             )
             .await
             .unwrap();
@@ -1846,10 +1900,13 @@ pub(crate) mod tests {
         let prior = format!(
             "Goal{PROGRESS_START}user: staging only; never deploy\n\nAlso preserve the old file format.\n\nassistant: verified{PROGRESS_END}"
         );
-        let summary = mechanical_digest(&[
-            user(&format!("<compacted-summary>{prior}</compacted-summary>")),
-            assistant("still working"),
-        ]);
+        let summary = mechanical_digest(
+            &[
+                user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+                assistant("still working"),
+            ],
+            None,
+        );
         assert!(summary.contains("staging only; never deploy"));
         assert!(summary.contains("Also preserve the old file format."));
         assert!(summary.contains("verified"));
@@ -1867,7 +1924,7 @@ pub(crate) mod tests {
                 user(&format!("request {index}: {}", "a".repeat(3_000))),
                 assistant("done"),
             ];
-            let digest = mechanical_digest(&messages[1..]);
+            let digest = mechanical_digest(&messages[1..], None);
             let encoded = digest
                 .split_once(REQUESTS_START)
                 .unwrap()
@@ -1949,7 +2006,7 @@ pub(crate) mod tests {
     #[test]
     fn mechanical_fallback_drops_only_when_the_checkpoint_would_not_shrink() {
         let messages = vec![system(), user("hi"), assistant("hello"), user("continue")];
-        assert_eq!(fallback_summary(&messages, 3), DROPPED);
+        assert_eq!(fallback_summary(&messages, 3, None), DROPPED);
     }
 
     #[test]
@@ -1959,7 +2016,7 @@ pub(crate) mod tests {
             "x".repeat(20_000)
         ));
         let messages = vec![system(), checkpoint, assistant("tail")];
-        assert_eq!(fallback_summary(&messages, 2), DROPPED);
+        assert_eq!(fallback_summary(&messages, 2, None), DROPPED);
     }
 
     #[tokio::test]
@@ -1990,7 +2047,7 @@ pub(crate) mod tests {
             3,
             None,
             &cancel,
-            true,
+            CompactMode::Auto,
         )
         .await
         .unwrap();
@@ -2002,6 +2059,36 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains(&summary)
         );
+    }
+
+    #[tokio::test]
+    async fn long_turn_fallback_does_not_repeat_the_live_request() {
+        use crate::tools::CancelHandle;
+
+        let request = format!("UNIQUE_REQUEST {}", "r".repeat(3_000));
+        let mut messages = vec![system(), user(&request)];
+        for index in 0..20 {
+            messages.push(assistant(&format!("work {index}: {}", "w".repeat(200))));
+            messages.push(tool(&format!("t{index}"), &"o".repeat(2_000)));
+        }
+        let config = AppConfig {
+            context_window: 8_192,
+            base_url: "invalid://summary".into(),
+            ..AppConfig::default()
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let compacted = force(
+            &reqwest::Client::new(),
+            &config,
+            &messages,
+            &ToolRegistry::new(),
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let checkpoint = compacted.messages[1]["content"].as_str().unwrap();
+        assert_eq!(checkpoint.matches("UNIQUE_REQUEST").count(), 1);
     }
 
     #[tokio::test]
