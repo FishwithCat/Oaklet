@@ -63,6 +63,7 @@ export function Chat({
   onLoadOlder,
   onApproval,
   onSendToTerminal,
+  onOpenFile,
 }: {
   ref?: Ref<ChatHandle>;
   active: boolean;
@@ -87,6 +88,7 @@ export function Chat({
   onLoadOlder: () => Promise<boolean>;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
+  onOpenFile: (href: string) => void;
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -426,6 +428,7 @@ export function Chat({
             compacting={compacting}
             activeRunId={activeRunId}
             onApproval={onApproval}
+            onOpenFile={onOpenFile}
           />
         )}
       </main>

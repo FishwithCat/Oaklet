@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { breadcrumbParts, changeMarkers, fileTreeRows, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
+import { breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
 
 test("breadcrumbs start at the workspace root and split both separators", () => {
   assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
@@ -55,6 +55,15 @@ test("tree reveals only expanded branches and preserves nested expansion", () =>
   assert.equal(fileTreeRows({ ...directories, ".": [] }, expanded).length, 0);
   assert.equal(fileTreeRows({ ".": [folder("new")] }, new Set([".", "new"])).length, 1);
   assert.deepEqual(fileTreeRows({}, expanded), []);
+});
+
+test("markdown preview applies to md and mdx paths only", () => {
+  assert.equal(isMarkdownPath("README.md"), true);
+  assert.equal(isMarkdownPath("docs/Guide.MDX"), true);
+  assert.equal(isMarkdownPath("C:\\docs\\Guide.Md"), true);
+  assert.equal(isMarkdownPath("docs/design.markdown"), false);
+  assert.equal(isMarkdownPath("docs/design.md.txt"), false);
+  assert.equal(isMarkdownPath("docs/mdx"), false);
 });
 
 test("preserves CRLF and keeps mixed endings literal", () => {

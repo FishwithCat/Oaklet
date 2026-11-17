@@ -61,3 +61,7 @@ export function editorText(text: string): string {
 export function savedText(content: string, original: string): string {
   return lineSeparator(original) === "\r\n" ? content.replace(/\n/g, "\r\n") : content;
 }
+
+export function isMarkdownPath(path: string): boolean {
+  return /\.(md|mdx)$/i.test(path);
+}

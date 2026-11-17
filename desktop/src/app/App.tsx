@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -18,6 +18,7 @@ import { agentShortcut } from "./shortcuts";
 import { Sidebar, type AppView } from "./Sidebar";
 import { useWorkspaceConfig } from "./useWorkspaceConfig";
 import { useWindowWorkspace } from "./useWindowWorkspace";
+import { workspaceFileLink } from "../shared/file-link";
 import type { AppConfig } from "../features/settings/config";
 import "../styles/index.css";
 
@@ -30,6 +31,7 @@ function App() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [view, setView] = useState<AppView>("chat");
   const [filesOpened, setFilesOpened] = useState(false);
+  const [pendingFile, setPendingFile] = useState<string | null>(null);
   const filesRef = useRef<FilesHandle>(null);
   const [architectureOpened, setArchitectureOpened] = useState(false);
   const [workspaceTick, setWorkspaceTick] = useState(0);
@@ -113,6 +115,21 @@ function App() {
     if (next === "architecture") setArchitectureOpened(true);
     setView(next);
   }
+
+  const openFileLink = useCallback((href: string) => {
+    const path = workspaceFileLink(href);
+    if (!path) return;
+    setFilesOpened(true);
+    setPendingFile(path);
+    setView("files");
+  }, []);
+
+  // Files mounts lazily; hold the target until its handle exists.
+  useEffect(() => {
+    if (pendingFile === null || !filesOpened) return;
+    filesRef.current?.open(pendingFile);
+    setPendingFile(null);
+  }, [filesOpened, pendingFile]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -254,6 +271,7 @@ function App() {
           onCompact={session.compact}
           onLoadOlder={session.loadOlder}
           onApproval={session.respondToApproval}
+          onOpenFile={openFileLink}
           onSendToTerminal={(text) => {
             setView("terminal");
             terminalRef.current?.run(text);

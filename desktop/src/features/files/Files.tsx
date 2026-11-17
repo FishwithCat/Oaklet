@@ -16,7 +16,7 @@ import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
 import { BranchMenu } from "../source-control/BranchMenu";
 import { useGitBranch } from "../source-control/useGitBranch";
-import { breadcrumbParts, editorText, savedText, type FileChange } from "./file-model";
+import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
 
@@ -26,6 +26,7 @@ const FileEditor = lazy(() => import("./FileEditor"));
 export type FilesHandle = {
   canLeave: () => Promise<boolean>;
   hasUnsaved: () => boolean;
+  open: (path: string) => void;
 };
 type Document = { path: string; original: string; content: string };
 
@@ -91,6 +92,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   useImperativeHandle(ref, () => ({
     canLeave,
     hasUnsaved: () => dirtyRef.current || busyRef.current,
+    open: (path) => { void openFile(path, isMarkdownPath(path)); },
   }));
 
   useEffect(() => {
@@ -102,7 +104,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     return () => { cancelled = true; };
   }, [document?.path]);
 
-  async function openFile(path: string) {
+  async function openFile(path: string, previewMarkdown = false) {
     if (!await canLeave()) return;
     busyRef.current = true;
     setBusy(true);
@@ -111,7 +113,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       const content = await invoke<string>("files_read", { workspace, path });
       setDocument({ path, original: content, content: editorText(content) });
       dirtyRef.current = false;
-      setPreview(false);
+      setPreview(previewMarkdown);
     } catch (err) { setError(errorText(err)); }
     finally { busyRef.current = false; setBusy(false); }
   }
@@ -206,7 +208,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
               </nav>
               <div className="files-actions">
                 <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(document.path)}><Refresh3Regular size={14} /></button>
-                {/\.(md|mdx)$/i.test(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
+                {isMarkdownPath(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
                 <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
               </div>
             </div>

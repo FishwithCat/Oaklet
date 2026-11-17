@@ -10,12 +10,14 @@ export function ChatThread({
   compacting,
   activeRunId,
   onApproval,
+  onOpenFile,
 }: {
   items: Item[];
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
+  onOpenFile: (href: string) => void;
 }) {
   const blocks = toBlocks(items);
   let lastProcessBlock = -1;
@@ -104,7 +106,7 @@ export function ChatThread({
               data-seq={item.seq}
             >
               <div className="bubble">
-                <MarkdownText text={item.text} />
+                <MarkdownText text={item.text} onOpenFile={onOpenFile} />
                 {item.streaming && <span className="caret" />}
               </div>
             </div>
