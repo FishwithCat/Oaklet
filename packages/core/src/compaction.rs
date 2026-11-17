@@ -50,6 +50,7 @@ const MIN_REPLACED: usize = 4_000;
 pub struct Compacted {
     pub messages: Vec<Value>,
     pub replaced: Vec<Value>,
+    pub summary: Option<Value>,
 }
 
 /// Prompt size at which history gets compacted.
@@ -90,6 +91,7 @@ pub async fn compact(
     let saved = estimate_tokens(messages).saturating_sub(estimate_tokens(&trimmed));
     if !replaced.is_empty() && pressure.saturating_sub(saved) <= trigger_at(config.context_window) {
         return Ok(Some(Compacted {
+            summary: None,
             messages: trimmed,
             replaced: replaced
                 .into_iter()
@@ -154,6 +156,7 @@ async fn compact_at(
                 // Count checkpoint framing and the archive notice in the shrink check.
                 if estimate_tokens(&compacted) < estimate_tokens(messages) {
                     return Ok(Compacted {
+                        summary: Some(compacted[1].clone()),
                         messages: compacted,
                         replaced,
                     });
@@ -179,12 +182,14 @@ async fn compact_at(
     } else {
         note_fallback("summary prefix would not fit");
     }
+    let compacted = assemble(
+        messages,
+        cut,
+        &fallback_summary(messages, cut, skip_request),
+    );
     Ok(Compacted {
-        messages: assemble(
-            messages,
-            cut,
-            &fallback_summary(messages, cut, skip_request),
-        ),
+        summary: Some(compacted[1].clone()),
+        messages: compacted,
         replaced,
     })
 }
@@ -227,6 +232,7 @@ pub async fn compact_messages(
     )
     .await?;
     Ok(Some(Compacted {
+        summary: compacted.summary,
         messages: compacted.messages[1..].to_vec(),
         replaced: compacted.replaced,
     }))

@@ -397,7 +397,7 @@ fn latest_compaction(conn: &Connection, session_id: &str) -> Result<Option<(Valu
             summary,
             shadowed_through,
             ..
-        } => Ok(Some((summary, shadowed_through))),
+        } => Ok(Some((checkpoint(summary), shadowed_through))),
         _ => Ok(None),
     }
 }
@@ -460,26 +460,12 @@ pub(crate) fn tool_trims(events: &[Event]) -> HashMap<i64, Value> {
 
 /// A compaction checkpoint is user-visible history, not conversation.
 pub(crate) fn is_checkpoint(message: &Value) -> bool {
-    if message.get("role").and_then(Value::as_str) != Some("user") {
-        return false;
-    }
-    match message.get("content") {
-        Some(Value::String(text)) => is_checkpoint_text(text),
-        Some(Value::Array(parts)) => parts.iter().any(|part| {
-            part.get("text")
-                .and_then(Value::as_str)
-                .is_some_and(is_checkpoint_text)
-        }),
-        _ => false,
-    }
+    message["role"] == "user" && message["oaklet_checkpoint"] == true
 }
 
-fn is_checkpoint_text(text: &str) -> bool {
-    // Compaction always puts its marker at the start of the message. Matching
-    // anywhere would hide a user message that quotes a log or this marker.
-    let text = text.trim_start();
-    text.starts_with("<compacted-summary>")
-        || text.starts_with("The earlier part of this conversation was dropped")
+pub(crate) fn checkpoint(mut message: Value) -> Value {
+    message["oaklet_checkpoint"] = Value::Bool(true);
+    message
 }
 
 /// Seq of the last message a compaction summary replaces. The retained tail is
@@ -1215,17 +1201,17 @@ mod tests {
 
     #[test]
     fn recognizes_checkpoints_in_string_and_array_content() {
-        assert!(is_checkpoint(&json!({
+        assert!(is_checkpoint(&super::checkpoint(json!({
             "role": "user",
             "content": "<compacted-summary>old</compacted-summary>",
-        })));
-        assert!(is_checkpoint(&json!({
+        }))));
+        assert!(is_checkpoint(&super::checkpoint(json!({
             "role": "user",
             "content": [
                 { "type": "text", "text": "<compacted-summary>old</compacted-summary>" },
                 { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } },
             ],
-        })));
+        }))));
         assert!(!is_checkpoint(&json!({
             "role": "user",
             "content": [{ "type": "text", "text": "ordinary" }],
@@ -1428,10 +1414,10 @@ mod tests {
             .unwrap();
         store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
 
-        let summary = json!({
+        let summary = super::checkpoint(json!({
             "role": "user",
             "content": "<compacted-summary>old turns</compacted-summary>",
-        });
+        }));
         let session = store
             .finish_run(&RunEnd {
                 session_id: "s1".into(),
@@ -1468,10 +1454,10 @@ mod tests {
         assert_eq!(
             session.events.last().unwrap().payload,
             EventPayload::Compaction {
-                summary: json!({
+                summary: super::checkpoint(json!({
                     "role": "user",
                     "content": "<compacted-summary>old turns</compacted-summary>",
-                }),
+                })),
                 shadowed_through: 2,
                 before: 100,
                 after: 10,
@@ -1515,10 +1501,10 @@ mod tests {
             .begin_run("s1", "r2", &turn("continue", None), 4)
             .unwrap();
 
-        let summary = json!({
+        let summary = super::checkpoint(json!({
             "role": "user",
             "content": "<compacted-summary>old turn</compacted-summary>",
-        });
+        }));
         // Replaying the crashed tool call adds this result in memory only.
         let synthetic = json!({
             "role": "tool", "tool_call_id": "call-1",
@@ -1586,11 +1572,11 @@ mod tests {
             "role": "user",
             "content": "note: The earlier part of this conversation was dropped",
         })));
-        assert!(is_checkpoint(&json!({
+        assert!(!is_checkpoint(&json!({
             "role": "user",
             "content": "<compacted-summary>old work</compacted-summary>",
         })));
-        assert!(is_checkpoint(&json!({
+        assert!(!is_checkpoint(&json!({
             "role": "user",
             "content": "The earlier part of this conversation was dropped so the run could stay \
                         within the context window.",
@@ -1615,10 +1601,10 @@ mod tests {
         });
         let mut trimmed_tool = original_tool.clone();
         trimmed_tool["content"] = json!("trimmed output");
-        let summary = json!({
+        let summary = super::checkpoint(json!({
             "role": "user",
             "content": "<compacted-summary>old work</compacted-summary>\ncurrent request",
-        });
+        }));
         let partial = json!({"role": "assistant", "content": "partial reply"});
         let originals = [
             json!({"role": "assistant", "content": "old answer"}),
@@ -1802,10 +1788,10 @@ mod tests {
             })
             .unwrap();
         store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
-        let summary = json!({
+        let summary = super::checkpoint(json!({
             "role": "user",
             "content": "<compacted-summary>old turns</compacted-summary>",
-        });
+        }));
         store
             .finish_run(&RunEnd {
                 session_id: "s1".into(),

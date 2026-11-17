@@ -252,7 +252,9 @@ mod tests {
         assert_eq!(requests[0]["messages"][1], old_request);
         assert_eq!(
             requests[2]["messages"],
-            json!(&messages[..messages.len() - 1])
+            json!(crate::context::request_messages(
+                &messages[..messages.len() - 1]
+            ))
         );
 
         let reopened = Store::open(&database).unwrap();

@@ -62,7 +62,11 @@ pub(super) fn mechanical_digest(messages: &[Value], skip: Option<usize>) -> Stri
         match role(message) {
             Some("user" | "assistant") => {
                 let text = if role(message) == Some("user") {
-                    let (summary, request) = checkpoint_parts(&content);
+                    let (summary, request) = if crate::store::is_checkpoint(message) {
+                        checkpoint_parts(&content)
+                    } else {
+                        (String::new(), content)
+                    };
                     if !summary.is_empty() {
                         let (mut prior, progress) =
                             summary.split_once(PROGRESS_START).unwrap_or((&summary, ""));
@@ -192,22 +196,22 @@ fn bounded_requests(requests: Vec<String>) -> Vec<String> {
 }
 
 /// Keep prior checkpoints outside the log budget, and retain any merged user request.
-pub(super) fn checkpoint_parts(mut text: &str) -> (String, String) {
-    let mut summaries = Vec::new();
-    let mut plain = String::new();
-    while let Some((before, rest)) = text.split_once("<compacted-summary>") {
-        let Some((summary, after)) = rest.split_once("</compacted-summary>") else {
-            break;
-        };
-        plain.push_str(before);
-        summaries.push(summary.trim());
-        text = after;
-        if let Some(after_notice) = text.trim_start().strip_prefix(ARCHIVE_NOTICE) {
-            text = after_notice.strip_prefix("\n\n").unwrap_or(after_notice);
-        }
-    }
-    plain.push_str(text);
-    (summaries.join("\n\n"), plain)
+pub(super) fn checkpoint_parts(text: &str) -> (String, String) {
+    let Some(rest) = text.strip_prefix("<compacted-summary>") else {
+        return (String::new(), text.to_string());
+    };
+    let end = format!("</compacted-summary>\n\n{ARCHIVE_NOTICE}");
+    let Some((summary, after)) = rest
+        .split_once(&end)
+        .or_else(|| rest.split_once("</compacted-summary>"))
+    else {
+        return (String::new(), text.to_string());
+    };
+    // Only the generated head is a checkpoint; the merged request may quote its markers.
+    (
+        summary.trim().to_string(),
+        after.strip_prefix("\n\n").unwrap_or(after).to_string(),
+    )
 }
 
 /// Rewrite the history as: system prompt, checkpoint, untouched tail.
@@ -225,10 +229,12 @@ pub(super) fn assemble(messages: &[Value], cut: usize, summary: &str) -> Vec<Val
     if cut < messages.len() && role(&messages[cut]) == Some("user") {
         let mut merged = messages[cut].clone();
         prepend_text(&mut merged, &block);
-        next.push(merged);
+        next.push(crate::store::checkpoint(merged));
         next.extend_from_slice(&messages[cut + 1..]);
     } else {
-        next.push(json!({ "role": "user", "content": block }));
+        next.push(crate::store::checkpoint(
+            json!({ "role": "user", "content": block }),
+        ));
         next.extend_from_slice(&messages[cut..]);
     }
 

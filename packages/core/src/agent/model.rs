@@ -262,7 +262,7 @@ pub(super) async fn stream_step(
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = json!({
         "model": config.model,
-        "messages": messages,
+        "messages": crate::context::request_messages(messages),
         "tools": tools.schemas(),
         "stream": true,
         // Ask OpenAI-compatible servers to close the stream with a usage chunk.

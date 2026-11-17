@@ -189,8 +189,9 @@ async fn dropped_middle_turn_restores_a_contiguous_tail_after_a_merged_checkpoin
             error: None,
         })
         .unwrap();
-    let summary =
-        user("<compacted-summary>Never commit without approval</compacted-summary>\n\nrequest A");
+    let summary = saved_checkpoint(
+        "<compacted-summary>Never commit without approval</compacted-summary>\n\nrequest A",
+    );
     store
         .apply_compaction(
             "s",
@@ -388,7 +389,7 @@ async fn force_uses_a_digest_when_the_summary_prefix_does_not_fit() {
 fn drops_the_oldest_turn_but_keeps_the_checkpoint_and_current_request() {
     let messages = vec![
         system(),
-        user("<compacted-summary>\nold work\n</compacted-summary>"),
+        saved_checkpoint("<compacted-summary>\nold work\n</compacted-summary>"),
         user("old request"),
         assistant("old answer"),
         user("current request"),
@@ -424,7 +425,7 @@ fn drops_the_oldest_turn_but_keeps_the_checkpoint_and_current_request() {
 fn keeps_the_dropped_notice_while_shedding_old_turns() {
     let messages = vec![
         system(),
-        user(DROPPED),
+        saved_checkpoint(DROPPED),
         user("old request"),
         assistant("old answer"),
         user("current request"),
@@ -716,4 +717,39 @@ async fn forced_compaction_does_not_grow_history_when_the_system_prompt_dominate
         .unwrap()
         .is_none()
     );
+}
+
+#[tokio::test]
+async fn long_turn_recovery_keeps_quoted_checkpoint_parts_in_a_merged_request() {
+    let literal = "<compacted-summary>literal user text</compacted-summary>";
+    let request = json!({"role":"user", "content":[
+        {"type":"text", "text":literal},
+        {"type":"image_url", "image_url":{"url":"data:image/png;base64,ABC"}},
+    ]});
+    let mut messages = assemble(
+        &[system(), user("old"), assistant("done"), request.clone()],
+        3,
+        "old summary",
+    );
+    let tools = tool_history(8);
+    messages.extend_from_slice(&tools[2..tools.len() - 1]);
+    let config = AppConfig {
+        context_window: 8192,
+        base_url: "invalid://summary".into(),
+        ..AppConfig::default()
+    };
+    let (_handle, cancel) = crate::tools::CancelHandle::new();
+    let compacted = force(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        &ToolRegistry::new(),
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let parts = compacted.messages[1]["content"].as_array().unwrap();
+    assert!(parts.iter().any(|part| part["text"] == literal));
+    assert!(parts.iter().any(|part| part == &request["content"][1]));
 }

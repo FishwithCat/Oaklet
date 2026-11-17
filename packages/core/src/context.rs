@@ -89,6 +89,20 @@ pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages.iter().map(estimate_message).sum()
 }
 
+/// Internal checkpoint identity never crosses the provider boundary.
+pub(crate) fn request_messages(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            if let Some(object) = message.as_object_mut() {
+                object.remove("oaklet_checkpoint");
+            }
+            message
+        })
+        .collect()
+}
+
 /// Token pressure for the next request, anchored on provider-reported usage.
 ///
 /// `prompt_tokens` from the last response is exact for the request that
@@ -223,5 +237,22 @@ mod tests {
 
         messages = vec![message(&"a".repeat(40))];
         assert_eq!(meter.pressure(&messages), 110);
+    }
+}
+
+#[cfg(test)]
+mod request_budget_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn checkpoint_identity_is_removed_from_provider_messages() {
+        let message = crate::store::checkpoint(json!({"role":"user", "content":"checkpoint"}));
+        assert!(crate::store::is_checkpoint(&message));
+        assert!(
+            request_messages(&[message])[0]
+                .get("oaklet_checkpoint")
+                .is_none()
+        );
     }
 }

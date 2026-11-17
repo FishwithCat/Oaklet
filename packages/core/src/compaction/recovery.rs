@@ -106,23 +106,27 @@ pub async fn force(
             .or_else(|| latest_block.filter(|&index| index > current + 1));
         if let Some(cut) = cut {
             let mut request = next[current].clone();
-            match &mut request["content"] {
-                Value::String(text) => *text = checkpoint_parts(text).1,
-                Value::Array(parts) => {
-                    parts.retain_mut(|part| {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            if is_checkpoint(&request) {
+                match &mut request["content"] {
+                    Value::String(text) => *text = checkpoint_parts(text).1,
+                    Value::Array(parts) => {
+                        if let Some(text) = parts
+                            .first()
+                            .and_then(|part| part.get("text"))
+                            .and_then(Value::as_str)
+                        {
                             let (summary, plain) = checkpoint_parts(text);
                             if !summary.is_empty() {
                                 if plain.is_empty() {
-                                    return false;
+                                    parts.remove(0);
+                                } else {
+                                    parts[0]["text"] = json!(plain);
                                 }
-                                part["text"] = json!(plain);
                             }
                         }
-                        true
-                    });
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
             let mut compacted = compact_at(
                 client,
@@ -136,7 +140,7 @@ pub async fn force(
             .await?
             .messages;
             prepend_text(&mut request, compacted[1]["content"].as_str().unwrap());
-            compacted[1] = request;
+            compacted[1] = crate::store::checkpoint(request);
             if estimate_tokens(&compacted) < estimate_tokens(&next) {
                 replaced.extend(origins[1..cut].iter().flatten().copied());
                 next = compacted;
@@ -148,9 +152,14 @@ pub async fn force(
         return Ok(None);
     }
     Ok(Some(Compacted {
+        summary: next
+            .get(1)
+            .filter(|message| is_checkpoint(message))
+            .cloned(),
         messages: next,
         replaced: replaced
             .into_iter()
+            .filter(|&index| !is_checkpoint(&messages[index]))
             .map(|index| messages[index].clone())
             .collect(),
     }))

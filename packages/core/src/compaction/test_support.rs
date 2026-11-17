@@ -12,15 +12,19 @@ use super::Compacted;
 use crate::context::estimate_tokens;
 use crate::store::is_checkpoint;
 
-pub(super) fn system() -> Value {
+pub(crate) fn system() -> Value {
     json!({ "role": "system", "content": "You are Oaklet." })
 }
 
-pub(super) fn user(text: &str) -> Value {
+pub(crate) fn user(text: &str) -> Value {
     json!({ "role": "user", "content": text })
 }
 
-pub(super) fn assistant(text: &str) -> Value {
+pub(super) fn saved_checkpoint(text: &str) -> Value {
+    crate::store::checkpoint(user(text))
+}
+
+pub(crate) fn assistant(text: &str) -> Value {
     json!({ "role": "assistant", "content": text })
 }
 
@@ -170,7 +174,7 @@ pub(super) fn assert_compaction_restores(original: &[Value], compacted: &Compact
     assert_eq!(archived[0].1, original[1]);
 }
 
-pub(super) fn large_tool_registry() -> crate::tools::ToolRegistry {
+pub(crate) fn large_tool_registry() -> crate::tools::ToolRegistry {
     use futures_util::future::BoxFuture;
 
     use crate::tools::{Tool, ToolContext, ToolError, ToolOutput};

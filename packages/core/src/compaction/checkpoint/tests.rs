@@ -41,7 +41,12 @@ fn mechanical_digest_preserves_old_checkpoints_and_merged_requests() {
             .any(|line| line.starts_with("tool call: read_file(") && line.ends_with(')'))
     );
     assert_eq!(
-        mechanical_digest(&[user("<compacted-summary>old</compacted-summary>")], None),
+        mechanical_digest(
+            &[saved_checkpoint(
+                "<compacted-summary>old</compacted-summary>"
+            )],
+            None
+        ),
         "old"
     );
 }
@@ -182,7 +187,9 @@ async fn long_checkpoint_keeps_new_progress_without_growing_on_every_fallback() 
 
 #[tokio::test]
 async fn new_user_constraints_survive_repeated_fallbacks_and_large_logs() {
-    let base = user("<compacted-summary>Goal: finish migration.</compacted-summary>\n\ncontinue");
+    let base = saved_checkpoint(
+        "<compacted-summary>Goal: finish migration.</compacted-summary>\n\ncontinue",
+    );
     let constraint = "Use staging only; never deploy to production.\n保留旧格式，禁止提交。";
     let mut messages = vec![
         system(),
@@ -247,7 +254,7 @@ fn legacy_progress_user_constraints_are_preserved() {
     );
     let summary = mechanical_digest(
         &[
-            user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+            saved_checkpoint(&format!("<compacted-summary>{prior}</compacted-summary>")),
             assistant("still working"),
         ],
         None,
@@ -266,7 +273,7 @@ fn fallback_progress_keeps_the_newest_entries() {
     );
     let mut messages = vec![
         system(),
-        user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+        saved_checkpoint(&format!("<compacted-summary>{prior}</compacted-summary>")),
     ];
     for index in 0..3 {
         messages.push(assistant(&format!("entry {index} {}", "x".repeat(2_000))));
@@ -284,7 +291,7 @@ fn repeated_fallbacks_keep_the_request_block_bounded() {
     for index in 0..8 {
         let messages = [
             system(),
-            user(&format!("<compacted-summary>{prior}</compacted-summary>")),
+            saved_checkpoint(&format!("<compacted-summary>{prior}</compacted-summary>")),
             user(&format!("request {index}: {}", "a".repeat(3_000))),
             assistant("done"),
         ];
@@ -320,7 +327,7 @@ fn mechanical_fallback_drops_only_when_the_checkpoint_would_not_shrink() {
 
 #[test]
 fn fallback_does_not_keep_a_prior_checkpoint_that_would_grow() {
-    let checkpoint = user(&format!(
+    let checkpoint = saved_checkpoint(&format!(
         "<compacted-summary>{}</compacted-summary>",
         "x".repeat(20_000)
     ));
@@ -352,11 +359,30 @@ fn inserts_the_checkpoint_before_an_assistant_tail() {
 #[test]
 fn skipping_the_live_request_still_preserves_its_checkpoint() {
     let messages = [
-        user("<compacted-summary>Never deploy to production.</compacted-summary>\n\nLIVE_REQUEST"),
+        saved_checkpoint(
+            "<compacted-summary>Never deploy to production.</compacted-summary>\n\nLIVE_REQUEST",
+        ),
         assistant("Completed the migration."),
     ];
     let digest = mechanical_digest(&messages, Some(0));
     assert!(digest.contains("Never deploy to production."));
     assert!(digest.contains("Completed the migration."));
     assert!(!digest.contains("LIVE_REQUEST"));
+}
+
+#[test]
+fn merged_user_quotes_are_not_parsed_as_additional_checkpoints() {
+    let request =
+        "<compacted-summary>literal user example</compacted-summary>\n\nPlease explain this log.";
+    let compacted = assemble(
+        &[system(), user("old"), assistant("done"), user(request)],
+        3,
+        "actual summary",
+    );
+    let (summary, plain) = checkpoint_parts(compacted[1]["content"].as_str().unwrap());
+    assert_eq!(summary, "actual summary");
+    assert_eq!(plain, request);
+    let digest = mechanical_digest(&compacted[1..], None);
+    assert!(digest.contains("literal user example"));
+    assert!(digest.contains("Please explain this log."));
 }

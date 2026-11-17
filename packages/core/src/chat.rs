@@ -553,7 +553,7 @@ fn surface_messages(events: &[Event]) -> Vec<Value> {
             .find(|event| matches!(event.payload, EventPayload::Compaction { .. }))
             .map(|event| &event.payload)
     {
-        messages.push(summary.clone());
+        messages.push(store::checkpoint(summary.clone()));
     }
     let trims = store::tool_trims(events);
     messages.extend(events.iter().filter_map(|event| match &event.payload {
@@ -881,11 +881,7 @@ async fn compact_session(
         return Ok((load_window(state, session_id).await?, before, before, false));
     };
     let surface = compacted.messages;
-    let Some(summary) = surface
-        .iter()
-        .find(|message| store::is_checkpoint(message))
-        .cloned()
-    else {
+    let Some(summary) = compacted.summary else {
         return Ok((load_window(state, session_id).await?, before, before, false));
     };
 
@@ -3055,5 +3051,34 @@ mod tests {
         assert_eq!(history[0].1["content"], "old");
         assert_eq!(history[1].1["content"], "old answer");
         let _ = session;
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_text_regressions {
+    use super::*;
+
+    #[test]
+    fn leading_checkpoint_text_stays_visible_in_strings_and_content_parts() {
+        for content in [
+            json!("<compacted-summary>quoted log</compacted-summary>"),
+            json!([{"type":"text", "text":"<compacted-summary>quoted log</compacted-summary>"}]),
+            json!("The earlier part of this conversation was dropped; explain this message"),
+        ] {
+            let message = json!({"role":"user", "content":content});
+            assert!(!store::is_checkpoint(&message));
+            let events = vec![Event {
+                seq: 1,
+                created_at: 0,
+                payload: EventPayload::Message {
+                    message: message.clone(),
+                    display: None,
+                },
+            }];
+            let items = project_events(&events);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0]["kind"], "user");
+            assert_eq!(surface_messages(&events), [message]);
+        }
     }
 }

@@ -120,8 +120,8 @@ pub(super) async fn summarize(
 /// An empty system head (the placeholder manual compaction adds for indexing)
 /// contributes no message.
 fn summary_messages(prefix: &[Value]) -> Vec<Value> {
-    let mut messages: Vec<Value> = prefix
-        .iter()
+    let mut messages: Vec<Value> = crate::context::request_messages(prefix)
+        .into_iter()
         .filter(|message| {
             !(role(message) == Some("system")
                 && message
@@ -129,7 +129,6 @@ fn summary_messages(prefix: &[Value]) -> Vec<Value> {
                     .and_then(Value::as_str)
                     .is_some_and(|text| text.trim().is_empty()))
         })
-        .cloned()
         .collect();
     messages.push(json!({ "role": "user", "content": COMPACTION_INSTRUCTION }));
     messages
