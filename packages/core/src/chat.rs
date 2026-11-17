@@ -2710,6 +2710,28 @@ mod tests {
     }
 
     #[test]
+    fn a_user_message_that_quotes_a_checkpoint_marker_stays_visible() {
+        let events = vec![Event {
+            seq: 1,
+            created_at: 1,
+            payload: EventPayload::Message {
+                message: json!({
+                    "role": "user",
+                    "content": "the log shows <compacted-summary> and then stops",
+                }),
+                display: None,
+            },
+        }];
+        let items = project_events(&events);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "user");
+        assert_eq!(
+            items[0]["text"],
+            "the log shows <compacted-summary> and then stops"
+        );
+    }
+
+    #[test]
     fn a_finished_run_projects_back_to_the_same_rows() {
         let state = ChatState::in_memory();
         state.store.create_session("s1", "/tmp/ws", 1).unwrap();

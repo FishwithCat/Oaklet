@@ -473,8 +473,11 @@ pub(crate) fn is_checkpoint(message: &Value) -> bool {
 }
 
 fn is_checkpoint_text(text: &str) -> bool {
-    text.contains("<compacted-summary>")
-        || text.contains("The earlier part of this conversation was dropped")
+    // Compaction always puts its marker at the start of the message. Matching
+    // anywhere would hide a user message that quotes a log or this marker.
+    let text = text.trim_start();
+    text.starts_with("<compacted-summary>")
+        || text.starts_with("The earlier part of this conversation was dropped")
 }
 
 /// Seq of the last message a compaction summary replaces. The retained tail is
@@ -1564,6 +1567,27 @@ mod tests {
             ]
         );
         assert!(!next.prior_messages.contains(&synthetic));
+    }
+
+    #[test]
+    fn a_message_that_quotes_a_checkpoint_marker_is_not_a_checkpoint() {
+        assert!(!is_checkpoint(&json!({
+            "role": "user",
+            "content": "The log printed <compacted-summary> and then stopped.",
+        })));
+        assert!(!is_checkpoint(&json!({
+            "role": "user",
+            "content": "note: The earlier part of this conversation was dropped",
+        })));
+        assert!(is_checkpoint(&json!({
+            "role": "user",
+            "content": "<compacted-summary>old work</compacted-summary>",
+        })));
+        assert!(is_checkpoint(&json!({
+            "role": "user",
+            "content": "The earlier part of this conversation was dropped so the run could stay \
+                        within the context window.",
+        })));
     }
 
     #[test]
