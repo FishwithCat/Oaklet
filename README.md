@@ -101,7 +101,7 @@ can be previewed, and **⌘S** saves.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The
-sidebar badge counts files with unstaged changes. Diff previews are limited to
+sidebar badge counts uncommitted changes. Diff previews are limited to
 1 MiB, show one file at a time, and paginate at 200 lines.
 
 The branch icon below the workspace button in the sidebar switches the

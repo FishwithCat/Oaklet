@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ChangeInfo } from "./git-model";
@@ -40,10 +40,5 @@ export function useGitChanges({
     };
   }, [enabled, workspace, refreshToken]);
 
-  const unstaged = useMemo(
-    () => changes?.filter((change) => change.unstaged).length ?? null,
-    [changes],
-  );
-
-  return { changes, changesError, unstaged };
+  return { changes, changeCount: changes?.length ?? null, changesError };
 }
