@@ -238,7 +238,9 @@ to 200,000 characters and reduces HTML to readable text.
 - File tools resolve paths against the canonical workspace root and reject `..`
   escapes, symlinked escapes, and writes inside `.git`.
 - `run_command` runs through your shell in the workspace and times out after
-  120 seconds with capped output. Set `run_in_background` to start a long build
+  120 seconds. Each output stream keeps its last 1 MB and continues reading
+  after that limit, so verbose commands finish normally. Set
+  `run_in_background` to start a long build
   or server; it returns a job id, keeps running after the chat turn, and is read
   and stopped with `job_output`/`job_kill` (or `job_list`). Background jobs have
   no timeout and are stopped when Oaklet exits. **Settings → Commands → Run
