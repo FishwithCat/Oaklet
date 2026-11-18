@@ -3,6 +3,19 @@ import type { Theme } from "./theme";
 
 export const DEFAULT_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
 
+export type CodeIndexConfig = {
+  servers: Partial<
+    Record<
+      "rust" | "typescript",
+      {
+        enabled?: boolean;
+        command?: string | null;
+        args?: string[];
+      }
+    >
+  >;
+};
+
 export type AppConfig = {
   baseUrl: string;
   apiKey: string;
@@ -15,5 +28,6 @@ export type AppConfig = {
   searchApiKey: string;
   allowAllCommands: boolean;
   mcpServers: McpServers;
+  codeIndex: CodeIndexConfig;
   workspace: string;
 };

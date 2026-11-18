@@ -1,6 +1,7 @@
 mod agent;
 mod architecture;
 mod chat;
+pub mod code_index;
 mod compaction;
 mod connection;
 mod context;
@@ -402,6 +403,8 @@ pub struct AppConfig {
     pub allow_all_commands: bool,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub code_index: code_index::CodeIndexConfig,
     /// Last opened workspace. Each window's active workspace lives in
     /// `WindowRegistry`; this value only chooses what the next launch opens.
     #[serde(default = "default_workspace")]
@@ -542,6 +545,7 @@ impl Default for AppConfig {
             search_api_key: String::new(),
             allow_all_commands: true,
             mcp_servers: BTreeMap::new(),
+            code_index: code_index::CodeIndexConfig::default(),
             workspace: default_workspace(),
         }
     }
@@ -774,6 +778,7 @@ fn save_config(
         return Err("Set the context window for the summary model.".into());
     }
     config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
+    config.code_index.validate()?;
     write_config(&state.config_path, &config)?;
     *state.config.lock().unwrap() = config.clone();
     if previous.allow_all_commands != config.allow_all_commands

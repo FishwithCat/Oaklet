@@ -141,11 +141,9 @@ where
         .take(limit as u64 + 1)
         .read_to_end(&mut output)
         .await
-        .map_err(|error| format!("Could not read the LikeC4 helper output: {error}"))?;
+        .map_err(|error| format!("Could not read process output: {error}"))?;
     if output.len() > limit {
-        return Err(format!(
-            "The LikeC4 helper output exceeded the {limit}-byte limit."
-        ));
+        return Err(format!("Process output exceeded the {limit}-byte limit."));
     }
     Ok(output)
 }
