@@ -381,9 +381,10 @@ impl ToolRegistry {
         cancel: &Cancel,
     ) -> Self {
         let mut registry = Self::new();
+        // Setup manages `Arc<AppState>` (SharedState), not `AppState` itself.
         code::register(
             &mut registry,
-            app.state::<crate::AppState>().code_index.clone(),
+            app.state::<crate::SharedState>().code_index.clone(),
         );
 
         let workspace = PathBuf::from(&config.workspace);
