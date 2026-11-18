@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md) 与步骤 6 的 [查询缓存、失效及重建](code-index-cache.md) 已完成，步骤 7–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md) 与步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 已完成，步骤 8–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -208,9 +208,9 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 | `code_references` | 文件、行、列 | 引用位置，默认排除定义自身 |
 | `code_calls` | 文件、行、列、incoming/outgoing | 一层调用者或被调用者，附调用点 |
 
-- 行列从 1 开始，列按 Unicode 字符计数；内部转换为服务器协商的位置编码。
+- 行列从 1 开始，工作区内列按 Unicode 字符计数；内部转换为服务器协商的位置编码。外部目标不读取源码，明确标记列为 UTF-16。
 - 返回工作区相对路径、范围、符号名称与证据来源。工作区外的位置仅报告为外部目标，不自动读取。
-- 默认最多 50 项，可提高至 200；明确标记截断，不把被裁剪的输出当作完整结果。
+- 默认最多 50 项，可提高至 200；符号子项与调用点共用条数预算，明确标记截断，不把被裁剪的输出当作完整结果。
 - 区分 unavailable、unsupported、not_ready、timeout 和成功空结果。仅在有依据时报告索引状态，不推断服务器已完成全仓索引。
 - 同名或重载候选分别返回。首批只返回一层调用关系，由 Agent 按需继续展开。
 - 不支持调用层次时，明确报告；引用和 grep 匹配不得冒充已确认调用关系。
@@ -313,12 +313,12 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 7. 向 Agent 暴露四个语义工具
 
-- [ ] 实现 tools/code.rs，在 with_host_tools 中注入共享 manager，使用 ToolContext.workspace 和本次调用 Cancel；不改 agent 的按名称分发或全部 ToolContext 构造。
-- [ ] Tool execute 直接调用 manager 的 Rust 方法，不经 Tauri invoke、MCP 或本地 HTTP；Tool 层不重新实现项目路由、索引更新及证据关联。
-- [ ] 实现 code_symbols、code_definition、code_references、code_calls 的 schema、参数验证、摘要和 guidance，按前文映射到标准 LSP 方法。
-- [ ] 统一结果位置、来源、能力缺失与索引状态；默认 50 项、最高 200 项，显式标记截断。外部定义只报告目标，不自动读取源码。
-- [ ] 测试同名候选、递归、多个 prepareCallHierarchy 结果、无支持能力、超时和取消。取消一个查询不得取消其他会话的查询或整个工作区索引。
-- [ ] 验证现有工具输出裁剪与 spill 仍可分页恢复，guidance 正确进入模型请求；语义工具的状态不通过当前统一标为 MCP warning 的 warnings 列表传递。
+- [x] 实现 tools/code.rs，在 with_host_tools 中注入共享 manager，使用 ToolContext.workspace 和本次调用 Cancel；不改 agent 的按名称分发或全部 ToolContext 构造。
+- [x] Tool execute 直接调用 manager 的 Rust 方法，不经 Tauri invoke、MCP 或本地 HTTP；Tool 层不重新实现项目路由、索引更新及证据关联。
+- [x] 实现 code_symbols、code_definition、code_references、code_calls 的 schema、参数验证、摘要和 guidance，按前文映射到标准 LSP 方法。
+- [x] 统一结果位置、来源、能力缺失与索引状态；默认 50 项、最高 200 项，显式标记截断。外部定义只报告目标，不自动读取源码。
+- [x] 测试同名候选、递归、多个 prepareCallHierarchy 结果、无支持能力、超时和取消。取消一个查询不得取消其他会话的查询或整个工作区索引。
+- [x] 验证现有工具输出裁剪与 spill 仍可分页恢复，guidance 正确进入模型请求；语义工具的状态不通过当前统一标为 MCP warning 的 warnings 列表传递。
 
 完成标准：Agent 在独立工程中能定位定义、引用和服务器支持的一层调用关系；缺少后端时能继续使用 grep/read_file，且不会把候选或能力缺失当作无调用关系。
 
@@ -400,4 +400,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8–12 待实施。
