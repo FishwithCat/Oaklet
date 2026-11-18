@@ -22,6 +22,7 @@ mod cache;
 mod persistence;
 
 struct WorkspaceEntry {
+    config_updates: tokio::sync::watch::Sender<CodeIndexConfig>,
     index_worker: Option<tauri::async_runtime::JoinHandle<()>>,
     persistence: Option<super::PersistenceStatus>,
     index_dirty: Option<std::collections::BTreeSet<PathBuf>>,
@@ -37,8 +38,22 @@ struct WorkspaceEntry {
     worker: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
+impl WorkspaceEntry {
+    fn config_pending(&self) -> bool {
+        [super::Language::Rust, super::Language::TypeScript]
+            .into_iter()
+            .any(|language| {
+                self.config
+                    .server_changed(&self.config_updates.borrow(), language)
+            })
+    }
+}
+
 /// Shared Rust service; no protocol or model-specific types cross this boundary.
 pub struct CodeIndexManager {
+    settings: Mutex<Option<CodeIndexConfig>>,
+    snapshots: Mutex<BTreeMap<PathBuf, (Vec<u8>, u64)>>,
+    status_revision: AtomicU64,
     cache: Mutex<cache::QueryCache>,
     store: Option<crate::store::Store>,
     workspaces: Arc<Mutex<BTreeMap<PathBuf, WorkspaceEntry>>>,
@@ -58,6 +73,9 @@ impl CodeIndexManager {
     /// Volatile service for protocol probes; desktop setup injects the shared Store.
     pub fn new() -> Self {
         Self {
+            settings: Mutex::new(None),
+            snapshots: Mutex::new(BTreeMap::new()),
+            status_revision: AtomicU64::new(1),
             cache: Mutex::new(cache::QueryCache::default()),
             store: None,
             workspaces: Arc::new(Mutex::new(BTreeMap::new())),
@@ -88,7 +106,7 @@ impl CodeIndexManager {
             .map_err(IndexError::Invalid)?
             .root()
             .to_path_buf();
-        let (generation, cancel) = {
+        let (generation, cancel, mut updates, config) = {
             let mut entries = self.workspaces.lock().unwrap();
             if self.shutting_down.load(Ordering::Acquire) {
                 return Err(IndexError::Closed);
@@ -96,11 +114,14 @@ impl CodeIndexManager {
             if entries.contains_key(&workspace) {
                 return Ok(());
             }
+            let config = self.settings.lock().unwrap().clone().unwrap_or(config);
+            let (config_updates, updates) = tokio::sync::watch::channel(config.clone());
             let generation = self.next.fetch_add(1, Ordering::Relaxed);
             let (owner, cancel) = CancelHandle::new();
             entries.insert(
                 workspace.clone(),
                 WorkspaceEntry {
+                    config_updates,
                     index_worker: None,
                     index_dirty: None,
                     persistence: self.store.as_ref().map(|_| super::PersistenceStatus {
@@ -119,7 +140,7 @@ impl CodeIndexManager {
                     worker: None,
                 },
             );
-            (generation, cancel)
+            (generation, cancel, updates, config)
         };
         // Enable watching before discovery: queued events reconcile changes made during the scan.
         let manager = self.clone();
@@ -149,7 +170,7 @@ impl CodeIndexManager {
                     .get_mut(&workspace)
                     .filter(|entry| entry.generation == generation)
             {
-                entry.stale = false;
+                entry.stale = entry.config_pending();
             }
             let mut idle = tokio::time::interval(Duration::from_secs(15));
             loop {
@@ -157,6 +178,18 @@ impl CodeIndexManager {
                     biased;
                     _ = cancel.cancelled() => break,
                     _ = idle.tick() => manager.servers.reap_idle().await,
+                    changed = updates.changed() => {
+                        if changed.is_err() { break; }
+                        let config = updates.borrow_and_update().clone();
+                        match manager.refresh(&workspace, generation, &cancel, &config, &[]).await {
+                            Ok(()) => {
+                                if let Some(entry) = manager.workspaces.lock().unwrap().get_mut(&workspace).filter(|e| e.generation == generation) {
+                                    entry.stale = entry.watch_error.is_some() || entry.config_pending();
+                                }
+                            }
+                            Err(error) => manager.watch_failed(&workspace, generation, error.to_string()),
+                        }
+                    },
                     batch = async {
                         match &mut watcher {
                             Some(watcher) => watcher.batch().await,
@@ -174,6 +207,7 @@ impl CodeIndexManager {
                             manager.watch_failed(&workspace, generation, batch.error.unwrap_or_default());
                             continue;
                         }
+                        let config = updates.borrow().clone();
                         if let Err(error) = manager.update_files(&workspace, generation, &cancel, &config, batch).await {
                             manager.watch_failed(&workspace, generation, error.to_string());
                             // Retry a failed sync even when the filesystem produces no further events.
@@ -248,23 +282,24 @@ impl CodeIndexManager {
                     let found = previous.iter().position(|(status, _)| {
                         status.root == project.root && status.language == project.language
                     });
-                    let restart = changed.iter().any(|path| {
-                        if !super::watch::configuration(path) {
-                            return false;
-                        }
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let language_matches = if super::watch::rust_configuration(path) {
-                            project.language == super::Language::Rust
-                        } else if name == ".gitignore" || name == ".ignore" {
-                            true
-                        } else {
-                            project.language == super::Language::TypeScript
-                        };
-                        language_matches
-                            && (path.starts_with(&project.root)
-                                || !name.starts_with("Cargo.")
-                                    && project.root.starts_with(path.parent().unwrap_or(path)))
-                    });
+                    let restart = entry.config.server_changed(config, project.language)
+                        || changed.iter().any(|path| {
+                            if !super::watch::configuration(path) {
+                                return false;
+                            }
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            let language_matches = if super::watch::rust_configuration(path) {
+                                project.language == super::Language::Rust
+                            } else if name == ".gitignore" || name == ".ignore" {
+                                true
+                            } else {
+                                project.language == super::Language::TypeScript
+                            };
+                            language_matches
+                                && (path.starts_with(&project.root)
+                                    || !name.starts_with("Cargo.")
+                                        && project.root.starts_with(path.parent().unwrap_or(path)))
+                        });
                     if let Some(index) = found {
                         let old = previous.remove(index);
                         if !restart && project.error.is_none() {
@@ -278,6 +313,7 @@ impl CodeIndexManager {
                     }
                     (
                         ProjectStatus {
+                            version: None,
                             root: project.root.clone(),
                             language: project.language,
                             state: ServerState::Queued,
@@ -296,6 +332,7 @@ impl CodeIndexManager {
                     self.closing.lock().unwrap().push(task);
                 }
             }
+            entry.config = config.clone();
             entry.discovery = Some(discovery);
             projects
                 .into_iter()
@@ -430,7 +467,7 @@ impl CodeIndexManager {
             .get_mut(workspace)
             .filter(|entry| entry.generation == generation)
             .ok_or(IndexError::Closed)?;
-        entry.stale = false;
+        entry.stale = entry.config_pending();
         entry.watch_error = None;
         Ok(())
     }
@@ -438,11 +475,12 @@ impl CodeIndexManager {
     pub fn status(&self, workspace: &Path) -> Result<WorkspaceStatus, IndexError> {
         let workspaces = self.workspaces.lock().unwrap();
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
-        Ok(WorkspaceStatus {
+        let mut status = WorkspaceStatus {
+            workspace: workspace.to_path_buf(),
             cache: self.cache.lock().unwrap().status(workspace),
             persistence: entry.persistence.clone(),
             discovering: entry.discovery.is_none(),
-            revision: entry.revision,
+            revision: 0,
             stale: entry.stale,
             incomplete: entry
                 .discovery
@@ -465,7 +503,19 @@ impl CodeIndexManager {
                         .unwrap_or_else(|| status.clone())
                 })
                 .collect(),
-        })
+        };
+        // Presentation revisions include progress and persistence changes, not just source edits.
+        let bytes = serde_json::to_vec(&(&status, entry.generation, entry.revision))
+            .expect("WorkspaceStatus is serializable");
+        let mut snapshots = self.snapshots.lock().unwrap();
+        let snapshot = snapshots
+            .entry(workspace.to_path_buf())
+            .or_insert_with(|| (Vec::new(), 0));
+        if snapshot.0 != bytes {
+            *snapshot = (bytes, self.status_revision.fetch_add(1, Ordering::Relaxed));
+        }
+        status.revision = snapshot.1;
+        Ok(status)
     }
 
     fn route(
@@ -542,10 +592,39 @@ impl CodeIndexManager {
         Ok(result)
     }
 
+    /// Queue global settings on existing workspace workers; each worker serializes refreshes.
+    pub fn configure(&self, mut config: CodeIndexConfig) -> Result<(), IndexError> {
+        config.validate().map_err(IndexError::Invalid)?;
+        let mut workspaces = self.workspaces.lock().unwrap();
+        *self.settings.lock().unwrap() = Some(config.clone());
+        for (workspace, entry) in workspaces.iter_mut() {
+            if [super::Language::Rust, super::Language::TypeScript]
+                .into_iter()
+                .any(|language| {
+                    entry
+                        .config_updates
+                        .borrow()
+                        .server_changed(&config, language)
+                })
+            {
+                entry.config_updates.send_replace(config.clone());
+                entry.stale = true;
+                entry.revision += 1;
+                entry.index_dirty = None;
+                self.cache.lock().unwrap().invalidate(workspace);
+                if let Some(index) = &mut entry.persistence {
+                    index.verifying = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn retry(
         &self,
         workspace: &Path,
         project_root: &Path,
+        language: super::Language,
         cancel: &Cancel,
     ) -> Result<(), IndexError> {
         let (projects, config, generation, lifetime) = {
@@ -555,7 +634,7 @@ impl CodeIndexManager {
             let projects: Vec<_> = discovery
                 .projects
                 .iter()
-                .filter(|project| project.root == project_root)
+                .filter(|project| project.root == project_root && project.language == language)
                 .cloned()
                 .collect();
             (
@@ -581,6 +660,14 @@ impl CodeIndexManager {
                     .get_mut(workspace)
                     .filter(|entry| entry.generation == generation)
                     .ok_or(IndexError::Closed)?;
+                if entry.config.server_changed(&config, language)
+                    || entry
+                        .config_updates
+                        .borrow()
+                        .server_changed(&config, language)
+                {
+                    return Err(IndexError::NotReady);
+                }
                 let (status, key) = entry
                     .projects
                     .iter_mut()
@@ -602,7 +689,12 @@ impl CodeIndexManager {
                 let registered =
                     self.servers
                         .register(workspace, &project.root, project.language, command);
-                *key = Some(registered.clone());
+                if let Some(previous) = key.replace(registered.clone())
+                    && previous != registered
+                    && let Some(task) = self.servers.retire(&previous)
+                {
+                    self.closing.lock().unwrap().push(task);
+                }
                 entry.revision += 1;
                 self.cache.lock().unwrap().invalidate(workspace);
                 if let Some(index) = &mut entry.persistence {
@@ -653,6 +745,7 @@ impl CodeIndexManager {
                 self.closing.lock().unwrap().push(worker);
             }
         }
+        self.snapshots.lock().unwrap().remove(workspace);
         self.cache.lock().unwrap().invalidate(workspace);
         let cleanup = self.servers.close_workspace(workspace);
         self.closing.lock().unwrap().push(cleanup);

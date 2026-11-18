@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use super::Language;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeIndexConfig {
     #[serde(default)]
     pub servers: BTreeMap<Language, ServerConfig>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "enabled")]
@@ -37,6 +37,11 @@ impl Default for ServerConfig {
 }
 
 impl CodeIndexConfig {
+    pub(super) fn server_changed(&self, other: &Self, language: Language) -> bool {
+        self.servers.get(&language).cloned().unwrap_or_default()
+            != other.servers.get(&language).cloned().unwrap_or_default()
+    }
+
     pub fn validate(&mut self) -> Result<(), String> {
         for server in self.servers.values_mut() {
             if let Some(command) = &mut server.command {

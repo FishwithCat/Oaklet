@@ -253,7 +253,7 @@ async fn crashes_fail_current_call_and_restart_only_on_demand() {
     assert_symbol(manager.query(&fixture.0, symbols(), &cancel).await.unwrap());
     assert!(manager.status(&fixture.0).unwrap().projects[0].generation > generation);
     manager
-        .retry(&fixture.0, &fixture.0, &cancel)
+        .retry(&fixture.0, &fixture.0, Language::Rust, &cancel)
         .await
         .unwrap();
     assert_eq!(fixture.count("spawn"), 3);
@@ -442,7 +442,7 @@ async fn retry_detects_a_previously_missing_server_and_disabled_projects_stay_di
     );
     symlink(program, installed).unwrap();
     manager
-        .retry(&fixture.0, &fixture.0, &cancel)
+        .retry(&fixture.0, &fixture.0, Language::Rust, &cancel)
         .await
         .unwrap();
     assert_symbol(manager.query(&fixture.0, symbols(), &cancel).await.unwrap());
@@ -1838,4 +1838,189 @@ async fn real_project_agent_tools_probe() {
     }
     manager.shutdown().await;
     std::fs::remove_dir_all(context_root).unwrap();
+}
+
+#[tokio::test]
+async fn settings_update_all_workspaces_and_only_replace_affected_languages() {
+    let a = Fixture::new("index-settings-a");
+    let b = Fixture::new("index-settings-b");
+    let manager = Arc::new(CodeIndexManager::new());
+    let original = a.config();
+    manager.open_workspace(&a.0, original.clone()).unwrap();
+    manager.open_workspace(&b.0, original.clone()).unwrap();
+    ready(&manager, &a.0).await;
+    ready(&manager, &b.0).await;
+    let status = manager.status(&a.0).unwrap();
+    assert_eq!(
+        status.projects[0].version.as_deref(),
+        Some("oaklet-fake-lsp 1")
+    );
+    assert_eq!(status.revision, manager.status(&a.0).unwrap().revision);
+    let mut config = original.clone();
+    config.servers.insert(
+        Language::TypeScript,
+        ServerConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    manager.configure(config.clone()).unwrap();
+    until(|| manager.status(&a.0).unwrap().revision > status.revision).await;
+    ready(&manager, &a.0).await;
+    ready(&manager, &b.0).await;
+    assert_eq!(a.count("spawn"), 1);
+    assert_eq!(b.count("spawn"), 1);
+    assert_eq!(
+        manager.status(&a.0).unwrap().projects[0].generation,
+        status.projects[0].generation
+    );
+    config.servers.get_mut(&Language::Rust).unwrap().enabled = false;
+    manager.configure(config.clone()).unwrap();
+    until(|| {
+        [&a.0, &b.0]
+            .into_iter()
+            .all(|root| manager.status(root).unwrap().projects[0].state == ServerState::Disabled)
+    })
+    .await;
+    until(|| a.count("exit") == 1 && b.count("exit") == 1).await;
+    assert!(manager.status(&a.0).unwrap().revision > status.revision);
+    let mut invalid = config.clone();
+    invalid.servers.get_mut(&Language::Rust).unwrap().command = Some("".into());
+    assert!(matches!(
+        manager.configure(invalid),
+        Err(IndexError::Invalid(_))
+    ));
+    config.servers.get_mut(&Language::Rust).unwrap().enabled = true;
+    config.servers.get_mut(&Language::Rust).unwrap().command =
+        Some("/oaklet-missing-server".into());
+    manager.configure(config).unwrap();
+    until(|| {
+        [&a.0, &b.0].into_iter().all(|root| {
+            matches!(
+                manager.status(root).unwrap().projects[0].state,
+                ServerState::Failed(_)
+            )
+        })
+    })
+    .await;
+    manager.configure(original.clone()).unwrap();
+    ready(&manager, &a.0).await;
+    ready(&manager, &b.0).await;
+    assert_eq!(a.count("spawn"), 2);
+    assert_eq!(b.count("spawn"), 2);
+    // Later configuration-file notifications must use the new saved settings.
+    std::fs::write(a.0.join("Cargo.lock"), "# updated lockfile\n").unwrap();
+    until(|| a.count("spawn") >= 3).await;
+    ready(&manager, &a.0).await;
+    assert_eq!(b.count("spawn"), 2);
+    manager.close_workspace(&a.0);
+    manager.configure(original).unwrap();
+    manager.drain().await;
+    assert_eq!(manager.status(&a.0).unwrap_err(), IndexError::Closed);
+    manager.open_workspace(&a.0, a.config()).unwrap();
+    ready(&manager, &a.0).await;
+    assert!(manager.status(&a.0).unwrap().revision > status.revision);
+    let mut disabled = a.config();
+    disabled.servers.get_mut(&Language::Rust).unwrap().enabled = false;
+    manager.configure(disabled).unwrap();
+    // Rebuild must preserve even a settings update still queued on the old worker.
+    manager.rebuild(&a.0).await.unwrap();
+    until(|| {
+        [&a.0, &b.0].into_iter().all(|root| {
+            manager
+                .status(root)
+                .unwrap()
+                .projects
+                .first()
+                .is_some_and(|p| p.state == ServerState::Disabled)
+        })
+    })
+    .await;
+    manager.shutdown().await;
+    #[cfg(unix)]
+    {
+        a.assert_reaped();
+        b.assert_reaped();
+    }
+}
+
+#[tokio::test]
+async fn retry_selects_one_language_in_a_shared_project_root() {
+    let fixture = Fixture::new("index-settings-mixed");
+    std::fs::write(fixture.0.join("package.json"), "{}").unwrap();
+    std::fs::write(fixture.0.join("src/index.ts"), "export const alive = 1;\n").unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    let mut config = fixture.config();
+    config.servers.insert(
+        Language::TypeScript,
+        ServerConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    manager.open_workspace(&fixture.0, config).unwrap();
+    until(|| {
+        manager.status(&fixture.0).is_ok_and(|status| {
+            !status.stale
+                && status.projects.len() == 2
+                && status
+                    .projects
+                    .iter()
+                    .any(|p| p.language == Language::Rust && p.state == ServerState::Ready)
+        })
+    })
+    .await;
+    let (_owner, cancel) = CancelHandle::new();
+    manager
+        .retry(&fixture.0, &fixture.0, Language::Rust, &cancel)
+        .await
+        .unwrap();
+    assert!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .projects
+            .iter()
+            .any(|p| p.language == Language::TypeScript && p.state == ServerState::Disabled)
+    );
+    assert_eq!(
+        manager
+            .retry(&fixture.0, &fixture.0, Language::TypeScript, &cancel)
+            .await
+            .unwrap_err(),
+        IndexError::Disabled
+    );
+    assert!(matches!(
+        manager
+            .retry(
+                &fixture.0,
+                &fixture.0.join("outside-project"),
+                Language::Rust,
+                &cancel
+            )
+            .await,
+        Err(IndexError::Invalid(_))
+    ));
+    assert_eq!(fixture.count("spawn"), 2);
+    std::fs::write(fixture.0.join("backend-version"), "oaklet-fake-lsp 2").unwrap();
+    manager
+        .retry(&fixture.0, &fixture.0, Language::Rust, &cancel)
+        .await
+        .unwrap();
+    until(|| fixture.count("exit") == 2).await;
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .projects
+            .iter()
+            .find(|p| p.language == Language::Rust)
+            .unwrap()
+            .version
+            .as_deref(),
+        Some("oaklet-fake-lsp 2")
+    );
+    manager.shutdown().await;
+    #[cfg(unix)]
+    fixture.assert_reaped();
 }

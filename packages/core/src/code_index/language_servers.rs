@@ -440,6 +440,7 @@ impl LanguageServerManager {
         }
         let state = entry.state.lock().unwrap().clone();
         Some(ProjectStatus {
+            version: Some(entry.command.version.clone()),
             root: key.root.clone(),
             language: key.language,
             state,

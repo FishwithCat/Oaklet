@@ -807,6 +807,10 @@ fn save_config(
             granted.clear();
         }
     }
+    state
+        .code_index
+        .configure(config.code_index.clone())
+        .map_err(|e| e.to_string())?;
     drop(write_guard);
     let _ = app.emit("config://changed", &config);
     Ok(config)
@@ -1259,6 +1263,7 @@ pub fn run() {
                 ids: AtomicU64::new(0),
             });
             app.manage(state.clone());
+            code_index::commands::publish(app.handle().clone(), &state);
             {
                 let config = state.config.lock().unwrap();
                 if let Err(error) = state
@@ -1298,6 +1303,9 @@ pub fn run() {
             open_workspace,
             shutdown::close_workspace,
             save_config,
+            code_index::commands::code_index_status,
+            code_index::commands::code_index_retry,
+            code_index::commands::code_index_rebuild,
             connection::test_connection,
             chat::session_create,
             chat::session_list,

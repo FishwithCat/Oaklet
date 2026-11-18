@@ -287,3 +287,174 @@
   font-family: var(--mono);
   font-size: 10.5px;
 }
+
+.code-index-settings {
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.code-index-settings p {
+  margin: 0 0 10px;
+}
+
+.code-index-settings .field-hint {
+  margin: 0;
+}
+
+.index-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.index-heading h3,
+.index-heading h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.index-heading h3 {
+  color: var(--muted);
+  letter-spacing: 0.2px;
+}
+
+.code-index-settings .index-path {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.code-index-settings .index-summary {
+  margin-bottom: 14px;
+  font-size: 11.5px;
+}
+
+.index-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.index-metrics dt,
+.index-metadata dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.index-metrics dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.index-projects,
+.index-server-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.index-project,
+fieldset.index-server {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.index-heading button {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.index-metadata {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
+}
+
+.index-metadata > div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.index-metadata dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.index-rebuild {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 16px;
+}
+
+.index-rebuild button {
+  flex: none;
+  font-size: 11.5px;
+}
+
+.index-rebuild .field-hint {
+  flex: 1 1 200px;
+}
+
+.index-servers {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.index-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.index-enable input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.index-server-options summary,
+.index-requirements summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.index-server-options[open] summary,
+.index-requirements[open] summary {
+  margin-bottom: 12px;
+}
+
+.index-server-options .field:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 680px) {
+  .index-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

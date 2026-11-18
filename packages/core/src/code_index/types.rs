@@ -155,6 +155,7 @@ pub struct ServerCapabilities {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProjectStatus {
+    pub version: Option<String>,
     pub root: PathBuf,
     pub language: super::Language,
     pub state: ServerState,
@@ -165,6 +166,7 @@ pub struct ProjectStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatus {
+    pub workspace: PathBuf,
     pub cache: CacheStatus,
     pub persistence: Option<PersistenceStatus>,
     pub revision: u64,

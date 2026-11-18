@@ -1,5 +1,6 @@
 //! Workspace-scoped code indexing service and managed language-server sessions.
 
+pub(crate) mod commands;
 mod config;
 mod discovery;
 pub(crate) mod documents;
