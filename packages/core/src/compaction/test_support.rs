@@ -8,20 +8,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::Compacted;
-use crate::context::estimate_tokens;
-use crate::store::is_checkpoint;
-
 pub(crate) fn system() -> Value {
     json!({ "role": "system", "content": "You are Oaklet." })
 }
 
 pub(crate) fn user(text: &str) -> Value {
     json!({ "role": "user", "content": text })
-}
-
-pub(super) fn saved_checkpoint(text: &str) -> Value {
-    crate::store::checkpoint(user(text))
 }
 
 pub(crate) fn assistant(text: &str) -> Value {
@@ -32,36 +24,7 @@ pub(super) fn tool(id: &str, text: &str) -> Value {
     json!({ "role": "tool", "tool_call_id": id, "content": text })
 }
 
-pub(super) fn tool_history(count: usize) -> Vec<Value> {
-    let mut messages = vec![system(), user("Fix the build; preserve public APIs.")];
-    for index in 0..count {
-        messages.push(json!({
-            "role": "assistant",
-            "content": "Investigating the build failure.",
-            "tool_calls": [{
-                "id": format!("call_{index}"),
-                "type": "function",
-                "function": { "name": "read_file", "arguments": "{\"path\":\"build.log\"}" }
-            }]
-        }));
-        messages.push(tool(
-            &format!("call_{index}"),
-            &format!(
-                "{}UNIQUE ERROR: disk full{}",
-                "h".repeat(4_000),
-                "t".repeat(4_000)
-            ),
-        ));
-    }
-    messages.push(assistant(
-        "The failure is located; the fix is still pending.",
-    ));
-    messages.push(user("Continue with the fix."));
-    messages
-}
-
-pub(super) const SUMMARY_BODY: &str =
-    r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."}}]}"#;
+pub(crate) const SUMMARY_BODY: &str = r#"{"choices":[{"message":{"role":"assistant","content":"Goal: ship compaction."},"finish_reason":"stop"}]}"#;
 
 /// OpenAI-compatible endpoint that answers each summary request with the
 /// next canned response and records every request body.
@@ -122,56 +85,6 @@ pub(crate) fn summary_server_with(
         }
     });
     (format!("http://{address}"), seen, server)
-}
-
-pub(super) fn assert_compaction_restores(original: &[Value], compacted: &Compacted) {
-    use crate::store::{CompactionEnd, EventPayload, NewUserTurn, RunEnd, Store};
-    let store = Store::in_memory().unwrap();
-    store.create_session("s", "/tmp", 1).unwrap();
-    let turn = |message| NewUserTurn {
-        message,
-        display: None,
-        title: None,
-    };
-    let start = store
-        .begin_run("s", "r1", &turn(original[1].clone()), 2)
-        .unwrap();
-    let surface = compacted.messages[1..].to_vec();
-    let end = RunEnd {
-        session_id: "s".into(),
-        run_id: "r1".into(),
-        start_seq: start.start_seq,
-        status: "done",
-        finished_at: 3,
-        appended: original[2..]
-            .iter()
-            .cloned()
-            .map(|message| EventPayload::Message {
-                message,
-                display: None,
-            })
-            .collect(),
-        compaction: Some(CompactionEnd {
-            summary: surface
-                .iter()
-                .find(|message| is_checkpoint(message))
-                .cloned(),
-            surface: surface.clone(),
-            before: estimate_tokens(original),
-            after: estimate_tokens(&surface),
-        }),
-        context: None,
-        error: None,
-    };
-    store.finish_run(&end).unwrap();
-    store.finish_run(&end).unwrap();
-    let restored = store
-        .begin_run("s", "r2", &turn(user("continue")), 4)
-        .unwrap();
-    assert_eq!(restored.prior_messages, surface);
-    let (archived, total) = store.read_history("s", 1, original.len()).unwrap();
-    assert!(total > 0);
-    assert_eq!(archived[0].1, original[1]);
 }
 
 pub(crate) fn large_tool_registry() -> crate::tools::ToolRegistry {

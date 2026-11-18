@@ -1,34 +1,14 @@
-//! Keeping the next request inside the configured context window.
-//!
-//! Pressure is reported every step; a request that would exceed the trigger is
-//! compacted first so a run merely near the limit keeps a comfortable tail.
-
+//! All context changes enter through one reducer and one recording path.
+use crate::chat::RunContext;
+use crate::context::Meter;
+use crate::tools::{Cancel, ToolRegistry};
+use crate::{AppConfig, compaction, context};
 use serde_json::Value;
 
-use super::ensure_history_tool;
-use crate::AppConfig;
-use crate::chat::RunContext;
-use crate::compaction;
-use crate::context::{Meter, estimate_tokens};
-use crate::tools::{Cancel, ToolRegistry};
-
-#[derive(Default)]
-struct CompactionTrace {
-    archived: Vec<Value>,
-    summary: Option<Value>,
-}
-
-/// Tell the debug log and the UI how large the next request will be.
 pub(super) fn report(ctx: &RunContext, config: &AppConfig, meter: &Meter, messages: &[Value]) {
-    let pressure = meter.pressure(messages);
-    note_pressure(pressure);
-    ctx.context(pressure, config.context_window);
+    ctx.context(meter.pressure(messages), config.context_window);
 }
 
-/// Compact before a request when it would exceed the trigger.
-///
-/// The result is recorded on `ctx` and the history is archived so the next
-/// request is sent with the smaller transcript.
 pub(super) async fn make_room(
     client: &reqwest::Client,
     config: &AppConfig,
@@ -38,292 +18,396 @@ pub(super) async fn make_room(
     cancel: &Cancel,
     ctx: &RunContext,
 ) -> Result<(), String> {
-    let mut trace = CompactionTrace::default();
-    // A forced pass can fail after a normal pass already shrank the history.
-    // Report the size the run started from instead of a zero gauge.
-    let before =
-        estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
-    let outcome = compact_before_request(
+    meter.set_schema_tokens(context::estimate_text(&tools.schemas().to_string()));
+    if meter.prepare(messages) <= compaction::trigger_at(config.context_window) {
+        return Ok(());
+    }
+    let changed = reduce(
         client,
         config,
         tools,
-        cancel,
         messages,
-        meter,
-        &mut trace,
+        cancel,
+        ctx,
+        compaction::Trigger::Automatic,
     )
-    .await;
-    let after =
-        estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string());
-    if after != before {
-        if let Some(checkpoint) = trace.summary.take() {
-            ctx.set_summary(checkpoint);
-        }
-        ctx.mark_compacted(before, after);
-        ctx.record_archived(messages).await?;
-        ensure_history_tool(tools, ctx).await;
-        meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
-        ctx.mark_compacted(
-            before,
-            estimate_tokens(messages) + crate::context::estimate_text(&tools.schemas().to_string()),
-        );
+    .await?;
+    if changed {
+        meter.invalidate();
     }
-    if meter.pressure(messages) > config.context_window {
+    meter.set_schema_tokens(context::estimate_text(&tools.schemas().to_string()));
+    if meter.prepare(messages) > context::input_limit(config.context_window) {
+        return Err("The current request and tools do not fit the context window with room for a response. History was preserved; reduce the input or increase the window.".into());
+    }
+    Ok(())
+}
+
+pub(super) async fn recover(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    tools: &mut ToolRegistry,
+    messages: &mut Vec<Value>,
+    cancel: &Cancel,
+    ctx: &RunContext,
+) -> Result<bool, String> {
+    reduce(
+        client,
+        config,
+        tools,
+        messages,
+        cancel,
+        ctx,
+        compaction::Trigger::Overflow,
+    )
+    .await
+}
+
+async fn apply(
+    next: Vec<Value>,
+    messages: &mut Vec<Value>,
+    config: &AppConfig,
+    tools: &mut ToolRegistry,
+    ctx: &RunContext,
+) -> Result<(), String> {
+    let before = context::request_tokens(messages, &tools.schemas());
+    if tools.get("history_read").is_none() {
+        tools.push(Box::new(crate::tools::history::HistoryRead::new(
+            ctx.store(),
+            ctx.session_id().into(),
+            ctx.archived(),
+        )));
+    }
+    let after = context::request_tokens(&next, &tools.schemas());
+    if after >= before {
         return Err(
-            "The current request and tool schemas exceed the context window after compaction."
+            "The replacement and history tool would not shrink the request; history was preserved."
                 .into(),
         );
     }
-    outcome.map(|_| ())
+    *messages = next;
+    ctx.mark_compacted(before, after);
+    ctx.record_archived(messages).await?;
+    ctx.context(after, config.context_window);
+    Ok(())
 }
 
-/// Keep the next request under the configured window.
-///
-/// Normal compaction runs first so a run that is merely near the limit keeps a
-/// comfortable recent tail. If that still leaves the prompt over the trigger, or
-/// there is nothing old enough for the normal cut, force a deeper pass before
-/// sending. This is also the first thing a run does, which covers a saved
-/// history that no longer fits after the user switches models or windows.
-async fn compact_before_request(
+async fn reduce(
     client: &reqwest::Client,
     config: &AppConfig,
-    tools: &ToolRegistry,
-    cancel: &Cancel,
+    tools: &mut ToolRegistry,
     messages: &mut Vec<Value>,
-    meter: &mut Meter,
-    trace: &mut CompactionTrace,
-) -> Result<Option<usize>, String> {
-    let trigger = compaction::trigger_at(config.context_window);
-    let schemas = crate::context::estimate_text(&tools.schemas().to_string());
-    meter.set_schema_tokens(schemas);
+    cancel: &Cancel,
+    ctx: &RunContext,
+    trigger: compaction::Trigger,
+) -> Result<bool, String> {
+    if cancel.is_cancelled() {
+        return Err("Stopped.".into());
+    }
     let system = messages
         .first()
-        .map(crate::context::estimate_message)
+        .filter(|message| message["role"] == "system")
+        .map(context::estimate_message)
         .unwrap_or(0);
-    if schemas + system >= config.context_window {
-        return Err("The system prompt and tool schemas already exceed the context window; reduce tools or raise the context window.".into());
-    }
-    let pressure = meter.prepare(messages);
-    if pressure <= trigger {
-        return Ok(None);
-    }
-
-    let mut compacted_any = false;
-    if let Some(compacted) =
-        compaction::compact(client, config, messages, pressure, tools, cancel).await?
+    if system + context::estimate_text(&tools.schemas().to_string())
+        >= context::input_limit(config.context_window)
     {
-        compacted_any = true;
-        if let Some(checkpoint) = compacted.summary.clone() {
-            trace.summary = Some(checkpoint);
-        }
-        note_compaction(
-            estimate_tokens(messages) + schemas,
-            estimate_tokens(&compacted.messages) + schemas,
-        );
-        trace.archived.extend(compacted.replaced);
-        *messages = compacted.messages;
-        // Reprice the history that is actually sent, so the next usage anchor
-        // is not measured against the old size.
-        let _ = meter.prepare(messages);
+        return Err("The system prompt and tools leave no room for the request and response; reduce tools or increase the context window.".into());
     }
-
-    // A normal compaction keeps a larger tail and refuses a history with
-    // nothing old enough to replace. If the request is still over the trigger,
-    // make one forced pass with a much smaller retain before sending it.
-    if meter.pressure(messages) > trigger
-        && let Some(compacted) = compaction::force(client, config, messages, tools, cancel).await?
+    let mut progress = false;
+    if let Some(trimmed) = compaction::trim_tool_outputs(messages) {
+        apply(trimmed, messages, config, tools, ctx).await?;
+        progress = true;
+        if context::request_tokens(messages, &tools.schemas())
+            <= compaction::trigger_at(config.context_window)
+        {
+            return Ok(true);
+        }
+    }
+    if let Some(next) =
+        compaction::compact(client, config, messages, tools, trigger, cancel).await?
     {
-        compacted_any = true;
-        if let Some(checkpoint) = compacted.summary.clone() {
-            trace.summary = Some(checkpoint);
-        }
-        note_compaction(
-            estimate_tokens(messages) + schemas,
-            estimate_tokens(&compacted.messages) + schemas,
-        );
-        trace.archived.extend(compacted.replaced);
-        *messages = compacted.messages;
-        let _ = meter.prepare(messages);
+        apply(next, messages, config, tools, ctx).await?;
+        progress = true;
     }
-
-    if meter.pressure(messages) > config.context_window {
-        return Err("The current request and tool schemas could not fit the context window after compaction.".into());
+    if context::request_tokens(messages, &tools.schemas())
+        > context::input_limit(config.context_window)
+    {
+        return Err("The compacted context still does not fit. The successful reduction was saved; retry or increase the context window.".into());
     }
-    Ok(compacted_any.then_some(pressure))
-}
-
-/// Print context pressure while developing; release builds stay quiet.
-fn note_pressure(pressure: usize) {
-    if cfg!(debug_assertions) {
-        eprintln!("[oaklet] context pressure ~{pressure} tokens");
-    }
-}
-
-pub(super) fn note_compaction(before: usize, after: usize) {
-    if cfg!(debug_assertions) {
-        eprintln!("[oaklet] compacted context ~{before} -> ~{after} tokens");
-    }
+    Ok(progress)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compaction::test_support::{summary_server_with, user};
+    use crate::context::{MessageId, identify};
+    use crate::store::NewUserTurn;
     use crate::tools::CancelHandle;
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
-    #[tokio::test]
-    async fn preflight_compacts_saved_history_before_the_first_request() {
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": "You are Oaklet.",
-        })];
-        for step in 0..40 {
-            messages.push(json!({
-                "role": "user",
-                "content": format!("request {step} {}", "u".repeat(800)),
-            }));
-            messages.push(json!({
-                "role": "assistant",
-                "content": "a".repeat(800),
-            }));
-        }
-        let before = estimate_tokens(&messages);
-        let config = AppConfig {
-            // The summary request fails, so preflight must use a bounded digest.
-            base_url: "http://127.0.0.1:1".into(),
-            context_window: 8_192,
-            ..AppConfig::default()
-        };
-        let mut meter = Meter::default();
-        let mut trace = CompactionTrace::default();
-        let (_handle, cancel) = CancelHandle::new();
-
-        compact_before_request(
-            &reqwest::Client::new(),
-            &config,
-            &ToolRegistry::new(),
-            &cancel,
-            &mut messages,
-            &mut meter,
-            &mut trace,
-        )
-        .await
-        .unwrap();
-
-        assert!(trace.archived.iter().any(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("request 0"))
-        }));
-        let after = estimate_tokens(&messages);
-        assert!(after < before);
-        assert!(after <= compaction::trigger_at(config.context_window));
-        assert!(messages.iter().any(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains("request 0"))
-        }));
+    fn state(config: AppConfig) -> (crate::SharedState, crate::store::Store, std::path::PathBuf) {
+        let root = crate::tools::test_support::temp_root("compaction-run");
+        let database = root.join("oaklet.db");
+        let store = crate::store::Store::open(&database).unwrap();
+        let state = Arc::new(crate::AppState {
+            exit: Mutex::new(crate::shutdown::ExitState::Running),
+            config: Mutex::new(config),
+            config_path: Default::default(),
+            config_write: Mutex::new(()),
+            windows: Mutex::new(Default::default()),
+            spill_root: Default::default(),
+            approvals: Mutex::new(Default::default()),
+            chat: crate::chat::ChatState::open(&database).unwrap(),
+            command_allow_all: Mutex::new(Default::default()),
+            terminal: Mutex::new(Default::default()),
+            jobs: Arc::new(crate::tools::jobs::JobRegistry::new()),
+            architecture: Mutex::new(Default::default()),
+            ids: std::sync::atomic::AtomicU64::new(0),
+        });
+        (state, store, root)
     }
-}
-
-#[cfg(test)]
-mod schema_budget_tests {
-    use super::*;
-    use crate::compaction::test_support::{assistant, large_tool_registry, system, user};
-    use crate::tools::CancelHandle;
 
     #[tokio::test]
-    async fn large_schemas_trigger_preflight_even_when_history_is_below_trigger() {
-        let tools = large_tool_registry();
-        let schemas = crate::context::estimate_text(&tools.schemas().to_string());
+    async fn a_failed_summary_saves_prior_trims_and_the_partial_reply_without_losing_originals() {
+        let (url, _, server) = summary_server_with(vec![(500, "unavailable")]);
         let config = AppConfig {
-            context_window: 32768,
-            base_url: "invalid://summary".into(),
+            base_url: url,
+            context_window: 8192,
             ..AppConfig::default()
         };
-        let budget = compaction::trigger_at(config.context_window);
-        let text = "x".repeat((budget - schemas / 2) * 2);
+        let (state, store, root) = state(config.clone());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let request = user("CURRENT REQUEST: never commit");
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: request.clone(),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
         let mut messages = vec![
-            system(),
-            user(&text),
-            assistant(&text),
-            user("current request"),
+            json!({"role":"system","content":"system"}),
+            identify(request.clone(), MessageId::Stored(1)),
         ];
-        assert!(estimate_tokens(&messages) < budget);
-        assert!(estimate_tokens(&messages) + schemas > budget);
-        let mut meter = Meter::default();
-        let mut trace = CompactionTrace::default();
+        for index in 0..8 {
+            let id = format!("c{index}");
+            messages.push(ctx.record_message(json!({"role":"assistant","tool_calls":[{"id":id,"type":"function","function":{"name":"read_file","arguments":"{}"}}]}),None));
+            ctx.tool_start(&id, "read_file", "read", &[]);
+            messages.push(ctx.tool_result(
+                &id,
+                true,
+                &format!("result {index}: {}", "x".repeat(8000)),
+                &[],
+            ));
+        }
+        let original = messages.clone();
         let (_handle, cancel) = CancelHandle::new();
-        let compacted = compact_before_request(
+        let error = make_room(
             &reqwest::Client::new(),
             &config,
-            &tools,
-            &cancel,
-            &mut messages,
-            &mut meter,
-            &mut trace,
-        )
-        .await
-        .unwrap();
-        assert!(compacted.is_some());
-        assert!(!trace.archived.is_empty());
-        assert_eq!(
-            meter.pressure(&messages),
-            estimate_tokens(&messages) + schemas
-        );
-        assert!(meter.pressure(&messages) <= budget);
-    }
-
-    #[tokio::test]
-    async fn oversized_fixed_cost_reports_an_actionable_error_without_a_summary_request() {
-        let config = AppConfig {
-            context_window: 4096,
-            base_url: "invalid://summary".into(),
-            ..AppConfig::default()
-        };
-        let mut messages = vec![system(), user("hello")];
-        let (_handle, cancel) = CancelHandle::new();
-        let error = compact_before_request(
-            &reqwest::Client::new(),
-            &config,
-            &large_tool_registry(),
-            &cancel,
+            &mut ToolRegistry::new(),
             &mut messages,
             &mut Meter::default(),
-            &mut CompactionTrace::default(),
+            &cancel,
+            &ctx,
         )
         .await
         .unwrap_err();
-        assert!(error.contains("tool schemas"));
-        assert!(error.contains("reduce tools"));
+        server.join().unwrap();
+        assert!(error.contains("500"));
+        assert_eq!(messages.len(), original.len());
+        assert_eq!(messages[1], original[1]);
+        assert!(context::estimate_tokens(&messages) < context::estimate_tokens(&original));
+        ctx.delta("A partially streamed reply");
+        ctx.finish_error(messages[1..].to_vec(), error).await;
+        let (restored, _) = store.context_snapshot("s").unwrap();
+        assert_eq!(restored.len(), original.len()); // no system, plus the partial reply
+        assert_eq!(
+            restored.last().unwrap()["content"],
+            "A partially streamed reply"
+        );
+        assert_eq!(restored[0], identify(request, MessageId::Stored(1)));
+        let (archived, total) = store.read_history("s", 1, 50).unwrap();
+        assert_eq!(total, 8);
+        assert!(archived.iter().all(|(_, message)| {
+            message["content"]
+                .as_str()
+                .unwrap()
+                .contains(&"x".repeat(8000))
+        }));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
-    async fn fixed_cost_over_trigger_but_under_window_is_still_sent() {
+    async fn an_overflow_retry_uses_the_same_reducer_and_persists_its_exact_surface() {
+        let (url, seen, server) = summary_server_with(vec![
+            (
+                400,
+                r#"{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}"#,
+            ),
+            (
+                200,
+                r#"{"choices":[{"finish_reason":"stop","message":{"content":"Goal: finish. Old investigation is complete."}}]}"#,
+            ),
+            (
+                200,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            ),
+        ]);
         let config = AppConfig {
-            context_window: 8192,
-            base_url: "invalid://summary".into(),
+            base_url: url,
+            context_window: 32768,
             ..AppConfig::default()
         };
-        let mut messages = vec![system(), user("hello")];
-        let tools = large_tool_registry();
+        let (state, store, root) = state(config.clone());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let request = user("CURRENT REQUEST");
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: request.clone(),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
+        let mut messages = vec![
+            json!({"role":"system","content":"system"}),
+            identify(request.clone(), MessageId::Stored(1)),
+        ];
+        messages.push(ctx.record_message(
+            json!({"role":"assistant","content":"old investigation ".repeat(1000)}),
+            None,
+        ));
+        messages
+            .push(ctx.record_message(json!({"role":"assistant","content":"latest step"}), None));
+        let mut tools = ToolRegistry::new();
         let (_handle, cancel) = CancelHandle::new();
-        let compacted = compact_before_request(
+        let mut retried = false;
+        assert!(matches!(
+            crate::agent::step::request(
+                &reqwest::Client::new(),
+                &config,
+                &mut tools,
+                &mut messages,
+                &cancel,
+                &ctx,
+                &mut retried
+            )
+            .await
+            .unwrap(),
+            crate::agent::step::Next::Retry
+        ));
+        let reply = crate::agent::step::request(
             &reqwest::Client::new(),
             &config,
-            &tools,
-            &cancel,
+            &mut tools,
             &mut messages,
-            &mut Meter::default(),
-            &mut CompactionTrace::default(),
+            &cancel,
+            &ctx,
+            &mut retried,
         )
         .await
         .unwrap();
-        assert!(compacted.is_none());
+        let crate::agent::step::Next::Reply(reply) = reply else {
+            panic!("expected reply")
+        };
+        messages
+            .push(ctx.record_message(json!({"role":"assistant","content":reply.content}), None));
+        ctx.finish_done(messages[1..].to_vec()).await;
+        server.join().unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        let (restored, _) = store.context_snapshot("s").unwrap();
+        assert!(crate::store::is_checkpoint(&restored[0]));
+        assert_eq!(restored[1], identify(request, MessageId::Stored(1)));
+        assert_eq!(restored.last().unwrap()["content"], "Done");
+        assert_eq!(store.history_count("s").unwrap(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn stopping_after_compaction_preserves_a_repaired_parallel_tool_batch() {
+        let (url, _, server) =
+            summary_server_with(vec![(200, crate::compaction::test_support::SUMMARY_BODY)]);
+        let config = AppConfig {
+            base_url: url,
+            context_window: 32768,
+            ..AppConfig::default()
+        };
+        let (state, store, root) = state(config.clone());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let request = user("Never commit");
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: request.clone(),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
+        let mut messages = vec![
+            json!({"role":"system","content":"system"}),
+            identify(request, MessageId::Stored(1)),
+        ];
+        messages.push(ctx.record_message(
+            json!({"role":"assistant","content":"old investigation ".repeat(1000)}),
+            None,
+        ));
+        messages
+            .push(ctx.record_message(json!({"role":"assistant","content":"latest step"}), None));
+        let (_handle, cancel) = CancelHandle::new();
         assert!(
-            estimate_tokens(&messages)
-                + crate::context::estimate_text(&tools.schemas().to_string())
-                <= config.context_window
+            recover(
+                &reqwest::Client::new(),
+                &config,
+                &mut ToolRegistry::new(),
+                &mut messages,
+                &cancel,
+                &ctx
+            )
+            .await
+            .unwrap()
         );
+        server.join().unwrap();
+        messages.push(ctx.record_message(
+            json!({"role":"assistant","content":"", "tool_calls":[
+                {"id":"c1","type":"function","function":{"name":"read_file","arguments":"{}"}},
+                {"id":"c2","type":"function","function":{"name":"read_file","arguments":"{}"}}
+            ]}),
+            None,
+        ));
+        ctx.tool_start("c1", "read_file", "read", &[]);
+        ctx.delta("Interrupted reply");
+        ctx.finish_stopped(messages[1..].to_vec()).await;
+        let (restored, _) = store.context_snapshot("s").unwrap();
+        let call = restored
+            .iter()
+            .position(|message| message.get("tool_calls").is_some())
+            .unwrap();
+        assert_eq!(restored[call + 1]["tool_call_id"], "c1");
+        assert_eq!(restored[call + 2]["tool_call_id"], "c2");
+        assert_eq!(restored.last().unwrap()["content"], "Interrupted reply");
+        assert!(
+            restored
+                .iter()
+                .all(|message| context::message_id(message).is_ok())
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

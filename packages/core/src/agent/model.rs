@@ -265,6 +265,7 @@ pub(super) async fn stream_step(
         "messages": crate::context::request_messages(messages),
         "tools": tools.schemas(),
         "stream": true,
+        "max_tokens": crate::context::output_reserve(config.context_window),
         // Ask OpenAI-compatible servers to close the stream with a usage chunk.
         "stream_options": { "include_usage": true },
     });

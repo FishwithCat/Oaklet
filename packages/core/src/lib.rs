@@ -385,6 +385,9 @@ pub struct AppConfig {
     /// request can hit the same provider prefix cache.
     #[serde(default)]
     pub summary_model: String,
+    /// Required capacity when an independent summary model is selected.
+    #[serde(default)]
+    pub summary_context_window: Option<usize>,
     /// Prompt tokens the model accepts. History is compacted near this size.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
@@ -533,6 +536,7 @@ impl Default for AppConfig {
             model: default_model(),
             theme: default_theme(),
             summary_model: String::new(),
+            summary_context_window: None,
             context_window: default_context_window(),
             search_url: default_search_url(),
             search_api_key: String::new(),
@@ -756,6 +760,18 @@ fn save_config(
     }
     if config.context_window < 8_192 {
         return Err("Context window must be at least 8192 tokens.".into());
+    }
+    if config
+        .summary_context_window
+        .is_some_and(|window| window < 8_192)
+    {
+        return Err("Summary context window must be at least 8192 tokens.".into());
+    }
+    if !config.summary_model.is_empty()
+        && config.summary_model != config.model
+        && config.summary_context_window.is_none()
+    {
+        return Err("Set the context window for the summary model.".into());
     }
     config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
     write_config(&state.config_path, &config)?;

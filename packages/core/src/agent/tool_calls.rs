@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use super::ToolCall;
 use super::approval::TauriApprover;
-use super::messages::tool_message;
 use super::parse_args;
 use crate::chat::RunContext;
 use crate::repeat::RepeatGuard;
@@ -178,11 +177,11 @@ impl ToolRun<'_> {
             Ok(args) => args,
             Err(message) => {
                 self.ctx.tool_start(&call.id, &call.name, "", &[]);
-                self.ctx.tool_result(&call.id, false, &message, &[]);
+                let result = self.ctx.tool_result(&call.id, false, &message, &[]);
                 if let Some(reminder) = observe(guard, call, &Err(message.clone())) {
                     batch.reminders.push(reminder);
                 }
-                messages.push(tool_message(&call.id, message));
+                messages.push(result);
                 return;
             }
         };
@@ -231,13 +230,13 @@ fn record(
     messages: &mut Vec<Value>,
     batch: &mut Batch,
 ) {
-    ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
+    let result = ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
     if outcome.ok
         && let Some(touched) = touched
     {
         batch.instruction_touches.push(touched);
     }
-    messages.push(tool_message(&call.id, outcome.output));
+    messages.push(result);
     batch.images.extend(outcome.images);
 }
 

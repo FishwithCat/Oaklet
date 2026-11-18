@@ -415,7 +415,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                 "tone": tone,
                 "text": text,
             })),
-            EventPayload::Compaction { before, after, .. } => items.push(json!({
+            EventPayload::Compaction { before, after, .. } | EventPayload::Context { before, after, .. } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,
                 "tone": "muted",
@@ -699,7 +699,10 @@ pub async fn session_send(
         // same transaction that appended it. Trim an incomplete tool block
         // before adding the new turn so the request stays valid.
         let mut messages = trim_incomplete_tool_block(started.prior_messages);
-        messages.push(turn.message.clone());
+        messages.push(context::identify(
+            turn.message.clone(),
+            context::MessageId::Stored(started.start_seq),
+        ));
         let mut view = view_from_window(started.window, false);
         view.running = true;
         view.active_run_id = Some(run_id.clone());
@@ -730,7 +733,6 @@ pub async fn session_send(
         partial: Arc::new(Mutex::new(PartialReply::default())),
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_sizes: Arc::new(Mutex::new(None)),
-        summary: Arc::new(Mutex::new(None)),
     };
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
@@ -859,100 +861,116 @@ async fn compact_session(
     let mut config = state
         .config
         .lock()
-        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .map_err(|_| "Agent state is unavailable.")?
         .clone();
     let store = state.chat.store.clone();
     let id = session_id.to_string();
-    let (session, base, before) = tauri::async_runtime::spawn_blocking(move || {
-        store.model_surface(&id).map(|session| {
-            session.map(|(meta, messages)| {
-                let messages = trim_incomplete_tool_block(messages);
-                let before = context::estimate_tokens(&messages);
-                (meta, messages, before)
-            })
-        })
+    let (meta, base, version) = tauri::async_runtime::spawn_blocking(move || {
+        let meta = store
+            .session_meta(&id)?
+            .ok_or("This session no longer exists.")?;
+        let (surface, version) = store.context_snapshot(&id)?;
+        Ok::<_, String>((meta, trim_incomplete_tool_block(surface), version))
     })
     .await
-    .map_err(|error| format!("Could not read the session: {error}"))??
-    .ok_or_else(|| "This session no longer exists.".to_string())?;
-    if !Path::new(&session.workspace).is_dir() {
-        return Err(format!("Workspace is unavailable: {}", session.workspace));
+    .map_err(|error| error.to_string())??;
+    config.workspace = meta.workspace;
+    if !Path::new(&config.workspace).is_dir() {
+        return Err("Workspace is unavailable.".into());
     }
-    config.workspace = session.workspace.clone();
-
     if base.is_empty() {
         return Ok((load_window(state, session_id).await?, 0, 0, false));
     }
-
-    let next =
-        compaction::compact_messages(&reqwest::Client::new(), &config, &base, cancel).await?;
-    let Some(compacted) = next else {
-        return Ok((load_window(state, session_id).await?, before, before, false));
-    };
-    let surface = compacted.messages;
-    let Some(summary) = compacted.summary else {
-        return Ok((load_window(state, session_id).await?, before, before, false));
-    };
-
-    if cancel.is_cancelled() {
-        return Err("Stopped.".into());
-    }
     let mut tools = crate::tools::ToolRegistry::with_host_tools(app, &config, cancel).await;
-    let measure_config = config.clone();
-    let measure_store = state.chat.store.clone();
-    let measure_id = session_id.to_string();
-    let (before_overhead, after_overhead) = tauri::async_runtime::spawn_blocking(move || {
-        let workspace = Path::new(&measure_config.workspace);
-        let instructions = crate::instructions::WorkspaceInstructions::load(workspace).render();
-        let sources = crate::architecture::prompt_model_sources(workspace);
-        let history = crate::tools::history::HistoryRead::new(
-            measure_store,
-            measure_id,
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let had_history = history.has_entries();
-        let overhead = |tools: &crate::tools::ToolRegistry| {
-            crate::agent::context_overhead(
-                &measure_config,
-                tools,
-                &sources,
-                instructions.as_deref(),
-            )
-        };
-        let before = overhead(&tools);
+    let history = crate::tools::history::HistoryRead::new(
+        state.chat.store.clone(),
+        session_id.into(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    if history.has_entries() {
         tools.push(Box::new(history));
-        let after = overhead(&tools);
-        (if had_history { after } else { before }, after)
+    }
+    let workspace = config.workspace.clone();
+    let (instructions, sources) = tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&workspace);
+        (
+            crate::instructions::WorkspaceInstructions::load(root).render(),
+            crate::architecture::prompt_model_sources(root),
+        )
     })
     .await
-    .map_err(|error| format!("Could not measure the compacted context: {error}"))?;
-    let before = before + before_overhead;
-    let after = context::estimate_tokens(&surface) + after_overhead;
-    let store = state.chat.store.clone();
-    let id = session_id.to_string();
+    .map_err(|error| error.to_string())?;
+    let mut messages =
+        crate::agent::initial_messages(&config, &tools, &sources, instructions.as_deref(), base);
+    let before = context::request_tokens(&messages, &tools.schemas());
+    let mut changed = false;
+    if let Some(next) = compaction::trim_tool_outputs(&messages) {
+        // A trim is only staged here, so a failed manual summary leaves the whole operation unchanged.
+        messages = next;
+        changed = true;
+    }
+    match compaction::compact(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        &tools,
+        compaction::Trigger::Manual,
+        cancel,
+    )
+    .await?
+    {
+        Some(next) => {
+            messages = next;
+        }
+        None if !changed => {
+            return Ok((load_window(state, session_id).await?, before, before, false));
+        }
+        None => {}
+    }
+    let history = crate::tools::history::HistoryRead::new(
+        state.chat.store.clone(),
+        session_id.into(),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    if tools.get("history_read").is_none() {
+        tools.push(Box::new(history));
+    }
+    messages = crate::agent::initial_messages(
+        &config,
+        &tools,
+        &sources,
+        instructions.as_deref(),
+        messages.split_off(1),
+    );
+    let after = context::request_tokens(&messages, &tools.schemas());
+    if after >= before {
+        return Err(
+            "The replacement and history tool would not shrink the request; history was preserved."
+                .into(),
+        );
+    }
     if cancel.is_cancelled() {
         return Err("Stopped.".into());
     }
-    let compacted = tauri::async_runtime::spawn_blocking(move || {
-        let shadowed_through = store.shadow_boundary(&id, &surface)?;
-        store.apply_compaction(
+    let surface = messages.split_off(1);
+    let store = state.chat.store.clone();
+    let id = session_id.to_string();
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        store.apply_surface(
             &id,
-            &store::CompactionRecord {
-                summary,
-                shadowed_through,
-                before,
-                after,
-                context: ContextUsage {
-                    used: after,
-                    window: config.context_window,
-                },
+            version,
+            &surface,
+            (before, after),
+            ContextUsage {
+                used: after,
+                window: config.context_window,
             },
             store::now_ms(),
         )
     })
     .await
-    .map_err(|error| format!("Could not save the compacted context: {error}"))??;
-    Ok((compacted, before, after, true))
+    .map_err(|error| error.to_string())??;
+    Ok((session, before, after, true))
 }
 
 async fn load_window(
@@ -1440,6 +1458,18 @@ fn trim_incomplete_tool_block(mut messages: Vec<Value>) -> Vec<Value> {
             })
         })
         .collect();
+    let identified = context::message_id(&messages[index]).is_ok();
+    let synthetic = synthetic.into_iter().map(|message| {
+        if identified {
+            let id = message["tool_call_id"].as_str().unwrap_or("").to_string();
+            context::identify(
+                context::source(message, "repair"),
+                context::MessageId::Repair(id),
+            )
+        } else {
+            message
+        }
+    });
     messages.splice(insert_at..insert_at, synthetic);
     messages
 }
@@ -1567,8 +1597,6 @@ pub struct RunContext {
     compacted: Arc<AtomicBool>,
     /// Local request sizes at the first and last compaction in this run.
     compaction_sizes: Arc<Mutex<Option<(usize, usize)>>>,
-    /// Checkpoint produced by this run's compaction, if one was created.
-    summary: Arc<Mutex<Option<Value>>>,
 }
 
 #[derive(Default)]
@@ -1620,13 +1648,6 @@ impl RunContext {
         *recorded = Some((first, after));
     }
 
-    pub fn set_summary(&self, summary: Value) {
-        *self
-            .summary
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(summary);
-    }
-
     pub fn record(&self, payload: EventPayload) {
         let mut pending = self
             .pending
@@ -1636,22 +1657,25 @@ impl RunContext {
     }
 
     /// Record a model-visible message plus its optional UI metadata.
-    pub fn record_message(&self, message: Value, display: Option<Value>) {
+    pub fn record_message(&self, message: Value, display: Option<Value>) -> Value {
         if message.get("role").and_then(Value::as_str) == Some("assistant") {
             *self
                 .partial
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = PartialReply::default();
         }
-        self.record(EventPayload::Message { message, display });
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let message = context::identify(message, context::MessageId::Pending(pending.len()));
+        pending.push(EventPayload::Message {
+            message: message.clone(),
+            display,
+        });
+        message
     }
 
     /// Record a model-only turn (tool images, reminders) that the UI hides.
-    pub fn record_hidden(&self, message: Value) {
-        self.record(EventPayload::Message {
-            message,
-            display: Some(json!({ "hidden": true })),
-        });
+    pub fn record_hidden(&self, message: Value) -> Value {
+        self.record_message(message, Some(json!({ "hidden": true })))
     }
 
     fn record_notice(&self, tone: Tone, text: impl Into<String>) {
@@ -1732,7 +1756,6 @@ impl RunContext {
             partial: Arc::new(Mutex::new(PartialReply::default())),
             compacted: Arc::new(AtomicBool::new(false)),
             compaction_sizes: Arc::new(Mutex::new(None)),
-            summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1835,7 +1858,7 @@ impl RunContext {
         );
     }
 
-    pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) {
+    pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) -> Value {
         let finished_at = store::now_ms() as u64;
         {
             let mut pending = self
@@ -1917,6 +1940,21 @@ impl RunContext {
                 diffs: diffs.to_vec(),
             },
         );
+        let pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let (index, message) = pending
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, event)| match event {
+                EventPayload::Message { message, .. }
+                    if message["role"] == "tool" && message["tool_call_id"] == id =>
+                {
+                    Some((index, message))
+                }
+                _ => None,
+            })
+            .expect("tool_result records its message before publishing");
+        context::identify(message.clone(), context::MessageId::Pending(index))
     }
 
     pub fn approval(
@@ -2008,7 +2046,7 @@ impl RunContext {
     /// Persist the whole turn, release the live handle, then publish the final
     /// view. If the write fails the run still ends, and the in-memory view is
     /// sent so the client keeps what it saw.
-    async fn finish(&self, messages: Vec<Value>, status: &'static str, error: Option<String>) {
+    async fn finish(&self, mut messages: Vec<Value>, status: &'static str, error: Option<String>) {
         if self.finished.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -2027,10 +2065,10 @@ impl RunContext {
             if !partial.reasoning.is_empty() {
                 message["reasoning_content"] = json!(partial.reasoning);
             }
-            self.record_message(
+            messages.push(self.record_message(
                 message,
                 Some(json!({ "runId": self.run_id, "interrupted": true })),
-            );
+            ));
         }
 
         let messages = trim_incomplete_tool_block(messages);
@@ -2067,16 +2105,10 @@ impl RunContext {
             .compaction_sizes
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let summary = self
-            .summary
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
         let compaction = self
             .compacted
             .load(Ordering::SeqCst)
             .then(|| store::CompactionEnd {
-                summary,
                 surface: messages.clone(),
                 before: sizes.map(|(before, _)| before).unwrap_or(0),
                 after: sizes.map(|(_, after)| after).unwrap_or(0),

@@ -46,12 +46,48 @@ impl HistoryRead {
             || self.store.has_history(&self.session_id).unwrap_or(false)
     }
 
+    fn image(&self, offset: usize, image: usize) -> Result<ToolOutput, String> {
+        if image == 0 {
+            return Err("Image numbers start at 1.".into());
+        }
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| "The archive is unavailable.")?;
+        let (rows, _) =
+            self.store
+                .read_history_pending(&self.session_id, offset.max(1), 1, &pending)?;
+        let message = rows
+            .first()
+            .map(|(_, message)| message)
+            .ok_or("No archived message at that offset.")?;
+        let url = message["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|part| matches!(part["type"].as_str(), Some("image_url" | "input_image")))
+            .nth(image - 1)
+            .and_then(|part| {
+                part.pointer("/image_url/url")
+                    .and_then(Value::as_str)
+                    .or_else(|| part["image_url"].as_str())
+                    .or_else(|| part["url"].as_str())
+            })
+            .ok_or("No image with that number in the archived message.")?;
+        Ok(ToolOutput::with_image(
+            format!(
+                "Original image {image} from archived message {}.",
+                offset.max(1)
+            ),
+            url.to_string(),
+        ))
+    }
+
     fn page(&self, offset: usize, limit: usize) -> Result<String, String> {
         let pending = self
             .pending
             .lock()
-            .map_err(|_| "The archived history is unavailable.".to_string())?
-            .clone();
+            .map_err(|_| "The archived history is unavailable.".to_string())?;
         let offset = offset.max(1);
         let limit = limit.clamp(1, MAX_PAGE);
         let (rows, total) =
@@ -105,7 +141,7 @@ impl Tool for HistoryRead {
     }
 
     fn description(&self) -> &str {
-        "Read the original messages that compaction replaced in this chat. Use it when a checkpoint may have hidden an exact earlier command, error, or file snippet. Pages are archived messages, 1-based."
+        "Read the original messages that compaction replaced in this chat. Use it when a checkpoint may have hidden an exact earlier command, error, or file snippet. Pages are archived messages, 1-based. To inspect an original image, use offset and image from its locator."
     }
 
     fn parameters(&self) -> Value {
@@ -113,7 +149,8 @@ impl Tool for HistoryRead {
             "type": "object",
             "properties": {
                 "offset": { "type": "integer", "description": "First archived message to read, 1-based. Defaults to 1." },
-                "limit": { "type": "integer", "description": "Maximum number of messages. Defaults to 8." }
+                "limit": { "type": "integer", "description": "Maximum number of messages. Defaults to 8." },
+                "image": { "type": "integer", "minimum": 1, "description": "Attach this 1-based original image from the message at offset. Omit to read text." }
             },
             "additionalProperties": false
         })
@@ -136,15 +173,17 @@ impl Tool for HistoryRead {
         Box::pin(async move {
             let args: HistoryReadArgs = parse_args(args)?;
             let tool = self.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                tool.page(args.offset.unwrap_or(1), args.limit.unwrap_or(DEFAULT_PAGE))
+            tauri::async_runtime::spawn_blocking(move || match args.image {
+                Some(image) => tool.image(args.offset.unwrap_or(1), image),
+                None => tool
+                    .page(args.offset.unwrap_or(1), args.limit.unwrap_or(DEFAULT_PAGE))
+                    .map(ToolOutput::text),
             })
             .await
             .map_err(|error| {
                 ToolError::Failed(format!("Could not read archived history: {error}"))
             })?
             .map_err(ToolError::Failed)
-            .map(ToolOutput::text)
         })
     }
 }
@@ -154,6 +193,7 @@ impl Tool for HistoryRead {
 struct HistoryReadArgs {
     offset: Option<usize>,
     limit: Option<usize>,
+    image: Option<usize>,
 }
 
 fn render_message(index: usize, message: &Value) -> String {
@@ -211,6 +251,17 @@ fn render_message(index: usize, message: &Value) -> String {
             output.push_str(&format!("--- {index}. {label} ---\n"));
             output.push_str(&content_text(message.get("content")));
         }
+    }
+    let images = message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| matches!(part["type"].as_str(), Some("image_url" | "input_image")))
+        .count();
+    for image in 1..=images {
+        output.push_str(&format!(
+            "\n[original image {image}: history_read(offset={index}, image={image})]"
+        ));
     }
     output.trim_end_matches('\n').to_string()
 }
@@ -384,6 +435,44 @@ mod tests {
                 .unwrap()
                 .contains("--- 4. Assistant ---\nfourth")
         );
+    }
+
+    #[tokio::test]
+    async fn reattaches_the_original_archived_image() {
+        let store = Store::in_memory().unwrap();
+        store.create_session("s", "/tmp", 1).unwrap();
+        let url = "data:image/png;base64,iVBORw0KGgo=";
+        archive(
+            &store,
+            "s",
+            vec![json!({"role":"user","content":[
+                {"type":"text","text":"match this screenshot"},
+                {"type":"image_url","image_url":{"url":url}}
+            ]})],
+        );
+        let tool = HistoryRead::new(store, "s".into(), Arc::new(Mutex::new(Vec::new())));
+        assert!(
+            tool.page(1, 1)
+                .unwrap()
+                .contains("history_read(offset=1, image=1)")
+        );
+        let (ctx, root, _handle) = context("history-image");
+        let output = tool
+            .execute(&ctx, json!({"offset":1,"image":1}))
+            .await
+            .unwrap();
+        assert_eq!(output.images[0].data_url, url);
+        assert!(
+            tool.execute(&ctx, json!({"offset":1,"image":0}))
+                .await
+                .is_err()
+        );
+        assert!(
+            tool.execute(&ctx, json!({"offset":1,"image":2}))
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

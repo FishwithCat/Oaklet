@@ -10,18 +10,8 @@ use serde_json::Value;
 const THRESHOLDS: [usize; 3] = [3, 5, 8];
 /// Arguments shown in the detailed reminder; the full value is always compared.
 const PREVIEW_CHARS: usize = 500;
-/// Marks an advisory message as injected rather than typed by the user.
-/// Compaction uses this to keep the latest human request out of a summary.
+/// Human-readable label; internal source metadata identifies injected messages.
 pub(crate) const REMINDER_PREFIX: &str = "Oaklet loop guard: ";
-
-/// True when a message was injected by this guard.
-pub(crate) fn is_reminder(message: &Value) -> bool {
-    message.get("role").and_then(Value::as_str) == Some("user")
-        && message
-            .get("content")
-            .and_then(Value::as_str)
-            .is_some_and(|text| text.starts_with(REMINDER_PREFIX))
-}
 
 /// Tracks one run's consecutive identical calls.
 #[derive(Default)]
@@ -118,7 +108,7 @@ fn preview(args: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{RepeatGuard, is_reminder};
+    use super::RepeatGuard;
 
     #[test]
     fn stays_quiet_until_the_third_identical_call() {
@@ -170,18 +160,5 @@ mod tests {
         assert!(guard.observe("write_file", &first).is_none());
         assert!(guard.observe("write_file", &reordered).is_none());
         assert!(guard.observe("write_file", &first).is_some());
-    }
-
-    #[test]
-    fn only_guard_messages_count_as_reminders() {
-        assert!(is_reminder(
-            &json!({ "role": "user", "content": "Oaklet loop guard: change approach" })
-        ));
-        assert!(!is_reminder(
-            &json!({ "role": "user", "content": "fix the tests" })
-        ));
-        assert!(!is_reminder(
-            &json!({ "role": "assistant", "content": "Oaklet loop guard: x" })
-        ));
     }
 }

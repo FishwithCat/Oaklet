@@ -80,7 +80,11 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   percentage and token counts; click it while idle to fold older turns into a
   checkpoint immediately. Replaced messages stay in the transcript, so a
   compacted chat can page through the originals with `history_read` instead of
-  losing them.
+  losing them. Archived images can be reattached with
+  `history_read(offset=N, image=M)` using the locator shown in a history page.
+- Compaction failures preserve history and stop the run for retry. Successful
+  tool-output trims remain recoverable even if a later summary fails. A separate
+  **Summary model** requires its own **Summary context window** in Settings.
 
 The agent has `read_file`, `read_image`, `write_file`, `edit_file`,
 `apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,

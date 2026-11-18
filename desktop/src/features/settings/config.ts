@@ -9,6 +9,7 @@ export type AppConfig = {
   model: string;
   theme: Theme;
   summaryModel: string;
+  summaryContextWindow: number | null;
   contextWindow: number;
   searchUrl: string;
   searchApiKey: string;

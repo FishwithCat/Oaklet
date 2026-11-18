@@ -87,26 +87,88 @@ pub fn estimate_tokens(messages: &[Value]) -> usize {
     messages.iter().map(estimate_message).sum()
 }
 
-/// Internal checkpoint identity never crosses the provider boundary.
+/// Stable identities belong to the application and never reach a provider.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MessageId {
+    Stored(i64),
+    Pending(usize),
+    Checkpoint,
+    Repair(String),
+}
+
+pub(crate) fn identify(mut message: Value, id: MessageId) -> Value {
+    message["oaklet_id"] = serde_json::to_value(id).unwrap();
+    message
+}
+
+pub(crate) fn message_id(message: &Value) -> Result<MessageId, String> {
+    serde_json::from_value(message["oaklet_id"].clone())
+        .map_err(|_| "A context message has no stable identity; nothing was compacted.".into())
+}
+
+pub(crate) fn source(mut message: Value, source: &str) -> Value {
+    message["oaklet_source"] = Value::String(source.into());
+    message
+}
+
+pub(crate) fn is_request(message: &Value) -> bool {
+    message["role"] == "user"
+        && !crate::store::is_checkpoint(message)
+        && !matches!(
+            message["oaklet_source"].as_str(),
+            Some("reminder" | "tool_images")
+        )
+}
+
+pub(crate) fn provider_message(mut message: Value) -> Value {
+    if let Some(object) = message.as_object_mut() {
+        object.remove("oaklet_checkpoint");
+        object.remove("oaklet_id");
+        object.remove("oaklet_source");
+    }
+    message
+}
+
+/// Merge adjacent user messages only at the provider boundary.
 pub(crate) fn request_messages(messages: &[Value]) -> Vec<Value> {
-    messages
-        .iter()
-        .cloned()
-        .map(|mut message| {
-            if let Some(object) = message.as_object_mut() {
-                object.remove("oaklet_checkpoint");
-            }
-            message
-        })
-        .collect()
+    let mut output: Vec<Value> = Vec::new();
+    for message in messages.iter().cloned().map(provider_message) {
+        if message["role"] == "user" && output.last().is_some_and(|last| last["role"] == "user") {
+            let previous = output.last_mut().unwrap();
+            let parts = |content: &Value| match content {
+                Value::Array(parts) => parts.clone(),
+                Value::String(text) => vec![serde_json::json!({"type":"text", "text":text})],
+                _ => Vec::new(),
+            };
+            let mut content = parts(&previous["content"]);
+            content.extend(parts(&message["content"]));
+            previous["content"] = Value::Array(content);
+        } else {
+            output.push(message);
+        }
+    }
+    output
+}
+
+pub(crate) fn output_reserve(window: usize) -> usize {
+    32_768.min(window / 4)
+}
+
+pub(crate) fn input_limit(window: usize) -> usize {
+    window.saturating_sub(output_reserve(window))
+}
+
+pub(crate) fn request_tokens(messages: &[Value], schemas: &Value) -> usize {
+    estimate_tokens(&request_messages(messages)) + estimate_text(&schemas.to_string())
 }
 
 /// Token pressure for the next request, anchored on provider-reported usage.
 ///
 /// `prompt_tokens` from the last response is exact for the request that
 /// produced it. Messages appended after that request are priced locally and
-/// added as a signed delta, so pruning or compaction that shrinks history also
-/// lowers the reported pressure instead of pinning it at the old anchor.
+/// added as a signed delta. History replacement invalidates the anchor;
+/// usage from the next successful request establishes a fresh one.
 #[derive(Debug, Default)]
 pub struct Meter {
     anchor_prompt_tokens: Option<usize>,
@@ -116,6 +178,10 @@ pub struct Meter {
 }
 
 impl Meter {
+    pub fn invalidate(&mut self) {
+        self.anchor_prompt_tokens = None;
+    }
+
     pub fn set_schema_tokens(&mut self, tokens: usize) {
         self.schema_tokens = tokens;
     }
@@ -124,7 +190,8 @@ impl Meter {
     /// pressure it is sent under.
     pub fn prepare(&mut self, messages: &[Value]) -> usize {
         let pressure = self.pressure(messages);
-        self.pending_estimate = estimate_tokens(messages).saturating_add(self.schema_tokens);
+        self.pending_estimate =
+            estimate_tokens(&request_messages(messages)).saturating_add(self.schema_tokens);
         pressure
     }
 
@@ -136,7 +203,8 @@ impl Meter {
 
     /// Token pressure of the conversation as it stands.
     pub fn pressure(&self, messages: &[Value]) -> usize {
-        let estimate = estimate_tokens(messages).saturating_add(self.schema_tokens);
+        let estimate =
+            estimate_tokens(&request_messages(messages)).saturating_add(self.schema_tokens);
         match self.anchor_prompt_tokens {
             Some(anchor) => anchor
                 .saturating_add(estimate.saturating_sub(self.anchor_estimate))
@@ -226,8 +294,8 @@ mod tests {
         meter.record_prompt_tokens(200);
 
         messages.push(message(&"b".repeat(40)));
-        // The new message's local price, added to the exact anchor.
-        assert_eq!(meter.pressure(&messages), 214);
+        // The merged multimodal envelope includes text-part framing.
+        assert_eq!(meter.pressure(&messages), 218);
     }
 
     #[test]
@@ -273,5 +341,46 @@ mod request_budget_tests {
                 .get("oaklet_checkpoint")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod replacement_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replacing_history_invalidates_both_positive_and_negative_usage_error() {
+        for usage in [4_000, 16_000] {
+            let old = vec![json!({"role":"user", "content":"x".repeat(39984)})];
+            let new = vec![json!({"role":"user", "content":"new context"})];
+            let mut meter = Meter::default();
+            meter.prepare(&old);
+            meter.record_prompt_tokens(usage);
+            meter.invalidate();
+            assert_eq!(
+                meter.prepare(&new),
+                estimate_tokens(&request_messages(&new))
+            );
+        }
+    }
+
+    #[test]
+    fn internal_identity_and_sources_are_removed_after_user_message_merging() {
+        let checkpoint = identify(
+            crate::store::checkpoint(json!({"role":"user","content":"summary"})),
+            MessageId::Checkpoint,
+        );
+        let request = identify(
+            source(
+                json!({"role":"user","content":[{"type":"text","text":"request"}]}),
+                "human",
+            ),
+            MessageId::Stored(3),
+        );
+        let messages = request_messages(&[checkpoint, request]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(messages[0].as_object().unwrap().len(), 2);
     }
 }

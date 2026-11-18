@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod migrations;
+mod projection;
+use projection::{save_surface, surface_messages_with};
 
 /// Events in one UI window. The model surface never uses this page size.
 pub const PAGE_EVENTS: usize = 200;
@@ -36,6 +38,13 @@ pub enum EventPayload {
     },
     /// A model-only replacement; the original message remains available for recall.
     ToolTrim { original_seq: i64, message: Value },
+    /// Exact model projection; original message bodies remain in the log.
+    Context {
+        surface: Vec<projection::SurfaceEntry>,
+        archived: Vec<i64>,
+        before: usize,
+        after: usize,
+    },
     /// User-visible text that is not part of the conversation.
     Notice { tone: String, text: String },
     /// A summary replacing the transcript prefix through `shadowed_through`.
@@ -143,13 +152,10 @@ pub struct RunEnd {
     pub error: Option<String>,
 }
 
-/// A compaction record to append after this run's messages.
+/// Exact context projection to append after this run's messages.
 #[derive(Clone, Debug)]
 pub struct CompactionEnd {
-    /// Absent when only tool output was trimmed.
-    pub summary: Option<Value>,
-    /// Model history after compaction; the retained tail determines the
-    /// shadow boundary.
+    /// Model history with stable identities; no content matching is needed.
     pub surface: Vec<Value>,
     pub before: usize,
     pub after: usize,
@@ -157,6 +163,7 @@ pub struct CompactionEnd {
 
 /// One compaction write: summary, boundary, and the gauge it produced.
 #[derive(Clone, Debug)]
+#[cfg(test)]
 pub struct CompactionRecord {
     pub summary: Value,
     pub shadowed_through: i64,
@@ -222,7 +229,9 @@ fn align_page(events: &mut Vec<Event>) {
     while start > 0
         && matches!(
             events[start - 1].payload,
-            EventPayload::Notice { .. } | EventPayload::Compaction { .. }
+            EventPayload::Notice { .. }
+                | EventPayload::Compaction { .. }
+                | EventPayload::Context { .. }
         )
     {
         start -= 1;
@@ -378,6 +387,7 @@ fn to_session(conn: &Connection, row: SessionRow) -> Result<Session, String> {
     })
 }
 
+#[cfg(test)]
 fn latest_compaction(conn: &Connection, session_id: &str) -> Result<Option<(Value, i64)>, String> {
     let raw: Option<String> = conn
         .query_row(
@@ -402,49 +412,6 @@ fn latest_compaction(conn: &Connection, session_id: &str) -> Result<Option<(Valu
     }
 }
 
-fn surface_messages_with(
-    conn: &Connection,
-    session_id: &str,
-) -> Result<Option<Vec<Value>>, String> {
-    if Store::get_meta_with(conn, session_id)?.is_none() {
-        return Ok(None);
-    }
-    let mut messages = Vec::new();
-    let mut start = 0;
-    if let Some((summary, through)) = latest_compaction(conn, session_id)? {
-        messages.push(summary);
-        start = through;
-    }
-    let trims = tool_trims(&read_events(
-        conn,
-        "SELECT seq, payload, created_at FROM session_events \
-         WHERE session_id = ?1 AND seq > ?2 AND json_extract(payload, '$.type') = 'tool_trim' \
-         ORDER BY seq",
-        &[&session_id, &start],
-    )?);
-    let mut statement = conn
-        .prepare(
-            "SELECT seq, payload FROM session_events \
-             WHERE session_id = ?1 AND seq > ?2 \
-               AND json_extract(payload, '$.type') = 'message' \
-             ORDER BY seq",
-        )
-        .map_err(|error| format!("Could not read the transcript: {error}"))?;
-    let rows = statement
-        .query_map(params![session_id, start], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| format!("Could not read the transcript: {error}"))?;
-    for row in rows {
-        let (seq, raw) = row.map_err(|error| format!("Could not read the transcript: {error}"))?;
-        let EventPayload::Message { message, .. } = decode_event(0, &raw, 0)?.payload else {
-            continue;
-        };
-        messages.push(trims.get(&seq).cloned().unwrap_or(message));
-    }
-    Ok(Some(messages))
-}
-
 pub(crate) fn tool_trims(events: &[Event]) -> HashMap<i64, Value> {
     events
         .iter()
@@ -466,100 +433,6 @@ pub(crate) fn is_checkpoint(message: &Value) -> bool {
 pub(crate) fn checkpoint(mut message: Value) -> Value {
     message["oaklet_checkpoint"] = Value::Bool(true);
     message
-}
-
-/// Seq of the last message a compaction summary replaces. The retained tail is
-/// matched from the end, so notices do not shift the boundary.
-fn shadow_for(events: &[Event], surface: &[Value]) -> Option<i64> {
-    let pairs: Vec<(i64, &Value)> = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::Message { message, .. } => Some((event.seq, message)),
-            _ => None,
-        })
-        .collect();
-    let persisted_tools: HashSet<&str> = pairs
-        .iter()
-        .filter_map(|(_, message)| {
-            (message.get("role").and_then(Value::as_str) == Some("tool"))
-                .then(|| message.get("tool_call_id").and_then(Value::as_str))
-                .flatten()
-        })
-        .collect();
-    let retained: Vec<&Value> = surface
-        .iter()
-        .skip_while(|message| is_checkpoint(message))
-        // Replaying a crashed run inserts a synthetic result for an unanswered
-        // tool call. It has no event, so it cannot shift the boundary.
-        .filter(|message| {
-            message.get("role").and_then(Value::as_str) != Some("tool")
-                || message
-                    .get("tool_call_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| persisted_tools.contains(id))
-        })
-        .collect();
-    if retained.is_empty() {
-        return Some(pairs.last().map(|(seq, _)| *seq).unwrap_or(0));
-    }
-    if retained.len() > pairs.len() {
-        return None;
-    }
-    // The surface tail can sit before trailing events that were not persisted
-    // as model messages (a cancelled tool call, for example), so search for the
-    // latest place it matches instead of assuming it ends at the last event.
-    for end in (retained.len()..=pairs.len()).rev() {
-        let start = end - retained.len();
-        if !same_surface_message(pairs[end - 1].1, retained[retained.len() - 1]) {
-            continue;
-        }
-        if pairs[start..end]
-            .iter()
-            .zip(&retained)
-            .all(|(pair, expected)| same_surface_message(pair.1, expected))
-        {
-            return Some(if start == 0 { 0 } else { pairs[start - 1].0 });
-        }
-    }
-    None
-}
-
-fn checked_shadow(events: &[Event], surface: &[Value], previous: i64) -> Result<i64, String> {
-    shadow_for(events, surface)
-        .map(|seq| seq.max(previous))
-        .ok_or_else(|| "The retained history could not be matched; nothing was compacted.".into())
-}
-
-fn surface_trims(events: &[Event], surface: &[Value]) -> Vec<EventPayload> {
-    let trims = tool_trims(events);
-    let mut replacements = Vec::new();
-    let mut remaining = events;
-    for message in surface
-        .iter()
-        .rev()
-        .filter(|message| !is_checkpoint(message))
-    {
-        if let Some(index) = remaining.iter().rposition(|event| matches!(
-            &event.payload, EventPayload::Message { message: original, .. } if same_surface_message(original, message))) {
-            let event = &remaining[index];
-            if let EventPayload::Message { message: original, .. } = &event.payload
-                && message["role"] == "tool" && trims.get(&event.seq).unwrap_or(original) != message {
-                replacements.push(EventPayload::ToolTrim { original_seq: event.seq, message: message.clone() });
-            }
-            remaining = &remaining[..index];
-        }
-    }
-    replacements
-}
-
-fn same_surface_message(original: &Value, retained: &Value) -> bool {
-    original == retained
-        // Context trimming changes tool text, but preserves the call identity.
-        || (original["role"] == "tool"
-            && retained["role"] == "tool"
-            && original["tool_call_id"]
-                .as_str()
-                .is_some_and(|id| !id.is_empty() && retained["tool_call_id"] == id))
 }
 
 /// SQLite-backed session and run storage.
@@ -689,47 +562,24 @@ impl Store {
         Self::get_window_with(&conn, id, before_seq, limit)
     }
 
-    /// Read only the model projection, independent of the archived log's size.
-    pub fn model_surface(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<(SessionMeta, Vec<Value>)>, String> {
+    /// Read the surface and its version under one database lock.
+    pub fn context_snapshot(&self, session_id: &str) -> Result<(Vec<Value>, i64), String> {
         let conn = self.connection()?;
-        let Some(meta) = Self::get_meta_with(&conn, session_id)? else {
-            return Ok(None);
-        };
-        Ok(Some((
-            meta,
-            surface_messages_with(&conn, session_id)?.unwrap_or_default(),
-        )))
-    }
-
-    pub fn shadow_boundary(&self, session_id: &str, surface: &[Value]) -> Result<i64, String> {
-        let conn = self.connection()?;
-        let through = latest_compaction(&conn, session_id)?
-            .map(|(_, seq)| seq)
-            .unwrap_or(0);
-        let events = read_from(&conn, session_id, through + 1)?;
-        checked_shadow(&events, surface, through)
+        let messages = surface_messages_with(&conn, session_id)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
+        Ok((messages, next_seq(&conn, session_id)? - 1))
     }
 
     pub fn has_history(&self, session_id: &str) -> Result<bool, String> {
         let conn = self.connection()?;
-        let through = latest_compaction(&conn, session_id)?
-            .map(|(_, seq)| seq)
-            .unwrap_or(0);
         conn.query_row(
-            "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_events WHERE session_id = ?1 AND seq <= ?2 \
-               AND json_extract(payload, '$.type') = 'message') THEN 1 ELSE EXISTS(\
-               SELECT 1 FROM session_events t JOIN session_events m \
-               ON m.session_id = t.session_id AND m.seq = json_extract(t.payload, '$.original_seq') \
-               WHERE t.session_id = ?1 AND json_extract(t.payload, '$.type') = 'tool_trim' \
-               AND json_extract(m.payload, '$.type') = 'message') END",
-            params![session_id, through], |row| row.get(0),
-        ).map_err(|error| format!("Could not read the transcript: {error}"))
+            "SELECT EXISTS(SELECT 1 FROM archived_messages WHERE session_id = ?1)",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
     }
 
-    /// Originals newly archived by the live surface, keyed by their durable event sequence.
     pub fn pending_archive(
         &self,
         session_id: &str,
@@ -737,47 +587,30 @@ impl Store {
         surface: &[Value],
     ) -> Result<Vec<(i64, Value)>, String> {
         let conn = self.connection()?;
-        let through = latest_compaction(&conn, session_id)?
-            .map(|(_, seq)| seq)
-            .unwrap_or(0);
-        let mut events = read_from(&conn, session_id, through + 1)?;
-        let previous_trims = tool_trims(&events);
-        let start = next_seq(&conn, session_id)?;
-        events.extend(
-            appended
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, payload)| Event {
-                    seq: start + index as i64,
-                    payload,
-                    created_at: 0,
-                }),
-        );
-        let boundary = if surface.first().is_some_and(is_checkpoint) {
-            checked_shadow(&events, surface, through)?
-        } else {
-            through
-        };
-        let trimmed: HashSet<_> = surface_trims(&events, surface)
-            .into_iter()
-            .filter_map(|payload| match payload {
-                EventPayload::ToolTrim { original_seq, .. } => Some(original_seq),
-                _ => None,
-            })
-            .collect();
-        Ok(events
-            .into_iter()
-            .filter_map(|event| match event.payload {
-                EventPayload::Message { message, .. }
-                    if !previous_trims.contains_key(&event.seq)
-                        && (event.seq <= boundary || trimmed.contains(&event.seq)) =>
-                {
-                    Some((event.seq, message))
-                }
-                _ => None,
-            })
-            .collect())
+        projection::pending_archive(&conn, session_id, appended, surface)
+    }
+
+    pub fn apply_surface(
+        &self,
+        session_id: &str,
+        version: i64,
+        surface: &[Value],
+        sizes: (usize, usize),
+        context: ContextUsage,
+        now: i64,
+    ) -> Result<SessionWindow, String> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        if next_seq(&tx, session_id)? - 1 != version {
+            return Err("The conversation changed during compaction; nothing was replaced.".into());
+        }
+        save_surface(&tx, session_id, &[], surface, sizes.0, sizes.1, now)?;
+        tx.execute("UPDATE sessions SET context_used = ?2, context_window = ?3, updated_at = ?4 WHERE id = ?1",
+            params![session_id, context.used as i64, context.window as i64, now])
+            .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Self::get_window_with(&conn, session_id, None, PAGE_EVENTS)?
+            .ok_or_else(|| "This session no longer exists.".into())
     }
 
     #[cfg(test)]
@@ -804,42 +637,38 @@ impl Store {
         pending: &[(i64, Value)],
     ) -> Result<(Vec<(i64, Value)>, usize), String> {
         const ARCHIVE: &str = "WITH stored AS (\
-            SELECT seq FROM session_events \
-            WHERE session_id = ?1 AND (seq <= ?2 OR seq IN (\
-                SELECT json_extract(payload, '$.original_seq') FROM session_events \
-                WHERE session_id = ?1 AND json_extract(payload, '$.type') = 'tool_trim')) \
-                AND json_extract(payload, '$.type') = 'message'), \
-            archived AS (SELECT seq, NULL AS message FROM stored UNION ALL \
-                SELECT json_extract(value, '$[0]') AS seq, json_extract(value, '$[1]') AS message \
-                FROM json_each(?3) WHERE json_extract(value, '$[0]') NOT IN (SELECT seq FROM stored)) ";
+            SELECT event_seq AS seq FROM archived_messages WHERE session_id = ?1), \
+            archived AS (SELECT seq FROM stored UNION ALL \
+                SELECT value AS seq FROM json_each(?2) WHERE value NOT IN (SELECT seq FROM stored)) ";
         let conn = self.connection()?;
-        let through = latest_compaction(&conn, session_id)?
-            .map(|(_, seq)| seq)
-            .unwrap_or(0);
-        let pending = serde_json::to_string(pending).map_err(|error| error.to_string())?;
+        let pending: HashMap<_, _> = pending
+            .iter()
+            .map(|(seq, message)| (*seq, message))
+            .collect();
+        let pending_ids = serde_json::to_string(&pending.keys().copied().collect::<Vec<_>>())
+            .map_err(|error| error.to_string())?;
         let total: i64 = conn
             .query_row(
                 &format!("{ARCHIVE} SELECT COUNT(*) FROM archived"),
-                params![session_id, through, pending],
+                params![session_id, pending_ids],
                 |row| row.get(0),
             )
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
         let mut statement = conn
             .prepare(&format!(
-                "{ARCHIVE} SELECT a.seq, COALESCE(a.message, json_extract(e.payload, '$.message')) FROM archived a \
-                 LEFT JOIN session_events e ON e.session_id = ?1 AND e.seq = a.seq ORDER BY a.seq LIMIT ?4 OFFSET ?5"
+                "{ARCHIVE} SELECT a.seq, json_extract(e.payload, '$.message') FROM archived a \
+                 LEFT JOIN session_events e ON e.session_id = ?1 AND e.seq = a.seq ORDER BY a.seq LIMIT ?3 OFFSET ?4"
             ))
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
         let rows = statement
             .query_map(
                 params![
                     session_id,
-                    through,
-                    pending,
+                    pending_ids,
                     limit.max(1) as i64,
                     (offset.max(1) - 1) as i64
                 ],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .map_err(|error| format!("Could not read the transcript: {error}"))?;
         let mut page = Vec::new();
@@ -848,8 +677,14 @@ impl Store {
                 row.map_err(|error| format!("Could not read the transcript: {error}"))?;
             page.push((
                 seq,
-                serde_json::from_str(&raw)
-                    .map_err(|error| format!("Could not read the transcript: {error}"))?,
+                match raw {
+                    Some(raw) => serde_json::from_str(&raw)
+                        .map_err(|error| format!("Could not read the transcript: {error}"))?,
+                    None => (*pending
+                        .get(&seq)
+                        .ok_or("An archived message is unavailable.")?)
+                    .clone(),
+                },
             ));
         }
         Ok((page, total.max(0) as usize))
@@ -968,30 +803,18 @@ impl Store {
             )
             .map_err(|error| format!("Could not read the run: {error}"))?;
         if status == "running" {
-            append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
             if let Some(compaction) = &end.compaction {
-                // The compacted surface only retains messages after the previous
-                // boundary, so the archive does not need the whole log.
-                let through = latest_compaction(&tx, &end.session_id)?
-                    .map(|(_, through)| through)
-                    .unwrap_or(0);
-                let events = read_from(&tx, &end.session_id, through + 1)?;
-                let replacements = surface_trims(&events, &compaction.surface);
-                append_events(&tx, &end.session_id, &replacements, end.finished_at)?;
-                if let Some(summary) = &compaction.summary {
-                    let shadowed_through = checked_shadow(&events, &compaction.surface, through)?;
-                    append_events(
-                        &tx,
-                        &end.session_id,
-                        &[EventPayload::Compaction {
-                            summary: summary.clone(),
-                            shadowed_through,
-                            before: compaction.before,
-                            after: compaction.after,
-                        }],
-                        end.finished_at,
-                    )?;
-                }
+                save_surface(
+                    &tx,
+                    &end.session_id,
+                    &end.appended,
+                    &compaction.surface,
+                    compaction.before,
+                    compaction.after,
+                    end.finished_at,
+                )?;
+            } else {
+                append_events(&tx, &end.session_id, &end.appended, end.finished_at)?;
             }
             let changed = tx
                 .execute(
@@ -1033,7 +856,8 @@ impl Store {
         })
     }
 
-    /// Append one compaction record and save the gauge it produced.
+    /// Seed legacy records in compatibility tests only.
+    #[cfg(test)]
     pub fn apply_compaction(
         &self,
         session_id: &str,
@@ -1073,6 +897,7 @@ impl Store {
             }],
             now,
         )?;
+        projection::index_legacy_archive(&tx, session_id, record.shadowed_through)?;
         tx.execute(
             "UPDATE sessions SET context_used = ?2, context_window = ?3, updated_at = ?4 \
              WHERE id = ?1",
@@ -1197,10 +1022,7 @@ pub fn now_ms() -> i64 {
 mod tests {
     use serde_json::json;
 
-    use super::{
-        CompactionEnd, ContextUsage, EventPayload, NewUserTurn, RunEnd, Store, has_table,
-        is_checkpoint,
-    };
+    use super::{ContextUsage, EventPayload, NewUserTurn, RunEnd, Store, has_table, is_checkpoint};
 
     fn store() -> Store {
         Store::in_memory().unwrap()
@@ -1212,98 +1034,6 @@ mod tests {
             display: None,
             title: title.map(str::to_string),
         }
-    }
-
-    #[test]
-    fn tool_only_compaction_survives_reopen_and_keeps_originals_readable() {
-        let dir = std::env::temp_dir().join(format!(
-            "oaklet-trim-{}-{}",
-            std::process::id(),
-            super::now_ms()
-        ));
-        let path = dir.join("oaklet.db");
-        let store = Store::open(&path).unwrap();
-        store.create_session("s1", "/tmp", 1).unwrap();
-        store
-            .begin_run("s1", "r1", &turn("inspect", None), 2)
-            .unwrap();
-        let call = json!({"role": "assistant", "content": "", "tool_calls": [{"id":"call-1", "type":"function", "function":{"name":"read_file", "arguments":"{}"}}]});
-        let original = json!({"role":"tool", "tool_call_id":"call-1", "content":"original output".repeat(1000)});
-        let mut trimmed = original.clone();
-        trimmed["content"] = json!("trimmed output");
-        let surface = vec![turn("inspect", None).message, call.clone(), trimmed.clone()];
-        let end = RunEnd {
-            session_id: "s1".into(),
-            run_id: "r1".into(),
-            start_seq: 1,
-            status: "done",
-            finished_at: 3,
-            appended: vec![call.clone(), original.clone()]
-                .into_iter()
-                .map(|message| EventPayload::Message {
-                    message,
-                    display: None,
-                })
-                .collect(),
-            compaction: Some(CompactionEnd {
-                summary: None,
-                surface: surface.clone(),
-                before: 4000,
-                after: 100,
-            }),
-            context: None,
-            error: None,
-        };
-        store.finish_run(&end).unwrap();
-        store.finish_run(&end).unwrap();
-        drop(store);
-        let store = Store::open(&path).unwrap();
-        let next = store
-            .begin_run("s1", "r2", &turn("continue", None), 4)
-            .unwrap();
-        assert_eq!(next.prior_messages, surface);
-        assert_eq!(store.history_count("s1").unwrap(), 1);
-        assert_eq!(store.read_history("s1", 1, 10).unwrap().0[0].1, original);
-        let session = store.get_session("s1").unwrap().unwrap();
-        assert_eq!(
-            session
-                .events
-                .iter()
-                .filter(|event| matches!(event.payload, EventPayload::ToolTrim { .. }))
-                .count(),
-            1
-        );
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r2".into(),
-                start_seq: next.start_seq,
-                status: "done",
-                finished_at: 5,
-                appended: vec![],
-                compaction: Some(CompactionEnd {
-                    summary: None,
-                    surface: next.prior_messages,
-                    before: 100,
-                    after: 100,
-                }),
-                context: None,
-                error: None,
-            })
-            .unwrap();
-        assert_eq!(
-            store
-                .get_session("s1")
-                .unwrap()
-                .unwrap()
-                .events
-                .iter()
-                .filter(|event| matches!(event.payload, EventPayload::ToolTrim { .. }))
-                .count(),
-            1
-        );
-        drop(store);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1497,179 +1227,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_run_records_the_compaction_shadow_from_the_retained_tail() {
-        let store = store();
-        store.create_session("s1", "/tmp/a", 1).unwrap();
-        store
-            .begin_run("s1", "r1", &turn("old", Some("old")), 2)
-            .unwrap();
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r1".into(),
-                start_seq: 1,
-                status: "done",
-                finished_at: 3,
-                appended: vec![EventPayload::Message {
-                    message: json!({ "role": "assistant", "content": "old answer" }),
-                    display: None,
-                }],
-                compaction: None,
-                context: None,
-                error: None,
-            })
-            .unwrap();
-        store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
-
-        let summary = super::checkpoint(json!({
-            "role": "user",
-            "content": "<compacted-summary>old turns</compacted-summary>",
-        }));
-        let session = store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r2".into(),
-                start_seq: 3,
-                status: "done",
-                finished_at: 5,
-                appended: vec![EventPayload::Message {
-                    message: json!({ "role": "assistant", "content": "new answer" }),
-                    display: None,
-                }],
-                compaction: Some(CompactionEnd {
-                    summary: Some(summary.clone()),
-                    surface: vec![
-                        summary,
-                        json!({ "role": "user", "content": "new" }),
-                        json!({ "role": "assistant", "content": "new answer" }),
-                    ],
-                    before: 100,
-                    after: 10,
-                }),
-                context: Some(ContextUsage {
-                    used: 10,
-                    window: 100,
-                }),
-                error: None,
-            })
-            .unwrap();
-
-        assert_eq!(session.events.len(), 3);
-        assert_eq!(session.events[0].seq, 3);
-        assert_eq!(session.events[2].seq, 5);
-        assert!(session.has_more);
-        assert_eq!(
-            session.events.last().unwrap().payload,
-            EventPayload::Compaction {
-                summary: super::checkpoint(json!({
-                    "role": "user",
-                    "content": "<compacted-summary>old turns</compacted-summary>",
-                })),
-                shadowed_through: 2,
-                before: 100,
-                after: 10,
-            }
-        );
-        assert_eq!(store.history_count("s1").unwrap(), 2);
-        let (history, total) = store.read_history("s1", 1, 10).unwrap();
-        assert_eq!(total, 2);
-        assert_eq!(history[0].1["content"], "old");
-        assert_eq!(history[1].1["content"], "old answer");
-    }
-
-    #[test]
-    fn a_retained_synthetic_tool_result_does_not_reset_the_shadow_boundary() {
-        let store = store();
-        store.create_session("s1", "/tmp/a", 1).unwrap();
-        store.begin_run("s1", "r1", &turn("old", None), 2).unwrap();
-        let call = json!({
-            "role": "assistant", "content": "",
-            "tool_calls": [{"id": "call-1", "type": "function", "function": {
-                "name": "read_file", "arguments": "{}"
-            }}],
-        });
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r1".into(),
-                start_seq: 1,
-                status: "stopped",
-                finished_at: 3,
-                appended: vec![EventPayload::Message {
-                    message: call.clone(),
-                    display: None,
-                }],
-                compaction: None,
-                context: None,
-                error: None,
-            })
-            .unwrap();
-        store
-            .begin_run("s1", "r2", &turn("continue", None), 4)
-            .unwrap();
-
-        let summary = super::checkpoint(json!({
-            "role": "user",
-            "content": "<compacted-summary>old turn</compacted-summary>",
-        }));
-        // Replaying the crashed tool call adds this result in memory only.
-        let synthetic = json!({
-            "role": "tool", "tool_call_id": "call-1",
-            "content": "The tool call was interrupted before it started.",
-        });
-        let session = store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r2".into(),
-                start_seq: 3,
-                status: "stopped",
-                finished_at: 5,
-                appended: vec![EventPayload::Message {
-                    message: json!({ "role": "assistant", "content": "done" }),
-                    display: None,
-                }],
-                compaction: Some(CompactionEnd {
-                    summary: Some(summary.clone()),
-                    surface: vec![
-                        summary.clone(),
-                        call.clone(),
-                        synthetic.clone(),
-                        json!({ "role": "user", "content": "continue" }),
-                        json!({ "role": "assistant", "content": "done" }),
-                    ],
-                    before: 100,
-                    after: 10,
-                }),
-                context: None,
-                error: None,
-            })
-            .unwrap();
-
-        let shadowed_through = session
-            .events
-            .iter()
-            .find_map(|event| match &event.payload {
-                EventPayload::Compaction {
-                    shadowed_through, ..
-                } => Some(*shadowed_through),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(shadowed_through, 1);
-        let next = store.begin_run("s1", "r3", &turn("next", None), 6).unwrap();
-        assert_eq!(
-            next.prior_messages,
-            vec![
-                summary,
-                call,
-                json!({ "role": "user", "content": "continue" }),
-                json!({ "role": "assistant", "content": "done" })
-            ]
-        );
-        assert!(!next.prior_messages.contains(&synthetic));
-    }
-
-    #[test]
     fn a_message_that_quotes_a_checkpoint_marker_is_not_a_checkpoint() {
         assert!(!is_checkpoint(&json!({
             "role": "user",
@@ -1688,81 +1245,6 @@ mod tests {
             "content": "The earlier part of this conversation was dropped so the run could stay \
                         within the context window.",
         })));
-    }
-
-    #[test]
-    fn trimmed_tools_do_not_restore_shadowed_history_or_lose_a_partial_reply() {
-        let store = store();
-        store.create_session("s1", "/tmp/a", 1).unwrap();
-        store
-            .begin_run("s1", "r1", &turn("old request", None), 2)
-            .unwrap();
-        let call = json!({
-            "role": "assistant", "content": "",
-            "tool_calls": [{"id": "call-1", "type": "function", "function": {
-                "name": "read_file", "arguments": "{}"
-            }}],
-        });
-        let original_tool = json!({
-            "role": "tool", "tool_call_id": "call-1", "content": "output".repeat(2000),
-        });
-        let mut trimmed_tool = original_tool.clone();
-        trimmed_tool["content"] = json!("trimmed output");
-        let summary = super::checkpoint(json!({
-            "role": "user",
-            "content": "<compacted-summary>old work</compacted-summary>\ncurrent request",
-        }));
-        let partial = json!({"role": "assistant", "content": "partial reply"});
-        let originals = [
-            json!({"role": "assistant", "content": "old answer"}),
-            json!({"role": "user", "content": "current request"}),
-            call.clone(),
-            original_tool.clone(),
-            partial.clone(),
-        ];
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r1".into(),
-                start_seq: 1,
-                status: "stopped",
-                finished_at: 3,
-                appended: originals
-                    .iter()
-                    .map(|message| EventPayload::Message {
-                        message: message.clone(),
-                        display: None,
-                    })
-                    .collect(),
-                compaction: Some(CompactionEnd {
-                    summary: Some(summary.clone()),
-                    surface: vec![summary.clone(), call.clone(), trimmed_tool.clone()],
-                    before: 10000,
-                    after: 100,
-                }),
-                context: None,
-                error: None,
-            })
-            .unwrap();
-
-        let next = store
-            .begin_run("s1", "r2", &turn("continue", None), 4)
-            .unwrap();
-        assert_eq!(
-            next.prior_messages,
-            vec![summary, call, trimmed_tool, partial]
-        );
-        let (archived, _) = store.read_history("s1", 1, 10).unwrap();
-        assert_eq!(archived[0].1["content"], "old request");
-        assert_eq!(archived[2].1["content"], "current request");
-        let session = store.get_session("s1").unwrap().unwrap();
-        assert_eq!(
-            session.events[4].payload,
-            EventPayload::Message {
-                message: originals[3].clone(),
-                display: None,
-            }
-        );
     }
 
     #[test]
@@ -1874,82 +1356,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_only_the_model_surface_after_compaction() {
-        let store = store();
-        store.create_session("s1", "/tmp/a", 1).unwrap();
-        store.begin_run("s1", "r1", &turn("old", None), 2).unwrap();
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r1".into(),
-                start_seq: 1,
-                status: "done",
-                finished_at: 3,
-                appended: vec![EventPayload::Message {
-                    message: json!({ "role": "assistant", "content": "old answer" }),
-                    display: None,
-                }],
-                compaction: None,
-                context: None,
-                error: None,
-            })
-            .unwrap();
-        store.begin_run("s1", "r2", &turn("new", None), 4).unwrap();
-        let summary = super::checkpoint(json!({
-            "role": "user",
-            "content": "<compacted-summary>old turns</compacted-summary>",
-        }));
-        store
-            .finish_run(&RunEnd {
-                session_id: "s1".into(),
-                run_id: "r2".into(),
-                start_seq: 3,
-                status: "done",
-                finished_at: 5,
-                appended: vec![EventPayload::Message {
-                    message: json!({ "role": "assistant", "content": "new answer" }),
-                    display: None,
-                }],
-                compaction: Some(CompactionEnd {
-                    summary: Some(summary.clone()),
-                    surface: vec![
-                        summary.clone(),
-                        json!({ "role": "user", "content": "new" }),
-                        json!({ "role": "assistant", "content": "new answer" }),
-                    ],
-                    before: 100,
-                    after: 10,
-                }),
-                context: None,
-                error: None,
-            })
-            .unwrap();
-
-        {
-            let conn = store.connection().unwrap();
-            let messages = super::surface_messages_with(&conn, "s1").unwrap().unwrap();
-            assert_eq!(messages.len(), 3);
-            assert_eq!(messages[0], summary);
-            assert_eq!(messages[1]["content"], "new");
-            assert_eq!(messages[2]["content"], "new answer");
-            assert!(!messages.iter().any(|message| message["content"] == "old"));
-            assert!(
-                super::surface_messages_with(&conn, "missing")
-                    .unwrap()
-                    .is_none()
-            );
-        }
-
-        let later = store
-            .begin_run("s1", "r3", &turn("later", None), 6)
-            .unwrap();
-        assert_eq!(later.start_seq, 6);
-        assert_eq!(later.prior_messages.len(), 3);
-        assert_eq!(later.prior_messages[0], summary);
-        assert_eq!(later.prior_messages[1]["content"], "new");
-    }
-
-    #[test]
     fn refuses_a_pre_v0_database_without_resetting() {
         let root = crate::tools::test_support::temp_root("store-pre-v0");
         let path = root.join("oaklet.db");
@@ -2038,198 +1444,5 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(root).ok();
-    }
-}
-
-#[cfg(test)]
-mod compaction_regressions {
-    use super::*;
-    use serde_json::json;
-
-    fn message(value: Value) -> EventPayload {
-        EventPayload::Message {
-            message: value,
-            display: None,
-        }
-    }
-
-    fn seeded() -> Store {
-        let store = Store::in_memory().unwrap();
-        store.create_session("s", "/tmp", 1).unwrap();
-        let events = vec![
-            message(json!({"role":"user", "content":"same request"})),
-            message(json!({"role":"assistant", "content":"reading A"})),
-            message(json!({"role":"tool", "tool_call_id":"A", "content":"original A"})),
-            message(json!({"role":"assistant", "content":"done"})),
-            message(json!({"role":"user", "content":"same request"})),
-            message(json!({"role":"assistant", "content":"reading B"})),
-            message(json!({"role":"tool", "tool_call_id":"B", "content":"original B"})),
-            message(json!({"role":"assistant", "content":"latest"})),
-        ];
-        append_events(&store.connection().unwrap(), "s", &events, 1).unwrap();
-        store
-    }
-
-    fn record(summary: Value, through: i64) -> CompactionRecord {
-        CompactionRecord {
-            summary,
-            shadowed_through: through,
-            before: 100,
-            after: 10,
-            context: ContextUsage {
-                used: 10,
-                window: 8192,
-            },
-        }
-    }
-
-    #[test]
-    fn pending_archives_match_durable_order_after_trimming_then_summarizing() {
-        let store = seeded();
-        let (_, mut surface) = store.model_surface("s").unwrap().unwrap();
-        surface[2]["content"] = json!("trimmed A");
-        surface[6]["content"] = json!("trimmed B");
-        let first = store.pending_archive("s", &[], &surface).unwrap();
-        assert_eq!(
-            first.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
-            [3, 7]
-        );
-        // A retained tool may already belong to the durable archive.
-        append_events(
-            &store.connection().unwrap(),
-            "s",
-            &[EventPayload::ToolTrim {
-                original_seq: 7,
-                message: surface[6].clone(),
-            }],
-            2,
-        )
-        .unwrap();
-        let summary = checkpoint(
-            json!({"role":"user", "content":"<compacted-summary>old work</compacted-summary>\n\nsame request"}),
-        );
-        let mut next = vec![summary.clone()];
-        next.extend_from_slice(&surface[5..]);
-        let pending = store.pending_archive("s", &[], &next).unwrap();
-        let before = store.read_history_pending("s", 1, 50, &pending).unwrap();
-        assert_eq!(before.1, 6);
-        assert_eq!(
-            before.0.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 7]
-        );
-        assert_eq!(before.0[0].1, before.0[4].1);
-        assert!(before.0.iter().all(|(_, value)| !is_checkpoint(value)));
-        // Persist the retained A trim and the summary, as finish_run does.
-        let through = store.shadow_boundary("s", &next).unwrap();
-        assert_eq!(through, 5);
-        store
-            .apply_compaction("s", &record(summary, through), 3)
-            .unwrap();
-        assert_eq!(store.read_history("s", 1, 50).unwrap(), before);
-        assert_eq!(
-            store.read_history_pending("s", 1, 50, &pending).unwrap(),
-            before
-        );
-    }
-
-    #[test]
-    fn pending_new_messages_keep_their_event_identity_across_finish() {
-        let store = seeded();
-        let start = store
-            .begin_run(
-                "s",
-                "r",
-                &NewUserTurn {
-                    message: json!({"role":"user", "content":"continue"}),
-                    display: None,
-                    title: None,
-                },
-                2,
-            )
-            .unwrap();
-        let appended = vec![
-            message(json!({"role":"assistant", "content":"work A"})),
-            EventPayload::Notice {
-                tone: "muted".into(),
-                text: "gap".into(),
-            },
-            message(json!({"role":"assistant", "content":"work B"})),
-        ];
-        let summary = checkpoint(
-            json!({"role":"user", "content":"<compacted-summary>all work</compacted-summary>"}),
-        );
-        let surface = vec![
-            summary.clone(),
-            json!({"role":"assistant", "content":"work B"}),
-        ];
-        let pending = store.pending_archive("s", &appended, &surface).unwrap();
-        let before = store.read_history_pending("s", 1, 50, &pending).unwrap();
-        assert!(
-            before
-                .0
-                .iter()
-                .any(|(seq, value)| *seq == 10 && value["content"] == "work A")
-        );
-        store
-            .finish_run(&RunEnd {
-                session_id: "s".into(),
-                run_id: "r".into(),
-                start_seq: start.start_seq,
-                status: "done",
-                finished_at: 3,
-                appended,
-                compaction: Some(CompactionEnd {
-                    summary: Some(summary),
-                    surface,
-                    before: 100,
-                    after: 10,
-                }),
-                context: None,
-                error: None,
-            })
-            .unwrap();
-        assert_eq!(store.read_history("s", 1, 50).unwrap(), before);
-    }
-
-    #[test]
-    fn rejects_regressing_or_future_boundaries_without_writing() {
-        let store = seeded();
-        let summary = checkpoint(json!({"role":"user", "content":"checkpoint"}));
-        store
-            .apply_compaction("s", &record(summary.clone(), 2), 2)
-            .unwrap();
-        let count = store.get_session("s").unwrap().unwrap().events.len();
-        for through in [0, 100] {
-            assert!(
-                store
-                    .apply_compaction("s", &record(summary.clone(), through), 3)
-                    .is_err()
-            );
-            assert_eq!(store.get_session("s").unwrap().unwrap().events.len(), count);
-        }
-        assert!(
-            store
-                .shadow_boundary(
-                    "s",
-                    &[summary, json!({"role":"assistant", "content":"missing"})]
-                )
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn model_surface_does_not_decode_the_archived_log() {
-        let store = seeded();
-        let summary = checkpoint(json!({"role":"user", "content":"checkpoint"}));
-        store
-            .apply_compaction("s", &record(summary.clone(), 5), 2)
-            .unwrap();
-        // Corruption in an archived event makes a full-log read fail.
-        store.connection().unwrap().execute("UPDATE session_events SET payload = 'invalid json' WHERE session_id = 's' AND seq = 1", []).unwrap();
-        assert!(store.get_session("s").is_err());
-        let (_, surface) = store.model_surface("s").unwrap().unwrap();
-        assert_eq!(surface.len(), 4);
-        assert_eq!(surface[0], summary);
-        assert_eq!(store.shadow_boundary("s", &surface).unwrap(), 5);
     }
 }

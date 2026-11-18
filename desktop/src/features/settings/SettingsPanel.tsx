@@ -353,6 +353,24 @@ export function SettingsPanel({
                   </p>
                 </div>
 
+                {draft.summaryModel.trim() && draft.summaryModel.trim() !== draft.model.trim() && (
+                  <div className="field">
+                    <label htmlFor="summary-context-window">Summary context window</label>
+                    <input
+                      id="summary-context-window"
+                      type="number"
+                      min={8192}
+                      step={1024}
+                      value={draft.summaryContextWindow ?? ""}
+                      onChange={(event) => setDraft((current) => ({
+                        ...current,
+                        summaryContextWindow: event.target.value ? Number(event.target.value) : null,
+                      }))}
+                    />
+                    <p className="field-hint">Required for a separate summary model. Include its input and output capacity.</p>
+                  </div>
+                )}
+
                 <div className="field">
                   <label htmlFor="context-window">Context window</label>
                   <input

@@ -20,8 +20,8 @@ use crate::instructions::WorkspaceInstructions;
 use crate::repeat::RepeatGuard;
 use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace};
 
-pub(crate) use messages::context_overhead;
-use messages::{assistant_message, image_message, initial_messages, strip_system, system_prompt};
+pub(crate) use messages::initial_messages;
+use messages::{assistant_message, image_message, strip_system, system_prompt};
 
 #[derive(Default)]
 struct ToolCall {
@@ -155,6 +155,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             Ok(step::Next::Retry) => {
                 // The retry is a different, smaller request. Price it before
                 // the next usage anchor is recorded.
+                meter.invalidate();
                 let _ = meter.prepare(&messages);
                 retry_directly = true;
                 continue;
@@ -177,7 +178,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         }
 
         let assistant = assistant_message(&reply.content, &reply.reasoning, &reply.calls);
-        ctx.record_message(assistant.clone(), Some(json!({ "runId": ctx.run_id() })));
+        let assistant = ctx.record_message(assistant, Some(json!({ "runId": ctx.run_id() })));
         messages.push(assistant);
         ctx.context(meter.pressure(&messages), config.context_window);
         if reply.calls.is_empty() {
@@ -222,16 +223,14 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // results, so the conversation stays valid and the model can see them.
         if !batch.images.is_empty() {
             let images = image_message(&batch.images);
-            ctx.record_hidden(images.clone());
-            messages.push(images);
+            messages.push(ctx.record_hidden(crate::context::source(images, "tool_images")));
         }
 
         // Reminders wait until every result in this batch exists, so a user
         // message never splits the tool results answering one assistant turn.
         for reminder in batch.reminders {
             let message = json!({ "role": "user", "content": reminder });
-            ctx.record_hidden(message.clone());
-            messages.push(message);
+            messages.push(ctx.record_hidden(crate::context::source(message, "reminder")));
         }
     }
 }
