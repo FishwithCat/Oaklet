@@ -249,7 +249,11 @@ call earns an advisory reminder at the third, fifth, and eighth try, and
 **Stop** cancels the model request, a running command, or a pending approval
 immediately. A command started with `run_in_background` detaches from the run:
 it has no timeout and is collected through `job_output` or stopped with
-`job_kill`.
+`job_kill`. A job that settles on its own reports to the session that started
+it: a busy run receives the notice at its next step, and an idle session opens
+a turn so the model can report the result. A job already collected through
+`job_output`, or one the model killed, stays silent, and one session may open at
+most eight notice turns between two user messages.
 
 ## Architecture view internals
 

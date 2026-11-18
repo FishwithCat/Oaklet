@@ -251,7 +251,10 @@ to 200,000 characters and reduces HTML to readable text.
   `run_in_background` to start a long build
   or server; it returns a job id, keeps running after the chat turn, and is read
   and stopped with `job_output`/`job_kill` (or `job_list`). Background jobs have
-  no timeout and are stopped when Oaklet exits. **Settings → Commands → Run
+  no timeout and are stopped when Oaklet exits. When one finishes, the chat that
+  started it is told: a busy turn receives the result on its next step, and an
+  idle one opens a turn so the model can report it (up to eight such wakes
+  between two user messages). **Settings → Commands → Run
   commands without approval** is on by default, so commands run without an
   approval card; turn it off to see each command first.
 - `job_kill` requests cancellation and reports the job as stopping until its
