@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 Acorn Rust/TS 穿刺已完成，结果见 [验证记录](code-index-spike.md)；步骤 2–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md) 与步骤 2 的 [项目发现及配置](code-index-projects.md) 已完成，步骤 3–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -245,12 +245,12 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 2. 项目发现、最小配置与查询归属
 
-- [ ] 实现 discovery.rs：采用 ignore 遍历项目清单，排除构建产物与依赖目录，不跟随工作区外符号链接；扫描上限 50,000 项、30 秒，超限保留已发现项目并标明发现不完整。
-- [ ] 首批识别 Cargo workspace、独立 crate、tsconfig/jsconfig 和 package.json 项目。Cargo workspace 成员归属同一实例；TS 首版同一包内多份 tsconfig 交由服务器管理，不按配置文件数量创建进程。
-- [ ] Rust workspace 根优先通过已有 Cargo 的 locate-project --workspace --message-format=json 确认；失败时标记归属待确认，不静默把同一 workspace 的每个成员都启动一次。
-- [ ] 实现目标文件到项目的路由；嵌套独立项目使用自身根，多语言项目按文件语言选择后端。不匹配受支持项目时返回明确状态，不默认指向 Oaklet 工程。
-- [ ] Rust/前端 AppConfig 同步新增 codeIndex.servers 的 enabled、command、args 及默认值；更新配置默认构造、保存校验与所有受影响的测试夹具。
-- [ ] 实现显式配置与 PATH 检测，检测在用户项目环境下进行。缺少可执行文件、Node、TypeScript 或 Rust 工具链时返回具体原因；第三阶段再加入管理安装目录。
+- [x] 实现 discovery.rs：采用 ignore 遍历项目清单，排除构建产物与依赖目录，不跟随工作区外符号链接；扫描上限 50,000 项、30 秒，超限保留已发现项目并标明发现不完整。
+- [x] 首批识别 Cargo workspace、独立 crate、tsconfig/jsconfig 和 package.json 项目。Cargo workspace 成员归属同一项目；TS 首版同一包内多份 tsconfig 共用项目，长期服务器实例留到步骤 3。
+- [x] Rust workspace 根通过已有 Cargo 的 locate-project --workspace --message-format=json 确认；失败时保留带错误的路由边界，不静默重复创建成员项目。
+- [x] 实现目标文件到项目的路由；嵌套独立项目使用自身根，多语言项目按文件语言选择后端。忽略、缺失、删除、越界或无主文件返回明确错误。
+- [x] Rust/前端 AppConfig 同步新增 codeIndex.servers 的 enabled、command、args 及默认值，接入保存校验；旧配置默认值与往返测试通过，现有 SettingsPanel 保留新字段。
+- [x] 实现显式配置与 PATH 检测，在用户项目目录探测版本。缺少可执行文件、Node、TypeScript SDK 或 Rust 工具链时返回原因；禁用安装与联网，第三阶段再加入管理安装目录。
 
 完成标准：独立 Rust/TS、Cargo workspace、混合语言、嵌套项目与 ignore 用例路由正确；旧配置无需迁移可加载。整个发现与检测过程不构建工程或安装依赖。
 
@@ -391,4 +391,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 当前仅完成步骤 1 的依赖接入、示例客户端和穿刺验证；正式工作区服务及步骤 2–12 尚未实施，没有执行提交。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。正式工作区服务及步骤 3–12 待实施。
