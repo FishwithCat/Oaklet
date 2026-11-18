@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md) 与步骤 4 的 [文件同步及实时更新](code-index-saved-files.md) 已完成，步骤 5–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md) 与步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md) 已完成，步骤 6–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -72,6 +72,7 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 | language_servers.rs | LanguageServerManager、服务器实例注册、启动去重、资源调度、重试与回收 |
 | lsp.rs / documents.rs | 单实例 LanguageServerSession：async-lsp 客户端、子进程、初始化、能力与文档同步；有界磁盘读取、位置校验及编码转换 |
 | watch.rs | notify 监听、事件合并、文件与项目配置更新 |
+| persistence.rs（manager 子模块） | 摘要恢复、内容核对、稳定快照及让位于交互查询的逐文件符号提取 |
 | ipc.rs | Tauri invoke、generate_handler! 与 command 实现的候选证据 |
 | cache.rs | 内存查询缓存、指纹与失效判定、读写持久缓存的编排；不再包装一个通用 CacheManager |
 
@@ -127,7 +128,7 @@ LanguageServerManager 必须实现，不能把 async-lsp 视为服务器管理�
 
 只存索引元数据、结构化关系与必要证据，不保存整份源码；证据片段在返回时从当前文件读取并核对 hash。JSON 是 Service 结果的存储格式，不存 MCP/ToolOutput 或原始 LSP 消息。初版使用前缀搜索和现有 LSP workspaceSymbol；不引入 FTS5、向量检索或独立图查询引擎。
 
-当前只有 V0__baseline.sql，实施时新增 V1__code_index.sql；若实施前已有其他迁移，取下一个编号。所有建表与索引 SQL 放在 packages/core/migrations/，由既有 build.rs 嵌入和迁移 runner 执行；不改 V0，不在 Rust 字符串中建表，不替换 runner。
+步骤 5 已新增 V1__code_index.sql；后续变更取下一个迁移编号。所有建表与索引 SQL 放在 packages/core/migrations/，由既有 build.rs 嵌入和迁移 runner 执行；不改 V0，不在 Rust 字符串中建表，不替换 runner。
 
 setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 Store 克隆；为 ChatState 增加从已有 Store 初始化的入口，保留原有 stale run 恢复行为并更新调用和测试。不要为索引再创建独立迁移机制或运行时绕过 Store 打开第二套数据库。
 
@@ -287,12 +288,14 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 5. SQLite 持久化与重启恢复
 
-- [ ] 按上述五类表新增下一编号 SQL 迁移，复用现有 runner；更新空库初始化、升级与 checksum 测试，不修改历史迁移。
-- [ ] setup 统一打开 Store，向 ChatState 与 CodeIndexManager 注入克隆；保持聊天中断恢复逻辑，更新构造调用与测试。
-- [ ] 实现 store/code_index.rs 的类型化读写、按文件短事务替换、按工程清理与覆盖率记录；所有文件读取、hash 与 LSP 等待在数据库锁外。
-- [ ] 实现文件内容和稳定项目快照 BLAKE3，打开工程时恢复摘要并后台核对，监听变更纳入 revision；未完成核对的数据不冒充最新结果。
-- [ ] 调度后台逐文件符号及 IPC 候选提取，交互查询优先，未支持或跳过文件记录原因；能力尚未实现的证据类别保持未覆盖，步骤 9 接入后自动调度。
-- [ ] 验证退出重开复用未变文件、仅重建变化文件、删除清理、事务中断、派生行解码失败及多工作区隔离；同时验证聊天表数据不变。
+- [x] 按上述五类表新增下一编号 SQL 迁移，复用现有 runner；更新空库初始化、升级与 checksum 测试，不修改历史迁移。
+- [x] setup 统一打开 Store，向 ChatState 与 CodeIndexManager 注入克隆；保持聊天中断恢复逻辑，更新构造调用与测试。
+- [x] 实现 store/code_index.rs 的类型化读写、按文件短事务替换、按工程清理与覆盖率记录；所有文件读取、hash 与 LSP 等待在数据库锁外。
+- [x] 实现文件内容和稳定项目快照 BLAKE3，打开工程时恢复摘要并后台核对，监听变更纳入 revision；未完成核对的数据不冒充最新结果。
+- [x] 调度后台逐文件符号及 IPC 候选提取，交互查询优先，未支持或跳过文件记录原因；能力尚未实现的证据类别保持未覆盖，步骤 9 接入后自动调度。
+- [x] 验证退出重开复用未变文件、仅重建变化文件、删除清理、事务中断、派生行解码失败及多工作区隔离；同时验证聊天表数据不变。
+
+实现与验证：[SQLite 持久化与重启恢复](code-index-persistence.md)。本步只创建查询/证据表，语义查询缓存和 IPC 规则分别在步骤 6、9 接入；空符号与尚未实现的 IPC 保留未覆盖状态。
 
 完成标准：索引确实写入 SQLite，重启后能恢复并核对；未变文件不重复提取符号，变化和删除不留下被误用的旧位置。迁移升级与 checksum 校验通过，数据库操作不持锁等待 LSP。
 
@@ -395,4 +398,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6–12 待实施。
