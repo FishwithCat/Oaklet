@@ -45,6 +45,40 @@ pub async fn code_index_retry(
 }
 
 #[tauri::command]
+pub fn code_index_install(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    project_root: String,
+    language: super::Language,
+) -> Result<(), String> {
+    let root = bound_workspace(&state, window.label())?;
+    state
+        .code_index
+        .install_server(&root, std::path::Path::new(&project_root), language)
+}
+
+#[tauri::command]
+pub fn code_index_cancel_install(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    language: super::Language,
+) -> Result<(), String> {
+    let root = bound_workspace(&state, window.label())?;
+    if !state
+        .code_index
+        .status(&root)
+        .map_err(|error| error.to_string())?
+        .projects
+        .iter()
+        .any(|project| project.language == language)
+    {
+        return Err("This workspace has no project for the installer.".into());
+    }
+    state.code_index.cancel_install(language);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn code_index_rebuild(
     window: WebviewWindow,
     state: State<'_, SharedState>,

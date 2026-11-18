@@ -20,7 +20,7 @@ test("index settings render labelled per-language fields and installation requir
     onChange() {},
     onValidity() {},
   }));
-  assert.match(html, /Servers must be installed separately/);
+  assert.match(html, /Install a missing server from its project above/);
   assert.match(html, /Save applies server settings to every open workspace/);
   for (const language of ["rust", "typescript", "python", "go", "java"]) {
     assert.match(html, new RegExp(`for="index-command-${language}"`));
@@ -64,4 +64,26 @@ test("workspace status groups counts, project metadata and actions without repea
   assert.match(html, />Retry<\/button>/);
   assert.match(html, />Clear and rebuild index<\/button>/);
   assert.doesNotMatch(html, /<h4>rust ·/);
+});
+
+test("projects show install, shared progress, cancellation, and retry", () => {
+  const root = "/workspace";
+  const projects = ["rust", "typescript", "python", "go", "java"].map((language) => ({
+    root, language, state: { Failed: "Server missing" }, progress: [],
+  }));
+  const html = renderToStaticMarkup(React.createElement(WorkspaceIndexStatus, {
+    status: {
+      workspace: root, discovering: false, warnings: [], projects,
+      installs: { typescript: "Verifying", python: { Failed: "Network unavailable" } },
+      cache: { entries: 0, bytes: 0 },
+    },
+    config: { servers: { go: { command: "/custom/gopls" } } },
+    onInstall() {}, onCancelInstall() {},
+  }));
+  assert.equal((html.match(/>Install server<\/button>/g) ?? []).length, 2);
+  assert.match(html, /active Rust toolchain using rustup/);
+  assert.match(html, /Checking server version and initialization/);
+  assert.match(html, />Cancel installation<\/button>/);
+  assert.match(html, /Network unavailable/);
+  assert.match(html, />Retry installation<\/button>/);
 });

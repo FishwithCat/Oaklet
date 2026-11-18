@@ -50,7 +50,7 @@ function ServerFields({ language, config, disabled, onChange, onValidity }: {
           <label htmlFor={`index-command-${language.id}`}>Server executable</label>
           <input id={`index-command-${language.id}`} placeholder={`${language.command} (PATH)`} value={server.command ?? ""}
             onChange={(event) => onChange(updateIndexServer(config, language.id, { command: event.target.value || null }))} />
-          <p className="field-hint">Leave empty to detect from PATH. No shell is used.</p>
+          <p className="field-hint">Leave empty to use an Oaklet managed server or detect one from PATH.</p>
         </div>
         <div className="field">
           <label htmlFor={`index-args-${language.id}`}>Arguments (JSON array)</label>
@@ -80,10 +80,14 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
     (next) => { setStatus(next); setStreamError(""); },
     (reason) => setStreamError(errorText(reason)),
   ), []);
-  async function act(command: "code_index_retry" | "code_index_rebuild", project?: IndexProject) {
+  async function act(command: "code_index_retry" | "code_index_rebuild" | "code_index_install" | "code_index_cancel_install", project?: IndexProject) {
     setBusy(true);
     setError("");
-    try { await invoke(command, project ? { projectRoot: project.root, language: project.language } : {}); }
+    try {
+      await invoke(command, project && (command === "code_index_cancel_install"
+        ? { language: project.language }
+        : { projectRoot: project.root, language: project.language }));
+    }
     catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
   }
@@ -94,26 +98,31 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
       {(error || streamError) && <p className="error-text" role="alert">{error || streamError}</p>}
       {status && <WorkspaceIndexStatus status={status} disabled={disabled || busy} busy={busy}
         onRetry={(project) => void act("code_index_retry", project)}
+        onInstall={(project) => void act("code_index_install", project)}
+        onCancelInstall={(project) => void act("code_index_cancel_install", project)}
+        config={config}
         onRebuild={() => void act("code_index_rebuild")} />}
       <section className="index-servers" aria-labelledby="index-servers-title">
         <div className="index-heading"><h3 id="index-servers-title">Language servers</h3><span className="field-hint">Global settings</span></div>
-        <p className="field-hint">Servers must be installed separately. Save applies server settings to every open workspace.</p>
+        <p className="field-hint">Install a missing server from its project above. Save applies server settings to every open workspace.</p>
         <div className="index-server-list">
           {LANGUAGES.map((language) => <ServerFields key={language.id} language={language} config={config} disabled={disabled} onChange={onChange} onValidity={onValidity} />)}
         </div>
         <details className="index-requirements">
           <summary>Required runtimes</summary>
-          <p className="field-hint">Rust: rust-analyzer and a Rust toolchain. TypeScript / JavaScript: Node.js, typescript-language-server and a TypeScript SDK.</p>
-          <p className="field-hint">Python: Node.js, Pyright and a Python interpreter. Go: gopls and a local Go toolchain. Java: JDT LS, JDK 21+ and Python 3 for the default jdtls launcher. Project dependencies must already be available locally.</p>
+          <p className="field-hint">Rust: an installed Rust toolchain and rustup for installation. TypeScript / JavaScript: Node.js 22.22.2+ and npm.</p>
+          <p className="field-hint">Python: Node.js, npm and a Python interpreter. Go: Go 1.23.1 or newer. Java: JDK 21+ and Python 3 for the default JDT LS launcher. Project dependencies must already be available locally.</p>
         </details>
       </section>
     </div>
   );
 }
 
-export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuild }: {
+export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuild, onInstall, onCancelInstall, config }: {
   status: IndexStatus; disabled: boolean; busy: boolean;
   onRetry: (project: IndexProject) => void; onRebuild: () => void;
+  onInstall: (project: IndexProject) => void; onCancelInstall: (project: IndexProject) => void;
+  config: CodeIndexConfig;
 }) {
   const disk = status.persistence;
   return (
@@ -142,22 +151,43 @@ export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuil
       {status.cache.error && <p className="error-text">{status.cache.error}</p>}
       {status.projects.length === 0 && !status.discovering && <p className="field-hint">No supported code projects found.</p>}
       <div className="index-projects">
-        {status.projects.map((project) => (
-          <article className="index-project" key={`${project.language}:${project.root}`}>
+        {status.projects.map((project) => {
+          const installation = status.installs?.[project.language];
+          const applying = installation === "Installing" || installation === "Verifying" || installation === "Activating";
+          const configured = config?.servers[project.language];
+          const canInstall = !applying && typeof project.state === "object" && !configured?.command && configured?.enabled !== false;
+          return <article className="index-project" key={`${project.language}:${project.root}`}>
             <div className="index-heading">
               <h4>{LANGUAGES.find((language) => language.id === project.language)?.name ?? project.language}</h4>
               <button type="button" disabled={disabled || project.state === "Disabled"} onClick={() => onRetry(project)} title="Retry this project's saved configuration">Retry</button>
             </div>
             <p className="index-path">{project.root}</p>
             <p className={typeof project.state === "object" ? "error-text" : "index-summary"}>{stateText(project.state)}</p>
+            {installation && <p role="status" className={typeof installation === "object" ? "error-text" : "field-hint"}>
+              {typeof installation === "object" ? installation.Failed : {
+                Installing: "Installing server…",
+                Verifying: "Checking server version and initialization…",
+                Activating: "Starting server in open workspaces…",
+                Installed: "Server installation verified.",
+                Cancelled: "Installation cancelled.",
+              }[installation]}
+            </p>}
+            {canInstall && <>
+              {project.language === "rust" && <p className="field-hint">Adds rust-analyzer to this project’s active Rust toolchain using rustup.</p>}
+              <button type="button" disabled={disabled} onClick={() => onInstall(project)}>
+                {installation && installation !== "Installed" ? "Retry installation" : "Install server"}
+              </button>
+            </>}
+            {(installation === "Installing" || installation === "Verifying") &&
+              <button type="button" disabled={disabled} onClick={() => onCancelInstall(project)}>Cancel installation</button>}
             <dl className="index-metadata">
               {disk && <div><dt>Disk snapshot</dt><dd>{disk.projects.some((item) => item.root === project.root && item.language === project.language && item.verified) ? "File bytes verified" : "Unverified"}</dd></div>}
               {project.version && <div><dt>Server</dt><dd>{project.version}</dd></div>}
               {project.capabilities && <div><dt>Capabilities</dt><dd>{Object.entries(project.capabilities).filter(([, supported]) => supported).map(([name]) => name.replace(/_/g, " ")).join(", ") || "None"}</dd></div>}
             </dl>
             {project.progress.map((progress, index) => <p className="field-hint" key={index}>{progress}</p>)}
-          </article>
-        ))}
+          </article>;
+        })}
       </div>
       <p className="field-hint">Verified file symbols may be reused from SQLite or memory. Definitions, references and calls use live queries. Semantic completeness remains unknown.</p>
       <div className="index-rebuild">

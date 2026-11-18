@@ -200,6 +200,11 @@ impl LanguageServerSession {
             .kill_on_drop(true);
         if let Some(directory) = &java_workspace {
             process.arg("-data").arg(&directory.0);
+            if command.python_interpreter.as_ref() == Some(&command.program) {
+                process
+                    .arg("-configuration")
+                    .arg(directory.0.join("configuration"));
+            }
         }
         if language == Language::Go {
             let manifest = root.join("go.work");

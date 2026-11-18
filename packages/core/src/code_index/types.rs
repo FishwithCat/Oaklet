@@ -166,6 +166,7 @@ pub struct ProjectStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatus {
+    pub installs: std::collections::BTreeMap<super::Language, super::InstallStatus>,
     pub workspace: PathBuf,
     pub cache: CacheStatus,
     pub persistence: Option<PersistenceStatus>,

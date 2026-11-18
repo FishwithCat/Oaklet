@@ -32,6 +32,15 @@ pub(super) async fn detect_with_path(
     config: &CodeIndexConfig,
     path: Option<&OsStr>,
 ) -> Result<Option<ServerCommand>, String> {
+    detect(project, config, path, None).await
+}
+
+pub(super) async fn detect(
+    project: &Project,
+    config: &CodeIndexConfig,
+    path: Option<&OsStr>,
+    managed: Option<&Path>,
+) -> Result<Option<ServerCommand>, String> {
     let mut config = config.clone();
     config.validate()?;
     let configured = config
@@ -53,14 +62,28 @@ pub(super) async fn detect_with_path(
         Language::Java => "jdtls",
     };
     let command = configured.command.as_deref().unwrap_or(default);
-    let program = find_program(command, &project.root, path)
-        .ok_or_else(|| format!("Code index executable not found: {command}"))?;
-    let args = if configured.command.is_some() {
-        configured.args
-    } else if matches!(project.language, Language::TypeScript | Language::Python) {
-        vec!["--stdio".into()]
+    let managed = if configured.command.is_none() {
+        if let Some(directory) = managed {
+            super::install::launch(project, directory, path).await?
+        } else {
+            None
+        }
     } else {
-        Vec::new()
+        None
+    };
+    let (program, mut args, launcher) = if let Some(launch) = managed {
+        launch
+    } else {
+        let program = find_program(command, &project.root, path)
+            .ok_or_else(|| format!("Code index executable not found: {command}"))?;
+        let args = if configured.command.is_some() {
+            configured.args
+        } else if matches!(project.language, Language::TypeScript | Language::Python) {
+            vec!["--stdio".into()]
+        } else {
+            Vec::new()
+        };
+        (program.clone(), args, program)
     };
     let mut runtime_versions = Vec::new();
     for name in match project.language {
@@ -70,19 +93,19 @@ pub(super) async fn detect_with_path(
         Language::Go => &["go"][..],
         Language::Java => &["java"][..],
     } {
+        if *name == "java" {
+            let (java, version) = java_runtime(&project.root, path).await?;
+            if program != launcher {
+                args.extend([
+                    "--java-executable".into(),
+                    java.to_string_lossy().into_owned(),
+                ]);
+            }
+            runtime_versions.push(format!("java: {version}"));
+            continue;
+        }
         let executable = if *name == "node" && program.file_stem() == Some(OsStr::new("node")) {
             program.clone()
-        } else if *name == "java" {
-            std::env::var_os("JAVA_HOME")
-                .and_then(|home| {
-                    find_program(
-                        &Path::new(&home).join("bin/java").to_string_lossy(),
-                        &project.root,
-                        path,
-                    )
-                })
-                .or_else(|| find_program(name, &project.root, path))
-                .ok_or("Required Java runtime is missing")?
         } else {
             find_program(name, &project.root, path).ok_or_else(|| {
                 format!(
@@ -93,7 +116,6 @@ pub(super) async fn detect_with_path(
         };
         let flag = match *name {
             "go" => "version",
-            "java" => "-version",
             _ => "--version",
         };
         let version = run(
@@ -103,22 +125,13 @@ pub(super) async fn detect_with_path(
             Duration::from_secs(5),
         )
         .await?;
-        if *name == "java"
-            && version
-                .split('"')
-                .nth(1)
-                .and_then(|version| version.split('.').next()?.parse::<u32>().ok())
-                .is_none_or(|major| major < 21)
-        {
-            return Err(format!("JDT LS requires JDK 21 or newer; found: {version}"));
-        }
         runtime_versions.push(format!("{name}: {version}"));
     }
     let python_interpreter = if project.language == Language::Python
         || project.language == Language::Java && configured.command.is_none()
     {
         let python = if project.language == Language::Java {
-            find_program("python3", &project.root, path)
+            jdtls_python(&project.root, path)
         } else {
             python_program(&project.root, path)
         }.ok_or("Required Python interpreter is missing; configure the project environment or add python3 to PATH.")?;
@@ -138,16 +151,16 @@ pub(super) async fn detect_with_path(
         None
     };
     let typescript_sdk = if project.language == Language::TypeScript {
-        let (sdk, version) = find_typescript(&project.root, &program).ok_or("TypeScript SDK is missing; install TypeScript in the project or alongside the language server.")?;
+        let (sdk, version) = find_typescript(&project.root, &launcher).ok_or("TypeScript SDK is missing; install TypeScript in the project or alongside the language server.")?;
         runtime_versions.push(format!("typescript: {version}"));
         Some(sdk)
     } else {
         None
     };
     let version = match project.language {
-        Language::Python => installed_version(&program, "pyright")
+        Language::Python => installed_version(&launcher, "pyright")
             .unwrap_or_else(|| "Pyright (version unknown; custom launcher)".into()),
-        Language::Java => installed_version(&program, "jdtls")
+        Language::Java => installed_version(&launcher, "jdtls")
             .unwrap_or_else(|| "JDT LS (version unknown; custom launcher)".into()),
         _ => {
             let mut version_args = args.clone();
@@ -169,7 +182,7 @@ pub(super) async fn detect_with_path(
         }
     };
     if matches!(project.language, Language::Python | Language::Java) {
-        let metadata = program.metadata().map_err(|error| error.to_string())?;
+        let metadata = launcher.metadata().map_err(|error| error.to_string())?;
         runtime_versions.push(format!(
             "launcher: {} {:?}",
             metadata.len(),
@@ -187,6 +200,42 @@ pub(super) async fn detect_with_path(
         typescript_sdk,
         python_interpreter,
     }))
+}
+
+pub(super) async fn java_runtime(
+    root: &Path,
+    path: Option<&OsStr>,
+) -> Result<(PathBuf, String), String> {
+    let java = std::env::var_os("JAVA_HOME")
+        .and_then(|home| {
+            find_program(
+                &Path::new(&home).join("bin/java").to_string_lossy(),
+                root,
+                path,
+            )
+        })
+        .or_else(|| find_program("java", root, path))
+        .ok_or("JDT LS requires JDK 21 or newer. Set JAVA_HOME or add java to PATH.")?;
+    let version = run(&java, &["-version".into()], root, Duration::from_secs(5)).await?;
+    if version
+        .split('"')
+        .nth(1)
+        .and_then(|version| version.split('.').next()?.parse::<u32>().ok())
+        .is_none_or(|major| major < 21)
+    {
+        return Err(format!("JDT LS requires JDK 21 or newer; found: {version}"));
+    }
+    Ok((java, version))
+}
+
+pub(super) fn jdtls_python(root: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
+    find_program("python3", root, path).or_else(|| {
+        if cfg!(windows) {
+            find_program("python", root, path)
+        } else {
+            None
+        }
+    })
 }
 
 fn python_program(root: &Path, path: Option<&OsStr>) -> Option<PathBuf> {

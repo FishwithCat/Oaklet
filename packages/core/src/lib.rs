@@ -1247,7 +1247,10 @@ pub fn run() {
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
             let state = Arc::new(AppState {
-                code_index: Arc::new(code_index::CodeIndexManager::with_store(store)),
+                code_index: Arc::new(
+                    code_index::CodeIndexManager::with_store(store)
+                        .with_installation_root(data_dir.join("language-servers")),
+                ),
                 exit: Mutex::new(shutdown::ExitState::Running),
                 config: Mutex::new(config),
                 config_path,
@@ -1305,6 +1308,8 @@ pub fn run() {
             save_config,
             code_index::commands::code_index_status,
             code_index::commands::code_index_retry,
+            code_index::commands::code_index_install,
+            code_index::commands::code_index_cancel_install,
             code_index::commands::code_index_rebuild,
             connection::test_connection,
             chat::commands::session_create,

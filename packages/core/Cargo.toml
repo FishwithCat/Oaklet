@@ -40,6 +40,9 @@ lsp-types = "0.95"
 tokio-util = { version = "0.7", features = ["compat"] }
 notify = "8.2"
 blake3 = "1"
+flate2 = "1"
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

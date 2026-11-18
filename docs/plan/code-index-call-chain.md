@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md)、步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 与步骤 8 的 [状态及设置](code-index-settings.md) 已完成，步骤 9 已取消。步骤 10 的收益验收仍待完成；按用户要求提前实施步骤 11，已接入 Python、Go、Java 并通过自动化回归，真实后端验收待运行，见 [语言扩展实现与验证](code-index-languages.md)。步骤 12 的安装入口待实施。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md)、步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 与步骤 8 的 [状态及设置](code-index-settings.md) 已完成，步骤 9 已取消。步骤 10 的收益验收仍待完成；按用户要求提前实施步骤 11，已接入 Python、Go、Java 并通过自动化回归，真实后端验收待运行，见 [语言扩展实现与验证](code-index-languages.md)。步骤 12 已实现五语言安装入口，详见 [安装与验证](code-index-install.md)。
 
 ## 目标与成功标准
 
@@ -230,7 +230,7 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 依赖顺序：1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 10。步骤 10 达到收益门槛后再做 11 → 12。每步包含其测试，不把必要测试推迟到最后；完成标准满足后才能勾选。
 
-步骤 9 取消并保留编号，后续步骤不重编号。第一阶段交付步骤 1–8、10：已有服务器环境下，用户打开外部 Rust/TS 工程即可使用，包含持久化及缓存。第二阶段完成步骤 11 的 Python/Go 支持。第三阶段完成步骤 12 的安装体验。工作区生命周期、持久化、缓存、配置和状态入口属于第一阶段，不能等到多语言扩展时才补。
+步骤 9 取消并保留编号，后续步骤不重编号。第一阶段交付步骤 1–8、10：已有服务器环境下，用户打开外部 Rust/TS 工程即可使用，包含持久化及缓存。第二阶段完成步骤 11 的 Python、Go 和 Java 支持。第三阶段完成步骤 12 的安装体验。工作区生命周期、持久化、缓存、配置和状态入口属于第一阶段，不能等到多语言扩展时才补。
 
 ### 1. 接入框架并建立独立验证样本
 
@@ -366,14 +366,14 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 12. 用户触发的安装与最终交付
 
-- [ ] 在现有 Code Index 页签增加安装、进度和失败重试；新增 code_index_install command，由后端维护允许的服务器及固定版本清单，不接受模型发起安装或任意下载地址。
-- [ ] TS/JS 与 Pyright 使用已有 npm 安装固定包版本到 Oaklet 数据目录；gopls 使用已有 Go 和专用 GOBIN；不修改用户工程依赖或全局 npm 包。
-- [ ] rust-analyzer 使用已有 rustup 为用户项目选定的工具链安装组件，操作前在安装入口说明它会更改该工具链的组件，不声称该组件位于 Oaklet 私有目录。不安装或切换 Rust 工具链本身。
-- [ ] 缺少 Node/npm、Go 或 rustup 时展示明确说明；根据实际目标平台验证 npm 可执行入口，命令使用参数数组，不构造 shell 安装字符串。
-- [ ] 按服务器和版本串行安装，失败不发布半成品，保留原可用版本；安装后用版本检测和初始化探测确认可用，再重试受影响工作区。
-- [ ] 补齐显式配置 → Oaklet 管理版本 → PATH 的选择顺序；rust-analyzer 按项目工具链检测。退出时停止安装任务，并确保下次安装可恢复或清理中间状态。
-- [ ] 验证缺少运行环境、断网、安装中取消、重复点击、安装失败、安装成功后自动启动及多窗口共享安装结果。完成五语言回归与全量检查。
-- [ ] 更新用户使用说明、各平台运行环境要求和已验证的服务器版本；生成按逻辑独立变更拆分的提交说明，未经用户明确授权不执行 git commit。
+- [x] 在现有 Code Index 页签增加安装、阶段进度、取消和失败重试。桌面命令校验窗口所属项目，版本和来源由后端固定。
+- [x] TS/JS 与 Pyright 通过已有 npm 安装，gopls 通过已有 Go 安装。Eclipse JDT LS 从官方发布源下载固定归档，核对 SHA-256 后解包到 Oaklet 数据目录。
+- [x] rust-analyzer 使用已有 rustup 为用户项目选定的已安装工具链添加组件。按钮旁说明工具链组件会发生变化。
+- [x] 检查运行环境，安装器使用参数数组。Windows 通过 Node 启动标准发行版自带的 npm JavaScript 入口。
+- [x] 按服务器串行安装，暂存目录通过版本和初始化探测后发布，再自动为打开的工作区安排启动。失败清理暂存目录并保留已发布版本。
+- [x] 按显式配置、管理版本、PATH 的顺序选择；Rust 按项目选定工具链检测。退出时取消并等待安装任务，下次重试清理中间状态。
+- [ ] 完成五种后端的真实安装验收和各平台验证，已验证的范围见 [安装与验证](code-index-install.md)。
+- [x] 更新用户说明、固定版本与平台前置条件，记录建议提交说明。
 
 完成标准：用户打开自己的工程后，能看到缺少的后端，点击安装并在成功后直接查询，无需重开工程或手动运行索引命令；失败时现有聊天、搜索和其他后端继续可用。
 
@@ -398,4 +398,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8 的状态、设置和重试代码已提交为 cd996b6，验证见 [工作区索引状态与设置](code-index-settings.md)；步骤 9 已取消，步骤 10、12 待实施；步骤 11 的 Python/Go/Java 接入已实现，真实后端验收待完成，见 [语言扩展](code-index-languages.md)，尚未提交。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8 的状态、设置和重试代码已提交为 cd996b6，验证见 [工作区索引状态与设置](code-index-settings.md)；步骤 9 已取消，步骤 10 待完成；步骤 11 的 Python/Go/Java 接入已提交为 99a7f56，见 [语言扩展](code-index-languages.md)。步骤 12 的验证见 [安装与验证](code-index-install.md)。

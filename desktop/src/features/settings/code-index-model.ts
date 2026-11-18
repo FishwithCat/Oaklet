@@ -10,7 +10,9 @@ export type IndexProject = {
   progress: string[];
   generation: number;
 };
+export type IndexInstall = "Installing" | "Verifying" | "Activating" | "Installed" | "Cancelled" | { Failed: string };
 export type IndexStatus = {
+  installs?: Partial<Record<IndexLanguage, IndexInstall>>;
   workspace: string;
   revision: number;
   stale: boolean;

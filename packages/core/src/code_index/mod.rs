@@ -5,6 +5,7 @@ mod config;
 mod discovery;
 pub(crate) mod documents;
 mod framing;
+mod install;
 mod language_servers;
 mod lsp;
 mod manager;
@@ -13,6 +14,7 @@ mod types;
 mod watch;
 
 pub use crate::tools::{Cancel, CancelHandle};
+pub use install::InstallStatus;
 pub use manager::CodeIndexManager;
 pub use types::{
     CacheStatus, Call, IndexError, Location, PersistenceStatus, PersistentProjectStatus,

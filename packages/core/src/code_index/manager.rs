@@ -9,8 +9,8 @@ use std::{
 };
 
 use super::{
-    CodeIndexConfig, Discovery, IndexError, ProjectStatus, Query, QueryResult, ServerState,
-    WorkspaceStatus, detect_server,
+    CodeIndexConfig, Discovery, IndexError, InstallStatus, ProjectStatus, Query, QueryResult,
+    ServerState, WorkspaceStatus, install,
     language_servers::{LanguageServerManager, ProjectKey},
 };
 use crate::tools::{Cancel, CancelHandle, Workspace};
@@ -54,6 +54,8 @@ pub struct CodeIndexManager {
     status_revision: AtomicU64,
     cache: Mutex<cache::QueryCache>,
     store: Option<crate::store::Store>,
+    installation_root: Option<PathBuf>,
+    installs: install::Jobs,
     workspaces: Arc<Mutex<BTreeMap<PathBuf, WorkspaceEntry>>>,
     servers: Arc<LanguageServerManager>,
     next: AtomicU64,
@@ -76,6 +78,8 @@ impl CodeIndexManager {
             status_revision: AtomicU64::new(1),
             cache: Mutex::new(cache::QueryCache::default()),
             store: None,
+            installation_root: None,
+            installs: Default::default(),
             workspaces: Arc::new(Mutex::new(BTreeMap::new())),
             servers: LanguageServerManager::new(),
             next: AtomicU64::new(1),
@@ -89,6 +93,161 @@ impl CodeIndexManager {
         Self {
             store: Some(store),
             ..Self::new()
+        }
+    }
+
+    pub(crate) fn with_installation_root(mut self, root: PathBuf) -> Self {
+        self.installation_root = Some(root);
+        self
+    }
+
+    async fn detect_server(
+        &self,
+        project: &super::Project,
+        config: &CodeIndexConfig,
+    ) -> Result<Option<super::ServerCommand>, String> {
+        let Some(root) = &self.installation_root else {
+            return super::detect_server(project, config).await;
+        };
+        let directory = install::available_release(root, project.language);
+        super::runtime::detect(
+            project,
+            config,
+            std::env::var_os("PATH").as_deref(),
+            directory
+                .as_deref()
+                .or((project.language == super::Language::Rust).then_some(root)),
+        )
+        .await
+    }
+
+    pub(super) fn install_server(
+        self: &Arc<Self>,
+        workspace: &Path,
+        project_root: &Path,
+        language: super::Language,
+    ) -> Result<(), String> {
+        let root = self
+            .installation_root
+            .clone()
+            .ok_or("Managed installation is unavailable.")?;
+        let workspaces = self.workspaces.lock().unwrap();
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err(IndexError::Closed.to_string());
+        }
+        let entry = workspaces
+            .get(workspace)
+            .ok_or(IndexError::Closed.to_string())?;
+        let project = entry
+            .discovery
+            .as_ref()
+            .and_then(|discovery| {
+                discovery
+                    .projects
+                    .iter()
+                    .find(|p| p.root == project_root && p.language == language)
+            })
+            .ok_or("Unknown code index project.")?
+            .clone();
+        if let Some(error) = project.error {
+            return Err(error);
+        }
+        if entry
+            .config_updates
+            .borrow()
+            .servers
+            .get(&language)
+            .is_some_and(|server| !server.enabled || server.command.is_some())
+        {
+            return Err(
+                "Enable this server and clear the custom executable in saved settings first."
+                    .into(),
+            );
+        }
+
+        let mut installs = self.installs.lock().unwrap();
+        if installs
+            .get(&language)
+            .is_some_and(|job| job.status.active())
+        {
+            return Ok(());
+        }
+        let (owner, cancel) = CancelHandle::new();
+        let manager = self.clone();
+        let workspace = workspace.to_path_buf();
+        let task = tauri::async_runtime::spawn(async move {
+            let path = std::env::var_os("PATH");
+            let result = install::install(
+                &root,
+                &project,
+                &workspace,
+                path.as_deref(),
+                &cancel,
+                || {
+                    manager.install_status(language, InstallStatus::Verifying);
+                },
+            )
+            .await;
+            let status = match result {
+                Ok(()) => {
+                    manager.install_status(language, InstallStatus::Activating);
+                    manager.activate_install(language, &cancel).await;
+                    InstallStatus::Installed
+                }
+                Err(_) if cancel.is_cancelled() => InstallStatus::Cancelled,
+                Err(error) => InstallStatus::Failed(error),
+            };
+            manager.install_status(language, status);
+        });
+        installs.insert(
+            language,
+            install::Job {
+                status: InstallStatus::Installing,
+                owner,
+                task,
+            },
+        );
+        Ok(())
+    }
+
+    fn install_status(&self, language: super::Language, status: InstallStatus) {
+        if let Some(job) = self.installs.lock().unwrap().get_mut(&language) {
+            job.status = status;
+        }
+    }
+
+    pub(super) fn cancel_install(&self, language: super::Language) {
+        if let Some(job) = self.installs.lock().unwrap().get(&language)
+            && matches!(
+                job.status,
+                InstallStatus::Installing | InstallStatus::Verifying
+            )
+        {
+            job.owner.cancel();
+        }
+    }
+
+    async fn activate_install(&self, language: super::Language, cancel: &Cancel) {
+        let targets = self
+            .workspaces
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(workspace, entry)| {
+                entry
+                    .projects
+                    .iter()
+                    .filter(move |(project, _)| project.language == language)
+                    .map(move |(project, _)| (workspace.clone(), project.root.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (workspace, root) in targets {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let _ = self
+                .retry_project(&workspace, &root, language, cancel, true)
+                .await;
         }
     }
 
@@ -351,10 +510,11 @@ impl CodeIndexManager {
             let config = config.clone();
             let cancel = cancel.clone();
             tasks.spawn(async move {
-                let detected = tokio::select! { biased; _ = cancel.cancelled() => return, result = detect_server(&project, &config) => result };
+                let detected = tokio::select! { biased; _ = cancel.cancelled() => return, result = manager.detect_server(&project, &config) => result };
                 let mut workspaces = manager.workspaces.lock().unwrap();
                 let Some(entry) = workspaces.get_mut(&workspace).filter(|entry| entry.generation == generation) else { return; };
                 let Some((status, key)) = entry.projects.iter_mut().find(|(status, _)| status.root == project.root && status.language == project.language) else { return; };
+                if key.is_some() { return; }
                 match detected {
                     Ok(Some(command)) => {
                         let registered = manager.servers.register(&workspace, &project.root, project.language, command);
@@ -473,6 +633,13 @@ impl CodeIndexManager {
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
         let mut status = WorkspaceStatus {
             workspace: workspace.to_path_buf(),
+            installs: self
+                .installs
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(language, job)| (*language, job.status.clone()))
+                .collect(),
             cache: self.cache.lock().unwrap().status(workspace),
             persistence: entry.persistence.clone(),
             discovering: entry.discovery.is_none(),
@@ -620,9 +787,30 @@ impl CodeIndexManager {
         language: super::Language,
         cancel: &Cancel,
     ) -> Result<(), IndexError> {
+        self.retry_project(workspace, project_root, language, cancel, false)
+            .await
+    }
+
+    async fn retry_project(
+        &self,
+        workspace: &Path,
+        project_root: &Path,
+        language: super::Language,
+        cancel: &Cancel,
+        installed: bool,
+    ) -> Result<(), IndexError> {
         let (projects, config, generation, lifetime) = {
             let workspaces = self.workspaces.lock().unwrap();
             let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
+            if installed
+                && entry
+                    .config
+                    .servers
+                    .get(&language)
+                    .is_some_and(|server| !server.enabled || server.command.is_some())
+            {
+                return Ok(());
+            }
             let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
             let projects: Vec<_> = discovery
                 .projects
@@ -645,7 +833,7 @@ impl CodeIndexManager {
                 biased;
                 _ = lifetime.cancelled() => return Err(IndexError::Closed),
                 _ = cancel.cancelled() => return Err(IndexError::Cancelled),
-                result = detect_server(&project, &config) => result,
+                result = self.detect_server(&project, &config) => result,
             };
             let key = {
                 let mut workspaces = self.workspaces.lock().unwrap();
@@ -668,6 +856,9 @@ impl CodeIndexManager {
                         status.root == project.root && status.language == project.language
                     })
                     .ok_or(IndexError::NotReady)?;
+                if installed && !matches!(detected, Ok(Some(_))) {
+                    return Ok(());
+                }
                 let command = match detected {
                     Ok(Some(command)) => command,
                     Ok(None) => {
@@ -682,6 +873,15 @@ impl CodeIndexManager {
                 let registered =
                     self.servers
                         .register(workspace, &project.root, project.language, command);
+                if installed
+                    && key.as_ref() == Some(&registered)
+                    && !self
+                        .servers
+                        .status(&registered)
+                        .is_some_and(|status| matches!(status.state, ServerState::Failed(_)))
+                {
+                    continue;
+                }
                 if let Some(previous) = key.replace(registered.clone())
                     && previous != registered
                     && let Some(task) = self.servers.retire(&previous)
@@ -695,7 +895,11 @@ impl CodeIndexManager {
                 }
                 registered
             };
-            self.servers.restart(&key, cancel).await?;
+            if installed {
+                self.servers.start(key);
+            } else {
+                self.servers.restart(&key, cancel).await?;
+            }
         }
         Ok(())
     }
@@ -758,6 +962,13 @@ impl CodeIndexManager {
             self.shutting_down.store(true, Ordering::Release);
             entries.keys().cloned().collect()
         };
+        let jobs = std::mem::take(&mut *self.installs.lock().unwrap());
+        for job in jobs.values() {
+            job.owner.cancel();
+        }
+        for job in jobs.into_values() {
+            let _ = job.task.await;
+        }
         for root in roots {
             self.close_workspace(&root);
         }
