@@ -52,9 +52,13 @@ pub async fn files_read(
     path: String,
 ) -> Result<String, String> {
     let root = self::workspace(&state, &window, &workspace)?;
-    tauri::async_runtime::spawn_blocking(move || read(&resolve(&root, &path)?))
-        .await
-        .map_err(|e| e.to_string())?
+    let target = resolve(&root, &path)?;
+    let label = root.relative(&target).to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        read(&target).map_err(|error| format!("{label}: {error}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
