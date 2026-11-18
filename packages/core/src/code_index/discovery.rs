@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,10 @@ pub(super) const EXCLUDED: &[&str] = &[
     "venv",
     "__pycache__",
     ".pnpm-store",
+    ".gradle",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -34,7 +38,7 @@ pub(super) const EXCLUDED: &[&str] = &[
 pub struct Project {
     pub root: PathBuf,
     pub language: Language,
-    /// A failed Cargo lookup is a routing barrier, not a guessed workspace root.
+    /// A failed workspace lookup is a routing barrier, not a guessed project root.
     pub error: Option<String>,
 }
 
@@ -47,6 +51,8 @@ pub struct Discovery {
     pub warnings: Vec<String>,
     #[serde(skip)]
     pub(super) files: BTreeSet<PathBuf>,
+    #[serde(skip)]
+    pub(super) go_members: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl Discovery {
@@ -57,6 +63,7 @@ impl Discovery {
             incomplete: true,
             warnings: vec![error],
             files: BTreeSet::new(),
+            go_members: BTreeMap::new(),
         }
     }
 
@@ -70,11 +77,23 @@ impl Discovery {
             );
         }
         let language = Language::for_file(&file).ok_or("Unsupported source language.")?;
-        let project = self
+        let owner = self
             .projects
             .iter()
             .filter(|project| project.language == language && file.starts_with(&project.root))
-            .max_by_key(|project| project.root.components().count())
+            .map(|project| (&project.root, &project.root))
+            .chain(
+                self.go_members
+                    .iter()
+                    .filter(|(member, _)| language == Language::Go && file.starts_with(member)),
+            )
+            .max_by_key(|(boundary, _)| boundary.components().count())
+            .map(|(_, owner)| owner)
+            .ok_or("No supported project owns this file.")?;
+        let project = self
+            .projects
+            .iter()
+            .find(|project| project.language == language && &project.root == owner)
             .ok_or("No supported project owns this file.")?;
         if let Some(error) = &project.error {
             return Err(error.clone());
@@ -104,6 +123,8 @@ pub(super) async fn discover_with_cancel(
         workspace.root(),
         std::env::var_os("PATH").as_deref(),
     );
+    let go = runtime::find_program("go", workspace.root(), std::env::var_os("PATH").as_deref());
+    resolve_go_workspaces(&workspace, &mut result, go.as_deref(), deadline).await;
     for manifest in manifests {
         if cancel
             .as_ref()
@@ -157,6 +178,112 @@ pub(super) async fn discover_with_cancel(
     Ok(result)
 }
 
+// Use Go's parser: quoted paths, comments and replace blocks follow the toolchain's grammar.
+pub(super) async fn resolve_go_workspaces(
+    workspace: &Workspace,
+    result: &mut Discovery,
+    go: Option<&Path>,
+    deadline: Instant,
+) {
+    let manifests: Vec<_> = result
+        .files
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "go.work"))
+        .cloned()
+        .collect();
+    let modules: BTreeSet<_> = result
+        .files
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "go.mod"))
+        .map(|path| path.parent().unwrap().to_path_buf())
+        .collect();
+    for manifest in manifests {
+        let root = manifest.parent().unwrap();
+        let resolve = async {
+            let go = go.ok_or("Go is missing; go.work membership is unconfirmed.")?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(
+                    "Project discovery exceeded 30 seconds; go.work membership is unconfirmed."
+                        .into(),
+                );
+            }
+            let output = runtime::run(
+                go,
+                &[
+                    "work".into(),
+                    "edit".into(),
+                    "-json".into(),
+                    manifest.to_string_lossy().into_owned(),
+                ],
+                root,
+                remaining.min(Duration::from_secs(5)),
+            )
+            .await?;
+            let value: Value = serde_json::from_str(&output)
+                .map_err(|error| format!("Invalid go.work response: {error}"))?;
+            let mut members = Vec::new();
+            for member in value["Use"].as_array().into_iter().flatten() {
+                let path = member["DiskPath"]
+                    .as_str()
+                    .ok_or("Missing go.work member path")?;
+                let member = workspace.resolve(&root.join(path).to_string_lossy())?;
+                if !modules.contains(&member) {
+                    return Err(format!(
+                        "go.work member is missing or ignored: {}",
+                        member.display()
+                    ));
+                }
+                if result
+                    .go_members
+                    .get(&member)
+                    .is_some_and(|owner| owner != root)
+                {
+                    return Err(format!(
+                        "Module belongs to multiple go.work files: {}",
+                        member.display()
+                    ));
+                }
+                members.push(member);
+            }
+            Ok::<_, String>(members)
+        }
+        .await;
+        match resolve {
+            Ok(members) => {
+                for member in members {
+                    if member != root && !member.join("go.work").is_file() {
+                        result.projects.retain(|project| {
+                            project.language != Language::Go || project.root != member
+                        });
+                        result.go_members.insert(member, root.to_path_buf());
+                    }
+                }
+            }
+            Err(error) => {
+                result.incomplete = true;
+                result
+                    .warnings
+                    .push(format!("{}: {error}", manifest.display()));
+                // Unknown membership must not silently start a server per descendant module.
+                result.projects.retain(|project| {
+                    project.language != Language::Go
+                        || project.root == root
+                        || !project.root.starts_with(root)
+                        || project.root.join("go.work").is_file()
+                });
+                if let Some(project) = result
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.language == Language::Go && project.root == root)
+                {
+                    project.error = Some(error);
+                }
+            }
+        }
+    }
+}
+
 async fn locate_cargo_root(
     workspace: &Workspace,
     manifest: &Path,
@@ -196,9 +323,11 @@ fn scan(
         incomplete: false,
         warnings: Vec::new(),
         files: BTreeSet::new(),
+        go_members: BTreeMap::new(),
     };
     let mut cargo = Vec::new();
     let mut ts_roots = BTreeSet::new();
+    let mut roots = BTreeSet::new();
     let mut walker = WalkBuilder::new(&root);
     walker
         .hidden(false)
@@ -245,7 +374,69 @@ fn scan(
             Some("package.json" | "tsconfig.json" | "jsconfig.json") => {
                 ts_roots.insert(path.parent().unwrap().to_path_buf());
             }
+            Some("pyrightconfig.json" | "pyproject.toml") => {
+                roots.insert((path.parent().unwrap().to_path_buf(), Language::Python));
+            }
+            Some("go.work" | "go.mod") => {
+                roots.insert((path.parent().unwrap().to_path_buf(), Language::Go));
+            }
+            Some(
+                "pom.xml"
+                | "build.gradle"
+                | "build.gradle.kts"
+                | "settings.gradle"
+                | "settings.gradle.kts",
+            ) => {
+                roots.insert((path.parent().unwrap().to_path_buf(), Language::Java));
+            }
             _ => {}
+        }
+    }
+    for language in [Language::Python, Language::Java] {
+        if result.files.iter().any(|path| {
+            Language::for_file(path) == Some(language)
+                && !roots
+                    .iter()
+                    .any(|(root, candidate)| *candidate == language && path.starts_with(root))
+        }) {
+            roots.insert((root.clone(), language));
+        }
+    }
+    // Gradle settings own their multi-project build; nested settings remain independent.
+    let gradle_roots: Vec<_> = roots
+        .iter()
+        .filter(|(root, language)| {
+            *language == Language::Java
+                && (root.join("settings.gradle").is_file()
+                    || root.join("settings.gradle.kts").is_file())
+        })
+        .map(|(root, _)| root.clone())
+        .collect();
+    roots.retain(|(root, language)| {
+        *language != Language::Java
+            || root.join("pom.xml").is_file()
+            || gradle_roots.contains(root)
+            || !gradle_roots
+                .iter()
+                .any(|settings| root.starts_with(settings))
+    });
+    result
+        .projects
+        .extend(roots.into_iter().map(|(root, language)| Project {
+            root,
+            language,
+            error: None,
+        }));
+    for language in [Language::Python, Language::Java] {
+        if result
+            .projects
+            .iter()
+            .any(|project| project.language == language)
+        {
+            result.warnings.push(match language {
+                Language::Python => "Python resolution uses Pyright project settings and its selected interpreter; missing dependencies, virtual environments and dynamic imports can limit results.",
+                _ => "Java resolution depends on the installed JDK and local build dependencies; automatic build configuration updates and Gradle import are disabled to avoid executing project build scripts.",
+            }.into());
         }
     }
     // Multiple tsconfig files within a package belong to the same server instance.
@@ -261,7 +452,11 @@ fn scan(
             .max_by_key(|package| package.components().count())
             .cloned()
             .unwrap_or(root);
-        if !result.projects.iter().any(|project| project.root == root) {
+        if !result
+            .projects
+            .iter()
+            .any(|project| project.root == root && project.language == Language::TypeScript)
+        {
             result.projects.push(Project {
                 root,
                 language: Language::TypeScript,

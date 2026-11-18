@@ -40,12 +40,10 @@ struct WorkspaceEntry {
 
 impl WorkspaceEntry {
     fn config_pending(&self) -> bool {
-        [super::Language::Rust, super::Language::TypeScript]
-            .into_iter()
-            .any(|language| {
-                self.config
-                    .server_changed(&self.config_updates.borrow(), language)
-            })
+        super::Language::ALL.into_iter().any(|language| {
+            self.config
+                .server_changed(&self.config_updates.borrow(), language)
+        })
     }
 }
 
@@ -288,15 +286,13 @@ impl CodeIndexManager {
                                 return false;
                             }
                             let name = path.file_name().unwrap_or_default().to_string_lossy();
-                            let language_matches = if super::watch::rust_configuration(path) {
-                                project.language == super::Language::Rust
-                            } else if name == ".gitignore" || name == ".ignore" {
-                                true
-                            } else {
-                                project.language == super::Language::TypeScript
-                            };
+                            let language_matches = super::watch::configuration_language(path)
+                                .is_none_or(|language| project.language == language);
                             language_matches
                                 && (path.starts_with(&project.root)
+                                    || discovery.go_members.iter().any(|(member, owner)| {
+                                        owner == &project.root && path.starts_with(member)
+                                    })
                                     || !name.starts_with("Cargo.")
                                         && project.root.starts_with(path.parent().unwrap_or(path)))
                         });
@@ -598,15 +594,12 @@ impl CodeIndexManager {
         let mut workspaces = self.workspaces.lock().unwrap();
         *self.settings.lock().unwrap() = Some(config.clone());
         for (workspace, entry) in workspaces.iter_mut() {
-            if [super::Language::Rust, super::Language::TypeScript]
-                .into_iter()
-                .any(|language| {
-                    entry
-                        .config_updates
-                        .borrow()
-                        .server_changed(&config, language)
-                })
-            {
+            if super::Language::ALL.into_iter().any(|language| {
+                entry
+                    .config_updates
+                    .borrow()
+                    .server_changed(&config, language)
+            }) {
                 entry.config_updates.send_replace(config.clone());
                 entry.stale = true;
                 entry.revision += 1;

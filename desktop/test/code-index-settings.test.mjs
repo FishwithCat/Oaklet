@@ -22,7 +22,7 @@ test("index settings render labelled per-language fields and installation requir
   }));
   assert.match(html, /Servers must be installed separately/);
   assert.match(html, /Save applies server settings to every open workspace/);
-  for (const language of ["rust", "typescript"]) {
+  for (const language of ["rust", "typescript", "python", "go", "java"]) {
     assert.match(html, new RegExp(`for="index-command-${language}"`));
     assert.match(html, new RegExp(`for="index-args-${language}"`));
   }

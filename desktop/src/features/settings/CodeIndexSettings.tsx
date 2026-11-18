@@ -8,6 +8,9 @@ import { parseIndexArgs, stateText, subscribeIndex, updateIndexServer, type Inde
 const LANGUAGES: { id: IndexLanguage; name: string; command: string }[] = [
   { id: "rust", name: "Rust", command: "rust-analyzer" },
   { id: "typescript", name: "TypeScript / JavaScript", command: "typescript-language-server" },
+  { id: "python", name: "Python", command: "pyright-langserver" },
+  { id: "go", name: "Go", command: "gopls" },
+  { id: "java", name: "Java", command: "jdtls" },
 ];
 
 function ServerFields({ language, config, disabled, onChange, onValidity }: {
@@ -53,7 +56,7 @@ function ServerFields({ language, config, disabled, onChange, onValidity }: {
           <label htmlFor={`index-args-${language.id}`}>Arguments (JSON array)</label>
           <input id={`index-args-${language.id}`} value={args} aria-invalid={!!error} aria-describedby={`index-args-hint-${language.id}`} onChange={(event) => editArgs(event.target.value)} />
           <p id={`index-args-hint-${language.id}`} className={error ? "error-text" : "field-hint"}>
-            {error || (language.id === "typescript"
+            {error || (language.id === "typescript" || language.id === "python"
               ? 'Custom arguments require an executable. Default: ["--stdio"].'
               : 'Custom arguments require an executable. Default: [].')}
           </p>
@@ -101,6 +104,7 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
         <details className="index-requirements">
           <summary>Required runtimes</summary>
           <p className="field-hint">Rust: rust-analyzer and a Rust toolchain. TypeScript / JavaScript: Node.js, typescript-language-server and a TypeScript SDK.</p>
+          <p className="field-hint">Python: Node.js, Pyright and a Python interpreter. Go: gopls and a local Go toolchain. Java: JDT LS, JDK 21+ and Python 3 for the default jdtls launcher. Project dependencies must already be available locally.</p>
         </details>
       </section>
     </div>
@@ -136,12 +140,12 @@ export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuil
         {disk.error && <p className="error-text">{disk.error}</p>}
       </> : <p className="field-hint">Persistent index unavailable. Memory cache: {status.cache.entries} entries ({status.cache.bytes} bytes).</p>}
       {status.cache.error && <p className="error-text">{status.cache.error}</p>}
-      {status.projects.length === 0 && !status.discovering && <p className="field-hint">No Rust or TypeScript / JavaScript projects found.</p>}
+      {status.projects.length === 0 && !status.discovering && <p className="field-hint">No supported code projects found.</p>}
       <div className="index-projects">
         {status.projects.map((project) => (
           <article className="index-project" key={`${project.language}:${project.root}`}>
             <div className="index-heading">
-              <h4>{project.language === "rust" ? "Rust" : "TypeScript / JavaScript"}</h4>
+              <h4>{LANGUAGES.find((language) => language.id === project.language)?.name ?? project.language}</h4>
               <button type="button" disabled={disabled || project.state === "Disabled"} onClick={() => onRetry(project)} title="Retry this project's saved configuration">Retry</button>
             </div>
             <p className="index-path">{project.root}</p>

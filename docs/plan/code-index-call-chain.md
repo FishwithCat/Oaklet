@@ -1,11 +1,11 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md)、步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 与步骤 8 的 [状态及设置](code-index-settings.md) 已完成，步骤 9 已取消，步骤 10–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md)、步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 与步骤 8 的 [状态及设置](code-index-settings.md) 已完成，步骤 9 已取消。步骤 10 的收益验收仍待完成；按用户要求提前实施步骤 11，已接入 Python、Go、Java 并通过自动化回归，真实后端验收待运行，见 [语言扩展实现与验证](code-index-languages.md)。步骤 12 的安装入口待实施。
 
 ## 目标与成功标准
 
-为 Agent 提供代码级语义查询和跨边界证据，减少修改任务中的漏查与漏改。最终覆盖 Rust、TypeScript/JavaScript、Python、Go；首批验证 Rust 与 TS。
+为 Agent 提供代码级语义查询和跨边界证据，减少修改任务中的漏查与漏改。最终覆盖 Rust、TypeScript/JavaScript、Python、Go、Java；首批验证 Rust 与 TS。
 
 产品对象是用户用 Oaklet 打开的工程。用户打开工作区后，Oaklet 自动识别其中的语言和项目，为具备可用后端的项目启动后台索引；Agent 查询该工作区的索引。Oaklet 自身仅可作为测试样本，不能成为唯一支持的工程。
 
@@ -51,7 +51,7 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 | 异步运行与子进程 | 现有 Tokio 1；新增 tokio-util 0.7 的 compat feature | 启停进程、超时、任务取消；转换 Tokio 子进程管道供框架读写 |
 | 文件监听 | notify 8.2 的 RecommendedWatcher | 工作区级监听、事件合并、ignore 过滤和错误恢复 |
 | 项目发现与候选搜索 | 现有 ignore 0.4、globset 0.4、regex 1、serde_json 1 | 遍历项目清单、候选证据搜索及配置解析 |
-| 语义索引引擎 | rust-analyzer、typescript-language-server + TypeScript；随后 Pyright、gopls | 按语言配置启动和能力映射，不自行实现类型解析与符号绑定 |
+| 语义索引引擎 | rust-analyzer、typescript-language-server + TypeScript、Pyright、gopls、Eclipse JDT LS | 按语言配置启动和能力映射，不自行实现类型解析与符号绑定 |
 | 索引 Service | AppState 中的 Arc<CodeIndexManager> | 工作区、项目、监听及查询路由，协调持久化与缓存 |
 | 语言服务器管理 | CodeIndexManager 内持有的 LanguageServerManager | 服务器实例池、启动去重、并发与资源上限、重试及关闭；不新增进程 |
 | 持久化索引与缓存 | 现有 rusqlite 0.42 + bundled SQLite，复用 oaklet.db 的 WAL、迁移和 Store | 文件清单、符号、查询结果及覆盖率；普通 B-tree 索引，不新增存储框架 |
@@ -113,7 +113,7 @@ LanguageServerManager 必须实现，不能把 async-lsp 视为服务器管理�
 
 后台符号提取优先于预计算调用图：按项目依次处理发现的受支持文件，使用文档符号能力并在无需保留时关闭临时文档，避免把全仓文件永久 didOpen。能力缺失、单文件超限或资源不足时记录跳过原因及覆盖率，不无限重试。索引任务让位给交互查询。
 
-不预计算全部函数间的引用与调用关系。引用和调用的持久化粒度为一次有来源和快照信息的查询结果，保留结构化节点、调用点和截断标记；它们不构成完整全仓图。LSP 服务自有数据库由各服务器管理，Oaklet 不复制其内部格式，也不假设四种服务器均能跨重启恢复语义索引。
+不预计算全部函数间的引用与调用关系。引用和调用的持久化粒度为一次有来源和快照信息的查询结果，保留结构化节点、调用点和截断标记；它们不构成完整全仓图。LSP 服务自有数据库由各服务器管理，Oaklet 不复制其内部格式，也不假设各语言服务器均能跨重启恢复语义索引。
 
 #### SQLite 数据模型与迁移
 
@@ -351,15 +351,18 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 完成标准：技术用例全部通过；新增工具组的总漏改数低于基线，且没有由错误链路关联造成的新错误改动。基线本来零漏改或结果无改善时，不宣称门槛通过，换有代表性的任务或调整接口/guidance 后复测。通过后才进入步骤 11、12。
 
-### 11. 扩展 Python 与 Go
+### 11. 扩展 Python、Go 与 Java
 
-- [ ] 按同一项目实例机制接入 Pyright、gopls，新增相应运行环境检测和独立工程夹具，不复制 manager 或传输层。
-- [ ] Python 识别 pyrightconfig、pyproject，随后工作区根；返回配置和解释器环境导致的解析限制，不代替用户安装 Python 依赖。
-- [ ] Go 识别 go.work、go.mod，处理 workspace 和嵌套 module 的归属；不为同一 Go workspace 重复创建实例。
-- [ ] 分别记录四种查询的实际能力、版本与更新行为，按支持范围验收；不强求不同服务器都实现调用层次。
-- [ ] 验证四语言混合仓库、服务器缺失和失败隔离，执行受影响测试与集成检查。
+- [x] 按同一项目实例机制接入 Pyright、gopls、JDT LS，新增运行环境检测和独立工程夹具，不复制 manager 或传输层。
+- [x] Python 识别 pyrightconfig、pyproject，随后工作区根；返回配置和解释器环境导致的解析限制，不代替用户安装 Python 依赖。
+- [x] Go 识别 go.work、go.mod，通过本地 Go 解析 workspace 成员；成员共享实例，未列出的嵌套 module 独立路由，不自动下载工具链或依赖。
+- [x] Java 识别 Maven、Gradle 及普通源码目录，检测 JDK 21+，为 JDT LS 会话分配独立数据目录；显示本地依赖及禁用 Gradle 自动导入的限制。
+- [ ] 分别记录三种新增真实后端四种查询的实际能力、版本与更新行为；已提供可单独运行的语义探针，不把协议夹具当作真实服务器验证。
+- [x] 验证五语言混合仓库、服务器缺失和失败隔离，执行 core 测试、clippy 与 desktop 测试及构建。
 
-完成标准：Python/Go 项目在打开时自动识别，定义与引用用例通过；调用层次支持情况可见；一个后端故障不阻止其他语言查询。
+实现与验证：[语言扩展](code-index-languages.md)。
+
+完成标准：Python/Go/Java 项目在打开时自动识别，真实定义与引用用例通过；调用层次支持情况可见；一个后端故障不阻止其他语言查询。当前自动化协议与路由检查通过，真实服务器验收仍待完成，不宣称本节验收全部通过。
 
 ### 12. 用户触发的安装与最终交付
 
@@ -369,7 +372,7 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - [ ] 缺少 Node/npm、Go 或 rustup 时展示明确说明；根据实际目标平台验证 npm 可执行入口，命令使用参数数组，不构造 shell 安装字符串。
 - [ ] 按服务器和版本串行安装，失败不发布半成品，保留原可用版本；安装后用版本检测和初始化探测确认可用，再重试受影响工作区。
 - [ ] 补齐显式配置 → Oaklet 管理版本 → PATH 的选择顺序；rust-analyzer 按项目工具链检测。退出时停止安装任务，并确保下次安装可恢复或清理中间状态。
-- [ ] 验证缺少运行环境、断网、安装中取消、重复点击、安装失败、安装成功后自动启动及多窗口共享安装结果。完成四语言回归与全量检查。
+- [ ] 验证缺少运行环境、断网、安装中取消、重复点击、安装失败、安装成功后自动启动及多窗口共享安装结果。完成五语言回归与全量检查。
 - [ ] 更新用户使用说明、各平台运行环境要求和已验证的服务器版本；生成按逻辑独立变更拆分的提交说明，未经用户明确授权不执行 git commit。
 
 完成标准：用户打开自己的工程后，能看到缺少的后端，点击安装并在成功后直接查询，无需重开工程或手动运行索引命令；失败时现有聊天、搜索和其他后端继续可用。
@@ -395,4 +398,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8 的状态、设置和重试代码已提交为 cd996b6，验证见 [工作区索引状态与设置](code-index-settings.md)；步骤 9 已取消，步骤 10–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8 的状态、设置和重试代码已提交为 cd996b6，验证见 [工作区索引状态与设置](code-index-settings.md)；步骤 9 已取消，步骤 10、12 待实施；步骤 11 的 Python/Go/Java 接入已实现，真实后端验收待完成，见 [语言扩展](code-index-languages.md)，尚未提交。

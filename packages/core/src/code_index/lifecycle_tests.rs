@@ -56,6 +56,7 @@ impl Fixture {
             version: "fake-1".into(),
             runtime_versions: vec![],
             typescript_sdk: None,
+            python_interpreter: None,
         }
     }
     fn config(&self) -> CodeIndexConfig {
@@ -101,6 +102,235 @@ async fn until(mut predicate: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "lifecycle condition timed out");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[tokio::test]
+async fn python_go_java_use_shared_protocol_queries_sync_and_isolated_java_data() {
+    let pool = LanguageServerManager::new();
+    let (_owner, cancel) = CancelHandle::new();
+    for (language, section, file, source, calls) in [
+        (
+            Language::Python,
+            "python",
+            "main.py",
+            "def alive(): pass\n",
+            false,
+        ),
+        (
+            Language::Go,
+            "gopls",
+            "main.go",
+            "package fixture\nfunc alive() {}\n",
+            true,
+        ),
+        (
+            Language::Java,
+            "java",
+            "Main.java",
+            "class Main { void alive() {} }\n",
+            true,
+        ),
+    ] {
+        let fixture = Fixture::new(section);
+        std::fs::write(fixture.0.join(file), source).unwrap();
+        std::fs::write(
+            fixture.0.join("sync-options.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"section": section, "semanticTools": true, "calls": calls}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let key = pool.register(&fixture.0, &fixture.0, language, fixture.command());
+        let file_path = fixture.0.join(file);
+        for query in [
+            Query::Symbols { file: file.into() },
+            Query::Definition {
+                file: file.into(),
+                line: 0,
+                column: 3,
+            },
+            Query::References {
+                file: file.into(),
+                line: 0,
+                column: 3,
+            },
+        ] {
+            let result = pool.query(&key, &file_path, &query, &cancel).await.unwrap();
+            match result.data {
+                QueryData::Symbols(items) => assert!(!items.is_empty()),
+                QueryData::Locations(items) => assert!(!items.is_empty()),
+                _ => panic!("Wrong result type"),
+            }
+        }
+        assert_eq!(
+            pool.status(&key).unwrap().capabilities.unwrap().calls,
+            calls
+        );
+        for incoming in [true, false] {
+            let result = pool
+                .query(
+                    &key,
+                    &file_path,
+                    &Query::Calls {
+                        file: file.into(),
+                        line: 0,
+                        column: 3,
+                        incoming,
+                    },
+                    &cancel,
+                )
+                .await;
+            if calls {
+                assert!(matches!(result.unwrap().data, QueryData::Calls(_)));
+            } else {
+                assert!(matches!(result, Err(IndexError::Unsupported(_))));
+            }
+        }
+        let opened = fixture
+            .events()
+            .into_iter()
+            .find(|event| event["event"] == "open")
+            .unwrap();
+        assert_eq!(
+            opened["document"]["languageId"],
+            section.replace("gopls", "go")
+        );
+        std::fs::write(&file_path, format!("{source}\n")).unwrap();
+        pool.query(
+            &key,
+            &file_path,
+            &Query::Symbols { file: file.into() },
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fixture.count("change"), 1);
+        assert!(fixture.count("save") >= 1);
+        let initialized = fixture
+            .events()
+            .into_iter()
+            .find(|event| event["event"] == "initialize")
+            .unwrap();
+        if language == Language::Go {
+            assert_eq!(initialized["gowork"], "off");
+        }
+        let data = if language == Language::Java {
+            let args = initialized["args"].as_array().unwrap();
+            let index = args.iter().position(|arg| arg == "-data").unwrap();
+            let path = PathBuf::from(args[index + 1].as_str().unwrap());
+            assert!(path.is_dir() && !path.starts_with(&fixture.0));
+            Some(path)
+        } else {
+            None
+        };
+        pool.close_workspace(&fixture.0).await.unwrap();
+        if let Some(path) = data {
+            assert!(!path.exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn mixed_languages_isolate_missing_backends_and_python_configuration_changes() {
+    let fixture = Fixture::new("mixed-backend-isolation");
+    for (path, text) in [
+        ("python/pyproject.toml", ""),
+        ("python/main.py", "def alive(): pass\n"),
+        (
+            "python/sync-options.json",
+            r#"{"section":"python","semanticTools":true}"#,
+        ),
+        ("go/go.mod", "module fixture\ngo 1.20\n"),
+        ("go/main.go", "package fixture\n"),
+        ("java/Main.java", "class Main {}\n"),
+        ("java/pom.xml", "<project/>"),
+        ("web/package.json", "{}"),
+        ("web/main.ts", "export const alive = 1;\n"),
+    ] {
+        let path = fixture.0.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let mut config = fixture.config();
+    config
+        .servers
+        .insert(Language::Python, config.servers[&Language::Rust].clone());
+    config.servers.insert(
+        Language::TypeScript,
+        ServerConfig {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    for language in [Language::Go, Language::Java] {
+        config.servers.insert(
+            language,
+            ServerConfig {
+                command: Some("/oaklet-missing-backend".into()),
+                ..Default::default()
+            },
+        );
+    }
+    let manager = Arc::new(CodeIndexManager::new());
+    manager.open_workspace(&fixture.0, config.clone()).unwrap();
+    until(|| {
+        manager.status(&fixture.0).is_ok_and(|status| {
+            status.projects.len() == 5
+                && status.projects.iter().all(|project| {
+                    matches!(
+                        project.state,
+                        ServerState::Ready | ServerState::Disabled | ServerState::Failed(_)
+                    )
+                })
+        })
+    })
+    .await;
+    let (_owner, cancel) = CancelHandle::new();
+    manager
+        .query(
+            &fixture.0,
+            Query::Definition {
+                file: "python/main.py".into(),
+                line: 0,
+                column: 4,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let rust_generation = manager
+        .status(&fixture.0)
+        .unwrap()
+        .projects
+        .into_iter()
+        .find(|project| project.language == Language::Rust)
+        .unwrap()
+        .generation;
+    config.servers.get_mut(&Language::Python).unwrap().enabled = false;
+    manager.configure(config).unwrap();
+    until(|| {
+        manager.status(&fixture.0).is_ok_and(|status| {
+            !status.stale
+                && status.projects.iter().any(|project| {
+                    project.language == Language::Python && project.state == ServerState::Disabled
+                })
+        })
+    })
+    .await;
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .projects
+            .into_iter()
+            .find(|project| project.language == Language::Rust)
+            .unwrap()
+            .generation,
+        rust_generation
+    );
+    manager.query(&fixture.0, symbols(), &cancel).await.unwrap();
+    manager.shutdown().await;
 }
 fn symbols() -> Query {
     Query::Symbols {

@@ -127,8 +127,51 @@ pub(super) fn configuration(path: &Path) -> bool {
                 | ".gitignore"
                 | ".ignore"
                 | ".gitmodules"
+                | "pyrightconfig.json"
+                | "pyproject.toml"
+                | "setup.cfg"
+                | "setup.py"
+                | "requirements.txt"
+                | "poetry.lock"
+                | "uv.lock"
+                | "Pipfile"
+                | "Pipfile.lock"
+                | "go.work"
+                | "go.work.sum"
+                | "go.mod"
+                | "go.sum"
+                | "pom.xml"
+                | "build.gradle"
+                | "build.gradle.kts"
+                | "settings.gradle"
+                | "settings.gradle.kts"
+                | "gradle.properties"
+                | "gradle.lockfile"
+                | ".classpath"
+                | ".project"
         )
         || (name.starts_with("tsconfig") || name.starts_with("jsconfig")) && name.ends_with(".json")
+}
+pub(super) fn configuration_language(path: &Path) -> Option<Language> {
+    if rust_configuration(path) {
+        return Some(Language::Rust);
+    }
+    match path.file_name()?.to_str()? {
+        "pyrightconfig.json" | "pyproject.toml" | "setup.cfg" | "setup.py" | "requirements.txt"
+        | "poetry.lock" | "uv.lock" | "Pipfile" | "Pipfile.lock" => Some(Language::Python),
+        "go.work" | "go.work.sum" | "go.mod" | "go.sum" => Some(Language::Go),
+        "pom.xml"
+        | "build.gradle"
+        | "build.gradle.kts"
+        | "settings.gradle"
+        | "settings.gradle.kts"
+        | "gradle.properties"
+        | "gradle.lockfile"
+        | ".classpath"
+        | ".project" => Some(Language::Java),
+        ".gitignore" | ".ignore" | ".gitmodules" => None,
+        _ => Some(Language::TypeScript),
+    }
 }
 pub(super) fn rust_configuration(path: &Path) -> bool {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");

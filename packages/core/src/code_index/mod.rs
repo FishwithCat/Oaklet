@@ -33,13 +33,27 @@ use serde::{Deserialize, Serialize};
 pub enum Language {
     Rust,
     TypeScript,
+    Python,
+    Go,
+    Java,
 }
 
 impl Language {
+    const ALL: [Self; 5] = [
+        Self::Rust,
+        Self::TypeScript,
+        Self::Python,
+        Self::Go,
+        Self::Java,
+    ];
+
     fn for_file(path: &Path) -> Option<Self> {
         match path.extension()?.to_str()? {
             "rs" => Some(Self::Rust),
             "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Some(Self::TypeScript),
+            "py" | "pyi" => Some(Self::Python),
+            "go" => Some(Self::Go),
+            "java" => Some(Self::Java),
             _ => None,
         }
     }
@@ -50,3 +64,6 @@ mod tests;
 
 #[cfg(test)]
 mod lifecycle_tests;
+
+#[cfg(test)]
+mod language_tests;

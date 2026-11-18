@@ -6,7 +6,7 @@ export const DEFAULT_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
 export type CodeIndexConfig = {
   servers: Partial<
     Record<
-      "rust" | "typescript",
+      "rust" | "typescript" | "python" | "go" | "java",
       {
         enabled?: boolean;
         command?: string | null;

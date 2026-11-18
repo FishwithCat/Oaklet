@@ -1,6 +1,6 @@
 import type { CodeIndexConfig } from "./config";
 
-export type IndexLanguage = "rust" | "typescript";
+export type IndexLanguage = "rust" | "typescript" | "python" | "go" | "java";
 export type IndexProject = {
   root: string;
   language: IndexLanguage;

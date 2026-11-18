@@ -40,6 +40,7 @@ pub(super) struct ClientState {
 pub(super) struct LanguageServerSession {
     socket: ServerSocket,
     child: Child,
+    java_workspace: Option<JavaWorkspace>,
     #[cfg(unix)]
     group: crate::tools::ProcessGroupGuard,
     tasks: Vec<JoinHandle<()>>,
@@ -54,6 +55,36 @@ pub(super) struct LanguageServerSession {
     pub generation: u64,
 }
 
+struct JavaWorkspace(PathBuf);
+impl JavaWorkspace {
+    fn new() -> Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let mut directory = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "oaklet-jdtls-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match directory.create(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(backend(error)),
+            }
+        }
+    }
+}
+impl Drop for JavaWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 impl LanguageServerSession {
     pub async fn start(
         root: &Path,
@@ -66,9 +97,16 @@ impl LanguageServerSession {
     ) -> Result<Self> {
         let config = match language {
             Language::Rust => {
-                json!({"cargo": {"buildScripts": {"enable": false}}, "procMacro": {"enable": false}})
+                json!({"rust-analyzer": {"cargo": {"buildScripts": {"enable": false}}, "procMacro": {"enable": false}}})
             }
-            Language::TypeScript => json!({}),
+            Language::Python => json!({"python": {"pythonPath": command.python_interpreter}}),
+            // shortcut: Gradle dependency import runs build scripts; enable when project trust is supported.
+            Language::Java => json!({"java": {
+                "configuration": {"updateBuildConfiguration": "disabled"},
+                "import": {"gradle": {"enabled": false}, "maven": {"offline": {"enabled": true}}},
+                "autobuild": {"enabled": false}, "maven": {"downloadSources": false}
+            }}),
+            Language::TypeScript | Language::Go => json!({}),
         };
         let settings = config.clone();
         let watches = client.clone();
@@ -82,8 +120,7 @@ impl LanguageServerSession {
                     .iter()
                     .map(|item| {
                         let section = item.section.as_deref().unwrap_or("");
-                        let section = section.strip_prefix("rust-analyzer.").unwrap_or(section);
-                        if section.is_empty() || section == "rust-analyzer" {
+                        if section.is_empty() {
                             return config.clone();
                         }
                         section
@@ -145,15 +182,36 @@ impl LanguageServerSession {
             router
         });
         let mut process = Command::new(&command.program);
+        let java_workspace = if language == Language::Java {
+            Some(JavaWorkspace::new()?)
+        } else {
+            None
+        };
         process
             .args(&command.args)
             .current_dir(root)
             .env("RUSTUP_AUTO_INSTALL", "0")
             .env("CARGO_NET_OFFLINE", "true")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOPROXY", "off")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(directory) = &java_workspace {
+            process.arg("-data").arg(&directory.0);
+        }
+        if language == Language::Go {
+            let manifest = root.join("go.work");
+            process.env(
+                "GOWORK",
+                if manifest.is_file() {
+                    manifest.as_os_str()
+                } else {
+                    std::ffi::OsStr::new("off")
+                },
+            );
+        }
         #[cfg(unix)]
         process.process_group(0);
         let mut child = process.spawn().map_err(backend)?;
@@ -204,6 +262,7 @@ impl LanguageServerSession {
         let mut session = Self {
             socket,
             child,
+            java_workspace,
             #[cfg(unix)]
             group,
             tasks,
@@ -221,8 +280,12 @@ impl LanguageServerSession {
             .map_err(|_| backend("Invalid project URI"))?;
         let options = if language == Language::TypeScript {
             json!({"tsserver": {"path": command.typescript_sdk.as_ref().map(|path| path.join("tsserver.js"))}})
+        } else if language == Language::Rust {
+            config["rust-analyzer"].clone()
+        } else if language == Language::Java {
+            json!({"settings": config})
         } else {
-            config.clone()
+            json!({})
         };
         let initialized = session.request::<request::Initialize>(json!({
             "processId": std::process::id(), "rootUri": uri,
@@ -254,9 +317,7 @@ impl LanguageServerSession {
                 session
                     .socket
                     .notify::<notification::DidChangeConfiguration>(
-                        lsp_types::DidChangeConfigurationParams {
-                            settings: json!({"rust-analyzer": config}),
-                        },
+                        lsp_types::DidChangeConfigurationParams { settings: config },
                     )
                     .map_err(backend)?;
                 Ok(session)
@@ -631,6 +692,9 @@ impl LanguageServerSession {
                 Some("jsx") => "javascriptreact",
                 Some("js" | "mjs" | "cjs") => "javascript",
                 _ if self.language == Language::Rust => "rust",
+                _ if self.language == Language::Python => "python",
+                _ if self.language == Language::Go => "go",
+                _ if self.language == Language::Java => "java",
                 _ => "typescript",
             };
             if open_close {
@@ -717,6 +781,7 @@ impl LanguageServerSession {
         for task in &self.tasks {
             task.abort();
         }
+        self.java_workspace.take();
     }
 }
 
@@ -790,6 +855,7 @@ mod tests {
             version: "fake".into(),
             runtime_versions: vec![],
             typescript_sdk: None,
+            python_interpreter: None,
         };
         let (_owner, cancel) = CancelHandle::new();
         let mut session = LanguageServerSession::start(

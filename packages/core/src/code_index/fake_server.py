@@ -6,7 +6,7 @@ import sys
 import subprocess
 import time
 
-if "--version" in sys.argv:
+if "--version" in sys.argv or "version" in sys.argv:
     version = Path.cwd() / "backend-version"
     print(version.read_text() if version.exists() else "oaklet-fake-lsp 1")
     sys.exit(0)
@@ -58,16 +58,25 @@ while (message := read()) is not None:
     if method == "initialize":
         assert params["rootUri"] == root.as_uri() + "/", params
         assert params["capabilities"]["general"]["positionEncodings"] == ["utf-16", "utf-8", "utf-32"]
-        record("initialize", options=params["initializationOptions"])
+        record("initialize", options=params["initializationOptions"], args=sys.argv[1:], gowork=os.getenv("GOWORK"))
         initializing = message["id"]
         if (root / "hang-init").exists():
             continue
-        send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": "rust-analyzer"}]}})
+        send({"id": "config", "method": "workspace/configuration", "params": {"items": [{"section": options.get("section", "rust-analyzer")}]}})
     elif message.get("id") == "config":
         settings = message["result"][0]
-        assert settings["cargo"]["buildScripts"]["enable"] is False
-        assert settings["procMacro"]["enable"] is False
-        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": options.get("semanticTools", False), "workspaceSymbolProvider": options.get("semanticTools", False), "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
+        if options.get("section", "rust-analyzer") == "rust-analyzer":
+            assert settings["cargo"]["buildScripts"]["enable"] is False
+            assert settings["procMacro"]["enable"] is False
+        elif options["section"] == "java":
+            assert settings["import"]["gradle"]["enabled"] is False
+            assert settings["configuration"]["updateBuildConfiguration"] == "disabled"
+        elif options["section"] == "python":
+            assert "pythonPath" in settings
+        else:
+            assert settings in ({}, None)
+        record("configuration", section=options.get("section", "rust-analyzer"), settings=settings)
+        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": options.get("calls", options.get("semanticTools", False)), "workspaceSymbolProvider": options.get("semanticTools", False), "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
     elif method == "initialized":
         record("ready")
         send({"id": "watch-registration", "method": "client/registerCapability", "params": {"registrations": [{"id": "sources", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.rs"}, *([{"globPattern": "**/*.oaklet-data"}] if options.get("watchData") else [])]}}]}})
