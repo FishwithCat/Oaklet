@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md) 与步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md) 已完成，步骤 4–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md) 与步骤 4 的 [文件同步及实时更新](code-index-saved-files.md) 已完成，步骤 5–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -70,7 +70,7 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 | mod.rs / manager.rs / types.rs | 公共导出；CodeIndexManager、工作区打开关闭与查询路由；业务查询、状态和错误类型 |
 | discovery.rs | 项目清单发现、项目与语言归属、排除规则及扫描上限 |
 | language_servers.rs | LanguageServerManager、服务器实例注册、启动去重、资源调度、重试与回收 |
-| lsp.rs | 单实例 LanguageServerSession：async-lsp 客户端、子进程、初始化、能力、文档与位置编码转换 |
+| lsp.rs / documents.rs | 单实例 LanguageServerSession：async-lsp 客户端、子进程、初始化、能力与文档同步；有界磁盘读取、位置校验及编码转换 |
 | watch.rs | notify 监听、事件合并、文件与项目配置更新 |
 | ipc.rs | Tauri invoke、generate_handler! 与 command 实现的候选证据 |
 | cache.rs | 内存查询缓存、指纹与失效判定、读写持久缓存的编排；不再包装一个通用 CacheManager |
@@ -274,12 +274,14 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 4. 已保存文件同步与实时更新
 
-- [ ] 实现 watch.rs，每工作区一个 RecommendedWatcher，使用有界事件通道与 200ms 合并窗口；将项目发现和监听启用期间发生的变更纳入核对，避免启动时丢更新。
-- [ ] 查询前读取目标文件的磁盘内容，通过 LanguageServerManager 定位会话，由 LanguageServerSession 维护文档版本并发送 didOpen/didChange；兼容协商的全文或增量同步方式，删除时发送 didClose 并清理缓存。
-- [ ] 监听编辑器保存、Agent write/edit/patch、终端、Git 和外部编辑器的文件变化。原子保存、移动与删除按最终磁盘状态归一化，不要求逐个改写文件写入函数。
-- [ ] 处理服务器注册和注销的文件监听规则，发送匹配的 didChangeWatchedFiles；清单、tsconfig 和 ignore 变化触发相关项目重新发现或重新初始化。
-- [ ] 监听错误或队列溢出时标记可能过期，安排后台核对并支持重试；不在每次查询前全仓扫描，也不把文件通知送达视为服务器完成重新索引。
-- [ ] 校验输入路径和返回 URI，拒绝越界读取；支持 Unicode、CRLF 与服务器协商的位置编码转换。
+- [x] 实现 watch.rs，每工作区一个 RecommendedWatcher，使用有界事件通道与 200ms 合并窗口；将项目发现和监听启用期间发生的变更纳入核对，避免启动时丢更新。
+- [x] 查询前读取目标文件的磁盘内容，通过 LanguageServerManager 定位会话，由 LanguageServerSession 维护文档版本并发送 didOpen/didChange；兼容协商的全文或增量同步方式，删除时发送 didClose 并清理缓存。
+- [x] 监听编辑器保存、Agent write/edit/patch、终端、Git 和外部编辑器的文件变化。原子保存、移动与删除按最终磁盘状态归一化，不要求逐个改写文件写入函数。
+- [x] 处理服务器注册和注销的文件监听规则，发送匹配的 didChangeWatchedFiles；清单、tsconfig 和 ignore 变化触发相关项目重新发现或重新初始化。
+- [x] 监听错误或队列溢出时标记可能过期，安排后台核对并支持重试；不在每次查询前全仓扫描，也不把文件通知送达视为服务器完成重新索引。
+- [x] 校验输入路径和返回 URI，拒绝越界读取；支持 Unicode、CRLF 与服务器协商的位置编码转换。
+
+实现与验证：[文件同步及实时更新](code-index-saved-files.md)。本阶段维护有界会话文档与文件清单，SQLite 内容 hash 和查询缓存仍在步骤 5–6 实施。
 
 完成标准：预先查询过的符号及其跨文件引用在保存、删除和重命名后更新；未保存编辑不进入结果；外部变更无需重开工程即可反映。真实服务器记录更新延迟，超时或不确定状态不返回为成功空集。
 
@@ -393,4 +395,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d；步骤 4–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5–12 待实施。
