@@ -1024,6 +1024,7 @@ async fn real_project_sqlite_restore_probe() {
     let mut files = 0;
     let mut extracted = 0;
     let mut snapshots = Vec::new();
+    let mut query_files = Vec::new();
     for pass in 0..2 {
         let started = Instant::now();
         let store = crate::store::Store::open(&path).unwrap();
@@ -1060,11 +1061,17 @@ async fn real_project_sqlite_restore_probe() {
                 .map(|p| (&p.language, &p.state))
                 .collect::<Vec<_>>()
         );
-        manager.shutdown().await;
         let coverage = coverage.expect("real project verification timed out");
         assert!(coverage.files > 0 && coverage.extracted_files > 0);
         for project in store.index_projects(&root.to_string_lossy()).unwrap() {
             let records = store.index_files(project.id).unwrap();
+            if pass == 0 {
+                let file = records
+                    .iter()
+                    .find(|f| f.extracted_hash.is_some())
+                    .expect("each language needs a symbol query target");
+                query_files.push(root.join(&file.path));
+            }
             let count = records
                 .iter()
                 .filter(|f| f.extracted_hash.is_some())
@@ -1082,6 +1089,34 @@ async fn real_project_sqlite_restore_probe() {
                 "real backend must extract symbols for each project language"
             );
         }
+        let (_owner, cancel) = CancelHandle::new();
+        for file in &query_files {
+            let query = Query::Symbols {
+                file: file.to_string_lossy().into_owned(),
+            };
+            let result = manager.query(&root, query.clone(), &cancel).await.unwrap();
+            let expected = if pass == 0 {
+                QuerySource::FileIndex
+            } else {
+                QuerySource::Sqlite
+            };
+            assert_eq!(result.source, expected);
+            assert!(
+                result.coverage.file_verified
+                    && result.coverage.project_verified
+                    && !result.completeness_known
+            );
+            assert_eq!(
+                manager.query(&root, query, &cancel).await.unwrap().source,
+                QuerySource::Memory
+            );
+            eprintln!(
+                "pass={pass} symbol_query_source={:?} then=Memory file={}",
+                result.source,
+                file.display()
+            );
+        }
+        manager.shutdown().await;
         assert!(!coverage.ipc_covered);
         if pass == 0 {
             files = coverage.files;
@@ -1118,4 +1153,358 @@ async fn real_project_sqlite_restore_probe() {
         );
     }
     std::fs::remove_dir_all(database).unwrap();
+}
+
+#[tokio::test]
+async fn verified_symbols_hit_index_memory_sqlite_and_rebuild_only_the_current_workspace() {
+    let a = Fixture::new("index-query-cache-a");
+    let b = Fixture::new("index-query-cache-b");
+    let database = temp_root("index-query-cache-db");
+    let path = database.join("oaklet.db");
+    let store = crate::store::Store::open(&path).unwrap();
+    store
+        .create_session("chat", &a.0.to_string_lossy(), 1)
+        .unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    for f in [&a, &b] {
+        manager.open_workspace(&f.0, f.config()).unwrap();
+        persisted(&manager, &f.0, 1).await;
+    }
+    let (_owner, cancel) = CancelHandle::new();
+    let first = manager.query(&a.0, symbols(), &cancel).await.unwrap();
+    assert_eq!(first.source, QuerySource::FileIndex);
+    assert!(first.coverage.file_verified && first.coverage.project_verified);
+    assert!(!first.completeness_known && !first.coverage.semantic_ready);
+    let absolute = Query::Symbols {
+        file: a.0.join("src/./lib.rs").to_string_lossy().into_owned(),
+    };
+    assert_eq!(
+        manager.query(&a.0, absolute, &cancel).await.unwrap().source,
+        QuerySource::Memory
+    );
+    assert_eq!(a.count("symbols"), 1);
+    manager.shutdown().await;
+    drop(manager);
+    drop(store);
+    let store = crate::store::Store::open(&path).unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    for f in [&a, &b] {
+        manager.open_workspace(&f.0, f.config()).unwrap();
+        persisted(&manager, &f.0, 1).await;
+    }
+    assert_eq!(
+        manager
+            .query(&a.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::Sqlite
+    );
+    assert_eq!(
+        manager
+            .query(&a.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::Memory
+    );
+    assert_eq!(a.count("symbols"), 1);
+    manager.close_workspace(&a.0);
+    manager.drain().await;
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute("UPDATE code_index_queries SET payload='invalid derived JSON' WHERE project_id IN (SELECT id FROM code_index_projects WHERE workspace=?1)", [a.0.to_string_lossy().as_ref()]).unwrap();
+    manager.open_workspace(&a.0, a.config()).unwrap();
+    persisted(&manager, &a.0, 1).await;
+    assert_eq!(
+        manager
+            .query(&a.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::FileIndex
+    );
+    assert_eq!(
+        a.count("symbols"),
+        1,
+        "a corrupt query row must not discard the valid file index"
+    );
+    let b_before = store.index_projects(&b.0.to_string_lossy()).unwrap()[0]
+        .snapshot
+        .clone();
+    let bytes = std::fs::read(a.0.join("src/lib.rs")).unwrap();
+    manager.rebuild(&a.0).await.unwrap();
+    persisted(&manager, &a.0, 1).await;
+    assert_eq!(a.count("symbols"), 2);
+    assert_eq!(
+        manager
+            .query(&a.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::FileIndex
+    );
+    assert_eq!(
+        store.index_projects(&b.0.to_string_lossy()).unwrap()[0].snapshot,
+        b_before
+    );
+    assert_eq!(b.count("symbols"), 1);
+    assert_eq!(std::fs::read(a.0.join("src/lib.rs")).unwrap(), bytes);
+    assert!(store.get_session("chat").unwrap().is_some());
+    manager.shutdown().await;
+    a.assert_reaped();
+    b.assert_reaped();
+    std::fs::remove_dir_all(database).unwrap();
+}
+
+#[tokio::test]
+async fn unavailable_backend_returns_only_byte_verified_symbols_without_semantic_cache() {
+    let fixture = Fixture::new("index-query-offline");
+    let store = crate::store::Store::in_memory().unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    manager.shutdown().await;
+    let manager = Arc::new(CodeIndexManager::with_store(store));
+    let mut config = fixture.config();
+    config.servers.get_mut(&Language::Rust).unwrap().command =
+        Some("/nonexistent-oaklet-language-server".into());
+    manager.open_workspace(&fixture.0, config).unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    let (_owner, cancel) = CancelHandle::new();
+    let result = manager.query(&fixture.0, symbols(), &cancel).await.unwrap();
+    assert_eq!(result.source, QuerySource::FileIndex);
+    assert!(result.coverage.file_verified);
+    assert!(!result.coverage.project_verified && !result.coverage.semantic_ready);
+    assert!(matches!(
+        manager.query(&fixture.0, definition(0), &cancel).await,
+        Err(IndexError::Backend(_))
+    ));
+    assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 0);
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn cache_write_failure_preserves_live_results_and_semantic_queries_always_bypass_cache() {
+    let fixture = Fixture::new("index-query-write-failure");
+    let database = temp_root("index-query-write-failure-db");
+    let path = database.join("oaklet.db");
+    let store = crate::store::Store::open(&path).unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("query_write_failure.sql"))
+        .unwrap();
+    connection
+        .execute("DELETE FROM code_index_symbols", [])
+        .unwrap();
+    connection
+        .execute("UPDATE code_index_files SET extracted_hash=NULL", [])
+        .unwrap();
+    let (_owner, cancel) = CancelHandle::new();
+    let result = manager.query(&fixture.0, symbols(), &cancel).await.unwrap();
+    assert_eq!(result.source, QuerySource::Live);
+    assert!(result.coverage.file_verified && !result.completeness_known);
+    assert!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .cache
+            .error
+            .unwrap()
+            .contains("injected query cache write failure")
+    );
+    assert_eq!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::Memory
+    );
+    std::fs::write(fixture.0.join("ready-definition"), "").unwrap();
+    for _ in 0..2 {
+        let result = manager
+            .query(&fixture.0, definition(0), &cancel)
+            .await
+            .unwrap();
+        assert_eq!(result.source, QuerySource::Live);
+        assert!(!result.completeness_known && !result.coverage.semantic_ready);
+    }
+    assert_eq!(fixture.count("query"), 2);
+    assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 1);
+    manager.shutdown().await;
+    std::fs::remove_dir_all(database).unwrap();
+}
+
+#[tokio::test]
+async fn changed_contents_and_backend_versions_cannot_reuse_old_query_results() {
+    let fixture = Fixture::new("index-query-invalidation");
+    let store = crate::store::Store::in_memory().unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    let (_owner, cancel) = CancelHandle::new();
+    assert_eq!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::FileIndex
+    );
+    assert_eq!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::Memory
+    );
+    let source = fixture.0.join("src/lib.rs");
+    let metadata = std::fs::metadata(&source).unwrap();
+    let original = std::fs::read_to_string(&source).unwrap();
+    // Content is authoritative even before notify can deliver this equal-size/equal-mtime save.
+    std::fs::write(&source, original.replace("alive", "other")).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+        .unwrap();
+    let immediate = manager.query(&fixture.0, symbols(), &cancel).await;
+    assert!(!matches!(
+        immediate,
+        Ok(QueryResult {
+            source: QuerySource::Memory | QuerySource::Sqlite,
+            ..
+        })
+    ));
+    until(|| manager.status(&fixture.0).unwrap().revision > 0).await;
+    persisted(&manager, &fixture.0, 1).await;
+    assert_ne!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::Memory
+    );
+    manager.shutdown().await;
+    let old = store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0]
+        .fingerprint
+        .clone();
+    std::fs::write(fixture.0.join("backend-version"), "oaklet-fake-lsp 2").unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    assert_ne!(
+        old,
+        store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0].fingerprint
+    );
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .persistence
+            .unwrap()
+            .reused_files,
+        0
+    );
+    assert_eq!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::FileIndex
+    );
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn empty_and_changed_during_query_responses_are_never_cached() {
+    let fixture = Fixture::new("index-query-late");
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let (_owner, cancel) = CancelHandle::new();
+    std::fs::write(fixture.0.join("empty-symbols"), "").unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            manager
+                .query(&fixture.0, symbols(), &cancel)
+                .await
+                .unwrap_err(),
+            IndexError::NotReady
+        );
+    }
+    assert_eq!(fixture.count("symbols"), 2);
+    assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 0);
+    std::fs::remove_file(fixture.0.join("empty-symbols")).unwrap();
+    std::fs::write(fixture.0.join("slow-symbols"), "").unwrap();
+    let pending = manager.query(&fixture.0, symbols(), &cancel);
+    let change = async {
+        until(|| fixture.count("symbols") == 3).await;
+        std::fs::write(fixture.0.join("src/lib.rs"), "pub fn newer() {}\n").unwrap();
+    };
+    let (result, _) = tokio::join!(pending, change);
+    assert_eq!(result.unwrap_err(), IndexError::NotReady);
+    assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 0);
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn rebuild_finishes_after_caller_drops_and_rejects_the_previous_generations_query() {
+    use futures_util::FutureExt;
+    let fixture = Fixture::new("index-query-rebuild-race");
+    let store = crate::store::Store::in_memory().unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    let project = store
+        .index_projects(&fixture.0.to_string_lossy())
+        .unwrap()
+        .remove(0);
+    let mut file = store.index_files(project.id).unwrap().remove(0);
+    file.extracted_hash = None;
+    file.symbols.clear();
+    store.index_replace_file(project.id, &file).unwrap();
+    std::fs::write(fixture.0.join("slow-symbols"), "").unwrap();
+    let (_owner, cancel) = CancelHandle::new();
+    let pending = manager.query(&fixture.0, symbols(), &cancel);
+    let rebuild = async {
+        until(|| fixture.count("symbols") == 2).await;
+        std::fs::remove_file(fixture.0.join("slow-symbols")).unwrap();
+        // Poll once, then abandon the caller: the owned transition must still finish.
+        assert!(manager.rebuild(&fixture.0).now_or_never().is_none());
+        until(|| fixture.count("spawn") == 2).await;
+        persisted(&manager, &fixture.0, 1).await;
+    };
+    let (result, _) = tokio::join!(pending, rebuild);
+    assert_eq!(result.unwrap_err(), IndexError::Closed);
+    assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 0);
+    assert_eq!(
+        manager
+            .query(&fixture.0, symbols(), &cancel)
+            .await
+            .unwrap()
+            .source,
+        QuerySource::FileIndex
+    );
+    manager.shutdown().await;
+    fixture.assert_reaped();
 }

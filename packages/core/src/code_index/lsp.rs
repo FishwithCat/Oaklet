@@ -172,11 +172,14 @@ impl LanguageServerSession {
         let running = alive.clone();
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let tail = stderr.clone();
+        let loop_socket = socket.clone();
         let tasks = vec![
             tokio::spawn(async move {
                 let _ = super::framing::forward_bounded(stdout, writer).await;
             }),
             tokio::spawn(async move {
+                // Keep the internal channel alive until the aborted protocol task actually exits.
+                let _socket = loop_socket;
                 let _ = mainloop
                     .run_buffered(reader.compat(), stdin.compat_write())
                     .await;
@@ -329,8 +332,8 @@ impl LanguageServerSession {
                 Err(_) => Err(IndexError::Timeout),
             };
         let result = result.and_then(|result| {
-            let text = &self.documents.get(path).ok_or(IndexError::NotReady)?.1;
-            Ok((result, blake3::hash(text.as_bytes()).to_hex().to_string()))
+            let hash = result.content_hash.clone().ok_or(IndexError::NotReady)?;
+            Ok((result, hash))
         });
         if !already_open {
             self.close_document(path)?;
@@ -471,6 +474,9 @@ impl LanguageServerSession {
                 let mut data = QueryData::Calls(calls);
                 super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
                 return Ok(QueryResult {
+                    content_hash: None,
+                    source: super::QuerySource::Live,
+                    coverage: Default::default(),
                     data,
                     generation: self.generation,
                     truncated: items.as_array().is_some_and(|items| items.len() > 32),
@@ -480,6 +486,15 @@ impl LanguageServerSession {
         };
         super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
         Ok(QueryResult {
+            content_hash: if matches!(query, Query::Symbols { .. }) {
+                self.documents
+                    .get(path)
+                    .map(|(_, text)| blake3::hash(text.as_bytes()).to_hex().to_string())
+            } else {
+                None
+            },
+            source: super::QuerySource::Live,
+            coverage: Default::default(),
             data,
             generation: self.generation,
             truncated: false,
@@ -792,6 +807,13 @@ mod tests {
             Err(IndexError::Unsupported(_))
         ));
         session.finish().await;
+        let tasks = std::mem::take(&mut session.tasks);
+        drop(session);
+        for task in tasks {
+            if let Err(error) = task.await {
+                assert!(error.is_cancelled(), "protocol task panicked: {error}");
+            }
+        }
         let events = std::fs::read_to_string(root.join("events.jsonl")).unwrap();
         assert!(events.contains("\"event\": \"cancel\""));
         std::fs::remove_dir_all(root).unwrap();

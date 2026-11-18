@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 import sys
 import subprocess
+import time
 
 if "--version" in sys.argv:
-    print("oaklet-fake-lsp 1")
+    version = Path.cwd() / "backend-version"
+    print(version.read_text() if version.exists() else "oaklet-fake-lsp 1")
     sys.exit(0)
 
 root = Path.cwd()
@@ -107,6 +109,9 @@ while (message := read()) is not None:
             os._exit(7)
         request_id = message["id"]
         record("query", id=request_id)
+        if (root / "ready-definition").exists():
+            send({"id": request_id, "result": {"uri": params["textDocument"]["uri"], "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}})
+            continue
         send({"method": "$/progress", "params": {"token": "scan", "value": {"kind": "begin", "title": "Analyzing saved sources"}}})
         late[request_id] = params["textDocument"]["uri"]
         send({"id": f"edit-{request_id}", "method": "workspace/applyEdit", "params": {"edit": {"changes": {}}}})
@@ -117,6 +122,11 @@ while (message := read()) is not None:
         record("cancel", id=params["id"])
     elif method == "textDocument/documentSymbol":
         record("symbols", uri=params["textDocument"]["uri"])
+        if (root / "slow-symbols").exists():
+            time.sleep(0.5)
+        if (root / "empty-symbols").exists():
+            send({"id": message["id"], "result": []})
+            continue
         if (root / "hang-symbols").exists():
             continue
         if (root / "method-missing").exists():

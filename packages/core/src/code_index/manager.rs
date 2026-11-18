@@ -15,6 +15,9 @@ use super::{
 };
 use crate::tools::{Cancel, CancelHandle, Workspace};
 
+#[path = "cache.rs"]
+mod cache;
+
 #[path = "persistence.rs"]
 mod persistence;
 
@@ -36,8 +39,9 @@ struct WorkspaceEntry {
 
 /// Shared Rust service; no protocol or model-specific types cross this boundary.
 pub struct CodeIndexManager {
+    cache: Mutex<cache::QueryCache>,
     store: Option<crate::store::Store>,
-    workspaces: Mutex<BTreeMap<PathBuf, WorkspaceEntry>>,
+    workspaces: Arc<Mutex<BTreeMap<PathBuf, WorkspaceEntry>>>,
     servers: Arc<LanguageServerManager>,
     next: AtomicU64,
     shutting_down: AtomicBool,
@@ -54,8 +58,9 @@ impl CodeIndexManager {
     /// Volatile service for protocol probes; desktop setup injects the shared Store.
     pub fn new() -> Self {
         Self {
+            cache: Mutex::new(cache::QueryCache::default()),
             store: None,
-            workspaces: Mutex::new(BTreeMap::new()),
+            workspaces: Arc::new(Mutex::new(BTreeMap::new())),
             servers: LanguageServerManager::new(),
             next: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
@@ -208,6 +213,7 @@ impl CodeIndexManager {
             .filter(|entry| entry.generation == generation)
         {
             entry.stale = true;
+            self.cache.lock().unwrap().invalidate(workspace);
             entry.index_dirty = None;
             if let Some(index) = &mut entry.persistence {
                 index.verifying = true;
@@ -346,6 +352,7 @@ impl CodeIndexManager {
                 .ok_or(IndexError::Closed)?;
             entry.stale = true;
             entry.revision += 1;
+            self.cache.lock().unwrap().invalidate(workspace);
             if batch.reconcile || batch.error.is_some() {
                 entry.index_dirty = None;
             } else if let Some(dirty) = &mut entry.index_dirty {
@@ -432,6 +439,7 @@ impl CodeIndexManager {
         let workspaces = self.workspaces.lock().unwrap();
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
         Ok(WorkspaceStatus {
+            cache: self.cache.lock().unwrap().status(workspace),
             persistence: entry.persistence.clone(),
             discovering: entry.discovery.is_none(),
             revision: entry.revision,
@@ -494,7 +502,7 @@ impl CodeIndexManager {
         ))
     }
 
-    pub async fn query(
+    async fn query_live(
         &self,
         workspace: &Path,
         query: Query,
@@ -583,6 +591,7 @@ impl CodeIndexManager {
                         .register(workspace, &project.root, project.language, command);
                 *key = Some(registered.clone());
                 entry.revision += 1;
+                self.cache.lock().unwrap().invalidate(workspace);
                 if let Some(index) = &mut entry.persistence {
                     index.verifying = true;
                 }
@@ -596,6 +605,33 @@ impl CodeIndexManager {
     pub fn close_workspace(&self, workspace: &Path) {
         let mut workspaces = self.workspaces.lock().unwrap();
         if let Some(entry) = workspaces.remove(workspace) {
+            if let Some(store) = self.store.clone() {
+                let (entries, root, at) = (
+                    self.workspaces.clone(),
+                    workspace.to_path_buf(),
+                    cache::now(),
+                );
+                self.closing
+                    .lock()
+                    .unwrap()
+                    .push(tauri::async_runtime::spawn(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            let entries = entries.lock().unwrap();
+                            store.index_touch(&root.to_string_lossy(), at)?;
+                            let active = entries
+                                .keys()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .collect::<Vec<_>>();
+                            store.index_prune(&active, cache::now(), cache::DISK_BYTES)
+                        })
+                        .await;
+                        if !matches!(result, Ok(Ok(()))) {
+                            crate::log::key(format_args!(
+                                "[oaklet] Could not clean closed code index: {result:?}"
+                            ));
+                        }
+                    }));
+            }
             entry.owner.cancel();
             if let Some(worker) = entry.index_worker {
                 self.closing.lock().unwrap().push(worker);
@@ -604,6 +640,7 @@ impl CodeIndexManager {
                 self.closing.lock().unwrap().push(worker);
             }
         }
+        self.cache.lock().unwrap().invalidate(workspace);
         let cleanup = self.servers.close_workspace(workspace);
         self.closing.lock().unwrap().push(cleanup);
     }

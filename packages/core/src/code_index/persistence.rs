@@ -31,6 +31,7 @@ fn inventory(
     manager: &CodeIndexManager,
     root: &Path,
     generation: u64,
+    previous: &[ProjectRecord],
 ) -> Result<Inventory, IndexError> {
     let entries = manager.workspaces.lock().unwrap();
     let entry = entries
@@ -52,6 +53,12 @@ fn inventory(
                 .map(|key| ((status.root.clone(), status.language), key))
         })
         .collect::<BTreeMap<_, _>>();
+    let unavailable: BTreeSet<_> = entry
+        .projects
+        .iter()
+        .filter(|(s, k)| k.is_none() && matches!(s.state, ServerState::Failed(_)))
+        .map(|(s, _)| (s.root.clone(), s.language))
+        .collect();
     let fallback =
         blake3::hash(&serde_json::to_vec(&entry.config).expect("serializable configuration"))
             .to_hex()
@@ -72,6 +79,18 @@ fn inventory(
             let fingerprint = key
                 .as_ref()
                 .map(|k| k.fingerprint.clone())
+                .or_else(|| {
+                    // An unavailable backend may retain byte-verified symbols, never semantic query validity.
+                    unavailable
+                        .contains(&(p.root.clone(), p.language))
+                        .then(|| {
+                            previous
+                                .iter()
+                                .find(|old| old.root == p.root && old.language == p.language)
+                                .map(|old| old.fingerprint.clone())
+                        })
+                        .flatten()
+                })
                 .unwrap_or_else(|| fallback.clone());
             let files = inputs
                 .iter()
@@ -116,7 +135,7 @@ fn current(manager: &CodeIndexManager, root: &Path, generation: u64, revision: u
 }
 
 /// Check generation under the same workspace lock as the short write, excluding late commits after close.
-async fn write<T: Send + 'static>(
+pub(super) async fn write<T: Send + 'static>(
     manager: &Arc<CodeIndexManager>,
     store: &Store,
     root: &Path,
@@ -218,9 +237,14 @@ pub(super) async fn run(
         if !pending {
             continue;
         }
-        let (scanner, directory) = (manager.clone(), root.clone());
-        let scanned =
-            tokio::task::spawn_blocking(move || inventory(&scanner, &directory, generation)).await;
+        let (scanner, directory, database) = (manager.clone(), root.clone(), store.clone());
+        let scanned = tokio::task::spawn_blocking(move || {
+            let previous = database
+                .index_projects(&directory.to_string_lossy())
+                .unwrap_or_default();
+            inventory(&scanner, &directory, generation, &previous)
+        })
+        .await;
         let inputs = match scanned.unwrap_or_else(|e| Err(IndexError::Backend(e.to_string()))) {
             Ok(inputs) if completed != Some(inputs.revision) => inputs,
             Ok(_) | Err(IndexError::NotReady) => continue,
@@ -515,6 +539,7 @@ async fn reconcile(
         Ok(())
     })
     .await?;
+    super::cache::prune(manager, store).await?;
     status(manager, root, generation, Some(revision), |s| {
         s.extracting = false;
         for p in &mut s.projects {

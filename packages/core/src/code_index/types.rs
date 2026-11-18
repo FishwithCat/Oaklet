@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum Query {
     Symbols {
         file: String,
@@ -54,27 +54,56 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
     pub name: String,
     pub target: Location,
     pub sites: Vec<Location>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum QueryData {
     Symbols(Vec<Symbol>),
     Locations(Vec<Location>),
     Calls(Vec<Call>),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueryResult {
+    #[serde(skip)]
+    pub(crate) content_hash: Option<String>,
+    pub source: QuerySource,
+    pub coverage: QueryCoverage,
     pub data: QueryData,
     pub generation: u64,
     pub truncated: bool,
     /// Protocol initialization cannot establish semantic completeness.
     pub completeness_known: bool,
+}
+
+/// A cached symbol list can have verified bytes without complete semantic coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuerySource {
+    Live,
+    Memory,
+    Sqlite,
+    FileIndex,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct QueryCoverage {
+    pub file_verified: bool,
+    pub project_verified: bool,
+    pub semantic_ready: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CacheStatus {
+    pub entries: usize,
+    pub bytes: usize,
+    pub error: Option<String>,
+    pub semantic_cache_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -129,6 +158,7 @@ pub struct ProjectStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatus {
+    pub cache: CacheStatus,
     pub persistence: Option<PersistenceStatus>,
     pub revision: u64,
     pub stale: bool,

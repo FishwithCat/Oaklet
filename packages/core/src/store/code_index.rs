@@ -108,6 +108,8 @@ impl Store {
                     .map_err(error)?;
             }
             tx.execute("INSERT INTO code_index_projects(workspace,root,language,fingerprint,format_version,revision,snapshot,verified,last_access) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(workspace,root,language) DO UPDATE SET fingerprint=excluded.fingerprint,format_version=excluded.format_version,revision=excluded.revision,snapshot=excluded.snapshot,verified=excluded.verified,last_access=excluded.last_access", params![workspace,project.root.to_string_lossy(),language,project.fingerprint,FORMAT,project.revision,project.snapshot,project.verified,now_ms()]).map_err(error)?;
+            // A new snapshot invalidates every cross-file query, even when file membership is stable.
+            tx.execute("DELETE FROM code_index_queries WHERE project_id=(SELECT id FROM code_index_projects WHERE workspace=?1 AND root=?2 AND language=?3) AND snapshot<>?4", params![workspace, project.root.to_string_lossy(), language, project.snapshot]).map_err(error)?;
             let id = old.map_or_else(|| tx.last_insert_rowid(), |v| v.0);
             let mut stmt = tx
                 .prepare("SELECT id,path FROM code_index_files WHERE project_id=?1")
@@ -141,10 +143,26 @@ impl Store {
     }
 
     pub(crate) fn index_files(&self, project: i64) -> Result<Vec<FileRecord>, String> {
+        self.index_read_files(project, None)
+    }
+
+    pub(crate) fn index_file(
+        &self,
+        project: i64,
+        path: &str,
+    ) -> Result<Option<FileRecord>, String> {
+        Ok(self.index_read_files(project, Some(path))?.pop())
+    }
+
+    fn index_read_files(
+        &self,
+        project: i64,
+        path: Option<&str>,
+    ) -> Result<Vec<FileRecord>, String> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id,path,size,mtime,content_hash,extracted_hash,symbols_state,evidence_state FROM code_index_files WHERE project_id=?1 ORDER BY path").map_err(error)?;
+        let mut stmt = conn.prepare("SELECT id,path,size,mtime,content_hash,extracted_hash,symbols_state,evidence_state FROM code_index_files WHERE project_id=?1 AND (?2 IS NULL OR path=?2) ORDER BY path").map_err(error)?;
         let rows = stmt
-            .query_map([project], |r| {
+            .query_map(params![project, path], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     FileRecord {
@@ -265,6 +283,123 @@ impl Store {
             .map_err(error)
     }
 
+    pub(crate) fn index_query(
+        &self,
+        key: &str,
+        project: &ProjectRecord,
+        now: i64,
+    ) -> Result<Option<(String, i64)>, String> {
+        let conn = self.connection()?;
+        let payload = conn.query_row("SELECT q.payload,q.created_at FROM code_index_queries q JOIN code_index_projects p ON p.id=q.project_id WHERE q.key=?1 AND q.project_id=?2 AND q.snapshot=?3 AND q.fingerprint=?4 AND q.format_version=?5 AND q.created_at>?6 AND q.created_at<=?7 AND length(CAST(q.payload AS BLOB))<=16777216 AND p.verified=1 AND p.snapshot=q.snapshot AND p.fingerprint=q.fingerprint", params![key, project.id, project.snapshot, project.fingerprint, FORMAT, now - 600_000, now], |r| Ok((r.get(0)?,r.get(1)?))).optional().map_err(error)?;
+        if payload.is_some() {
+            conn.execute(
+                "UPDATE code_index_queries SET last_access=?2 WHERE key=?1",
+                params![key, now],
+            )
+            .map_err(error)?;
+            conn.execute(
+                "UPDATE code_index_projects SET last_access=?2 WHERE id=?1",
+                params![project.id, now],
+            )
+            .map_err(error)?;
+        }
+        Ok(payload)
+    }
+
+    pub(crate) fn index_put_query(
+        &self,
+        key: &str,
+        project: &ProjectRecord,
+        payload: &str,
+        now: i64,
+    ) -> Result<(), String> {
+        self.connection()?.execute("INSERT OR REPLACE INTO code_index_queries(key,project_id,snapshot,fingerprint,format_version,payload,created_at,last_access) SELECT ?1,id,snapshot,fingerprint,format_version,?3,?4,?4 FROM code_index_projects WHERE id=?2 AND revision=?5 AND snapshot=?6 AND fingerprint=?7 AND verified=1 AND format_version=?8", params![key, project.id, payload, now, project.revision, project.snapshot, project.fingerprint, FORMAT]).map(|_| ()).map_err(error)
+    }
+
+    pub(crate) fn index_remove_query(&self, key: &str) -> Result<(), String> {
+        self.connection()?
+            .execute("DELETE FROM code_index_queries WHERE key=?1", [key])
+            .map(|_| ())
+            .map_err(error)
+    }
+
+    /// Logical bytes only: never VACUUM the shared database or evict an open workspace's files.
+    pub(crate) fn index_prune(
+        &self,
+        active: &[String],
+        now: i64,
+        limit: i64,
+    ) -> Result<(), String> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction().map_err(error)?;
+        tx.execute(
+            "DELETE FROM code_index_queries WHERE created_at<=?1 OR created_at>?2",
+            params![now - 600_000, now],
+        )
+        .map_err(error)?;
+        let closed: Vec<(String, i64)> = {
+            let mut stmt = tx.prepare("SELECT workspace,MAX(last_access) FROM code_index_projects GROUP BY workspace ORDER BY MAX(last_access)").map_err(error)?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(error)?
+        };
+        for (workspace, access) in &closed {
+            if !active.contains(workspace) && *access < now - 30 * 86_400_000 {
+                tx.execute(
+                    "DELETE FROM code_index_projects WHERE workspace=?1",
+                    [workspace],
+                )
+                .map_err(error)?;
+            }
+        }
+        let bytes = |tx: &rusqlite::Transaction<'_>| -> Result<i64, String> {
+            tx.query_row("SELECT (SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM code_index_queries)+(SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM code_index_symbols)+(SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) FROM code_index_evidence)+(SELECT COALESCE(SUM(length(CAST(path AS BLOB))+length(content_hash)+COALESCE(length(extracted_hash),0)+length(symbols_state)+length(evidence_state)+32),0) FROM code_index_files)+(SELECT COALESCE(SUM(length(CAST(workspace AS BLOB))+length(CAST(root AS BLOB))+length(fingerprint)+length(snapshot)+64),0) FROM code_index_projects)", [], |r| r.get(0)).map_err(error)
+        };
+        let mut total = bytes(&tx)?;
+        if total > limit {
+            let queries: Vec<(String, i64)> = {
+                let mut stmt = tx.prepare("SELECT key,length(CAST(payload AS BLOB)) FROM code_index_queries ORDER BY last_access,key").map_err(error)?;
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(error)?
+                    .collect::<Result<_, _>>()
+                    .map_err(error)?
+            };
+            for (key, size) in queries {
+                if total <= limit {
+                    break;
+                }
+                tx.execute("DELETE FROM code_index_queries WHERE key=?1", [key])
+                    .map_err(error)?;
+                total -= size;
+            }
+            for (workspace, _) in closed {
+                if total <= limit {
+                    break;
+                }
+                if !active.contains(&workspace) {
+                    tx.execute(
+                        "DELETE FROM code_index_projects WHERE workspace=?1",
+                        [workspace],
+                    )
+                    .map_err(error)?;
+                    total = bytes(&tx)?;
+                }
+            }
+        }
+        tx.commit().map_err(error)
+    }
+
+    pub(crate) fn index_touch(&self, workspace: &str, at: i64) -> Result<(), String> {
+        self.connection()?
+            .execute(
+                "UPDATE code_index_projects SET last_access=MAX(last_access,?2) WHERE workspace=?1",
+                params![workspace, at],
+            )
+            .map(|_| ())
+            .map_err(error)
+    }
+
     pub(crate) fn index_clear(&self, workspace: &str) -> Result<(), String> {
         self.connection()?
             .execute(
@@ -375,6 +510,90 @@ mod tests {
         assert!(store.index_projects("/a").unwrap().is_empty());
         assert_eq!(store.index_projects("/b").unwrap().len(), 1);
         assert_eq!(store.get_session("chat").unwrap().unwrap().workspace, "/a");
+    }
+    #[test]
+    fn queries_expire_without_renewing_and_reject_stale_snapshots_environments_and_late_writes() {
+        let store = Store::in_memory().unwrap();
+        let mut p = store
+            .index_inventory("/a", &[(project("/a"), vec![])])
+            .unwrap()
+            .remove(0);
+        store.index_put_query("key", &p, "payload", 1000).unwrap();
+        assert!(
+            store.index_query("key", &p, 1000).unwrap().is_none(),
+            "unverified projects cannot accept cached queries"
+        );
+        store.index_verified(p.id, p.revision, true).unwrap();
+        store.index_put_query("key", &p, "payload", 1000).unwrap();
+        assert_eq!(
+            store.index_query("key", &p, 600_999).unwrap().unwrap(),
+            ("payload".into(), 1000)
+        );
+        assert!(store.index_query("key", &p, 601_000).unwrap().is_none());
+        assert!(store.index_query("key", &p, 999).unwrap().is_none());
+        p.snapshot = "new".into();
+        p.revision += 1;
+        store.index_inventory("/a", &[(p.clone(), vec![])]).unwrap();
+        assert!(store.index_query("key", &p, 1000).unwrap().is_none());
+        let old = project("/a");
+        store
+            .index_put_query("late", &ProjectRecord { id: p.id, ..old }, "late", 1000)
+            .unwrap();
+        assert!(store.index_query("late", &p, 1000).unwrap().is_none());
+        store.index_verified(p.id, p.revision, true).unwrap();
+        store.index_put_query("new", &p, "new", 1000).unwrap();
+        let mut other = p.clone();
+        other.fingerprint = "toolchain-upgrade".into();
+        store
+            .index_inventory("/a", &[(other.clone(), vec![])])
+            .unwrap();
+        assert!(store.index_query("new", &other, 1000).unwrap().is_none());
+    }
+
+    #[test]
+    fn budget_evicts_queries_before_closed_workspaces_and_preserves_active_indexes_and_chat() {
+        let store = Store::in_memory().unwrap();
+        store.create_session("chat", "/closed", 1).unwrap();
+        for root in ["/open", "/closed"] {
+            let p = store
+                .index_inventory(root, &[(project(root), vec!["src/lib.rs".into()])])
+                .unwrap()
+                .remove(0);
+            store.index_replace_file(p.id, &file("kept")).unwrap();
+            store.index_verified(p.id, p.revision, true).unwrap();
+            store
+                .index_put_query(root, &p, &"x".repeat(4096), 1000)
+                .unwrap();
+        }
+        let active = vec!["/open".into()];
+        store.index_prune(&active, 1001, 3000).unwrap();
+        assert!(
+            !store.index_projects("/closed").unwrap().is_empty(),
+            "query eviction should suffice before deleting indexes"
+        );
+        store.index_prune(&active, 1001, 1).unwrap();
+        assert!(store.index_projects("/closed").unwrap().is_empty());
+        let p = store.index_projects("/open").unwrap().remove(0);
+        assert_eq!(store.index_files(p.id).unwrap().len(), 1);
+        assert!(store.index_query("/open", &p, 1001).unwrap().is_none());
+        assert!(store.get_session("chat").unwrap().is_some());
+        let p = store
+            .index_inventory("/old", &[(project("/old"), vec![])])
+            .unwrap()
+            .remove(0);
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE code_index_projects SET last_access=0 WHERE id=?1",
+                [p.id],
+            )
+            .unwrap();
+        store
+            .index_prune(&active, 31 * 86_400_000, i64::MAX)
+            .unwrap();
+        assert!(store.index_projects("/old").unwrap().is_empty());
+        assert!(!store.index_projects("/open").unwrap().is_empty());
     }
 }
 
