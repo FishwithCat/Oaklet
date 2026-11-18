@@ -107,7 +107,6 @@ export function ChatThread({
             >
               <div className="bubble">
                 <MarkdownText text={item.text} onOpenFile={onOpenFile} />
-                {item.streaming && <span className="caret" />}
               </div>
             </div>
           );
