@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md) 与步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 已完成，步骤 8–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md)、步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md)、步骤 4 的 [文件同步及实时更新](code-index-saved-files.md)、步骤 5 的 [SQLite 持久化及重启恢复](code-index-persistence.md)、步骤 6 的 [查询缓存、失效及重建](code-index-cache.md)、步骤 7 的 [Agent 语义工具](code-index-agent-tools.md) 与步骤 8 的 [状态及设置](code-index-settings.md) 已完成，步骤 9–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -72,13 +72,14 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 | language_servers.rs | LanguageServerManager、服务器实例注册、启动去重、资源调度、重试与回收 |
 | lsp.rs / documents.rs | 单实例 LanguageServerSession：async-lsp 客户端、子进程、初始化、能力与文档同步；有界磁盘读取、位置校验及编码转换 |
 | watch.rs | notify 监听、事件合并、文件与项目配置更新 |
+| commands.rs | 按窗口绑定工作区的 Tauri 状态/重试/重建命令与合并状态事件 |
 | persistence.rs（manager 子模块） | 摘要恢复、内容核对、稳定快照及让位于交互查询的逐文件符号提取 |
 | ipc.rs | Tauri invoke、generate_handler! 与 command 实现的候选证据 |
 | cache.rs | 内存查询缓存、指纹与失效判定、读写持久缓存的编排；不再包装一个通用 CacheManager |
 
 SQL 访问集中在现有 store 的 code_index.rs 子模块，通过 Store 的类型化方法提供；不在 LSP 客户端或 Tool 实现中拼接数据库访问。code_index 模块持有 Store 克隆，沿用现有共享连接及短事务方式。
 
-新增 tools/code.rs 作为现有 Tool trait 的进程内适配层，不在 agent 循环按工具名称分发。CodeIndexManager 提供 open_workspace、close_workspace、shutdown、status、retry 和 query；query 的内部操作枚举对应符号、定义、引用、上下游调用及 IPC 查询，返回 Rust 结果类型，不提供任意 LSP 方法执行入口。
+新增 tools/code.rs 作为现有 Tool trait 的进程内适配层，不在 agent 循环按工具名称分发。CodeIndexManager 提供 open_workspace、close_workspace、shutdown、status、configure、retry、rebuild 和 query；query 的内部操作枚举对应符号、定义、引用、上下游调用及 IPC 查询，返回 Rust 结果类型，不提供任意 LSP 方法执行入口。
 
 LanguageServerManager 必须实现，不能把 async-lsp 视为服务器管理器。async-lsp 提供协议通信基础设施，用户工作区的进程池、启动去重和生命周期由 Oaklet 管理：
 
@@ -324,12 +325,14 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 8. 工作区状态、设置和手动重试
 
-- [ ] 新增 code_index_status、code_index_retry commands，并注册到 Tauri handler；通过 workspace_for_window 取根，不接受前端指定任意工程。
-- [ ] 新增 code_index_rebuild command 调用步骤 6 的当前工程重建方法；展示磁盘恢复、核对、符号覆盖率、缓存状态和清除重建入口，不将缓存命中误报为实时分析。
-- [ ] 实现带 revision 的状态快照和 code-index://changed 窗口事件；前端先订阅再取快照，忽略旧 revision，卸载时释放订阅。
-- [ ] 设置页新增 Code Index 页签，显示项目根、语言、服务器版本、可用能力、等待或错误原因；支持步骤 2 的命令配置、禁用与重试。
-- [ ] 配置保存后仅重建受影响的语言实例；一个窗口更新全局配置时，所有打开工作区按各自项目重建并保持状态隔离。
-- [ ] 测试缺少后端、等待资源、启动失败、配置错误、重试成功和窗口销毁；没有服务器进度时不展示虚构百分比。
+- [x] 新增 code_index_status、code_index_retry commands，并注册到 Tauri handler；通过 workspace_for_window 取根，不接受前端指定任意工程。
+- [x] 新增 code_index_rebuild command 调用步骤 6 的当前工程重建方法；展示磁盘恢复、核对、符号覆盖率、缓存状态和清除重建入口，不将缓存命中误报为实时分析。
+- [x] 实现带 revision 的状态快照和 code-index://changed 窗口事件；前端先订阅再取快照，忽略旧 revision，卸载时释放订阅。
+- [x] 设置页新增 Code Index 页签，显示项目根、语言、服务器版本、可用能力、等待或错误原因；支持步骤 2 的命令配置、禁用与重试。
+- [x] 配置保存后仅重建受影响的语言实例；一个窗口更新全局配置时，所有打开工作区按各自项目重建并保持状态隔离。
+- [x] 测试缺少后端、等待资源、启动失败、配置错误、重试成功和窗口销毁；没有服务器进度时不展示虚构百分比。
+
+实现与验证：[工作区索引状态与设置](code-index-settings.md)。事件每 500 ms 合并发送，GUI 点击及跨平台实机验收尚未运行；现有 core 和 desktop 自动化测试、前端构建已通过。
 
 完成标准：用户无需发送聊天即可看到打开工程后的索引状态；配置服务器或重试后状态自动更新，其他工程不会收到本工程的索引事件。此时尚无安装按钮，明确显示服务器需自行安装。
 
@@ -400,4 +403,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d。步骤 4 的文件同步和实时更新代码已提交为 7745c1e，验证见 [文件同步及实时更新](code-index-saved-files.md)；步骤 5 的持久化与重启恢复代码已提交为 d456f98，验证见 [SQLite 持久化与重启恢复](code-index-persistence.md)；步骤 6 的缓存、失效、清理与当前工程重建代码已提交为 ecb6988，验证见 [查询缓存、失效及重建](code-index-cache.md)；步骤 7 的 Agent 语义工具代码已提交为 909306a，验证见 [Agent 语义工具](code-index-agent-tools.md)；步骤 8 的状态、设置和重试代码已提交为 cd996b6，验证见 [工作区索引状态与设置](code-index-settings.md)；步骤 9–12 待实施。
