@@ -156,91 +156,12 @@ async fn reduce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::test_support::state;
     use crate::compaction::test_support::{summary_server_with, user};
     use crate::context::{MessageId, identify};
     use crate::store::NewUserTurn;
     use crate::tools::CancelHandle;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
-
-    fn state(config: AppConfig) -> (crate::SharedState, crate::store::Store, std::path::PathBuf) {
-        let root = crate::tools::test_support::temp_root("compaction-run");
-        let database = root.join("oaklet.db");
-        let store = crate::store::Store::open(&database).unwrap();
-        let state = Arc::new(crate::AppState {
-            code_index: Arc::new(crate::code_index::CodeIndexManager::new()),
-            exit: Mutex::new(crate::shutdown::ExitState::Running),
-            config: Mutex::new(config),
-            config_path: Default::default(),
-            config_write: Mutex::new(()),
-            windows: Mutex::new(Default::default()),
-            spill_root: Default::default(),
-            approvals: Mutex::new(Default::default()),
-            chat: crate::chat::ChatState::open(&database).unwrap(),
-            command_allow_all: Mutex::new(Default::default()),
-            terminal: Mutex::new(Default::default()),
-            jobs: Arc::new(crate::tools::jobs::JobRegistry::new()),
-            architecture: Mutex::new(Default::default()),
-            ids: std::sync::atomic::AtomicU64::new(0),
-        });
-        (state, store, root)
-    }
-
-    #[tokio::test]
-    async fn reasoning_time_is_saved_for_completed_and_interrupted_replies() {
-        for status in ["done", "stopped", "error"] {
-            let (state, store, root) = state(AppConfig::default());
-            store.create_session("s", "/tmp", 1).unwrap();
-            let request = user("hi");
-            let started = store
-                .begin_run(
-                    "s",
-                    "r",
-                    &NewUserTurn {
-                        message: request.clone(),
-                        display: None,
-                        title: None,
-                    },
-                    2,
-                )
-                .unwrap();
-            let ctx = RunContext::without_window(state, "s", "r", started);
-            ctx.reasoning("thinking");
-            ctx.reasoning(" more");
-            let mut messages = vec![request];
-            if status == "done" {
-                ctx.delta("answer");
-                messages.push(ctx.record_message(json!({
-                    "role": "assistant", "content": "answer", "reasoning_content": "thinking more",
-                }), None));
-                ctx.finish_done(messages).await;
-            } else if status == "stopped" {
-                ctx.finish_stopped(messages).await;
-            } else {
-                ctx.finish_error(messages, "failed").await;
-            }
-            let saved = store.get_session("s").unwrap().unwrap();
-            let display = saved
-                .events
-                .iter()
-                .find_map(|event| match &event.payload {
-                    crate::store::EventPayload::Message { message, display }
-                        if message["reasoning_content"] == "thinking more" =>
-                    {
-                        display.as_ref()
-                    }
-                    _ => None,
-                })
-                .unwrap();
-            assert!(
-                display["reasoningDurationMs"].as_u64().is_some(),
-                "{status}"
-            );
-            let (model, _) = store.context_snapshot("s").unwrap();
-            assert!(model.last().unwrap().get("reasoningDurationMs").is_none());
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
 
     #[tokio::test]
     async fn a_failed_summary_saves_prior_trims_and_the_partial_reply_without_losing_originals() {
@@ -497,37 +418,5 @@ mod tests {
                 .all(|message| context::message_id(message).is_ok())
         );
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_panicking_agent_settles_the_run_as_an_error() {
-        let (state, store, root) = state(AppConfig::default());
-        store.create_session("s", "/tmp", 1).unwrap();
-        let request = user("hi");
-        let started = store
-            .begin_run(
-                "s",
-                "r",
-                &NewUserTurn {
-                    message: request.clone(),
-                    display: None,
-                    title: None,
-                },
-                2,
-            )
-            .unwrap();
-        let ctx = RunContext::without_window(state, "s", "r", started);
-
-        crate::chat::settle_on_panic(async { panic!("boom") }, ctx, vec![request]).await;
-
-        let saved = store.get_session("s").unwrap().unwrap();
-        assert!(saved.events.iter().any(|event| matches!(
-            &event.payload,
-            crate::store::EventPayload::Notice { tone, text }
-                if tone == "error" && text.contains("boom")
-        )));
-        // The run is terminal, so there is no stale running row to interrupt.
-        assert_eq!(store.interrupt_stale_runs(10, &json!({})).unwrap(), 0);
-        std::fs::remove_dir_all(root).ok();
     }
 }

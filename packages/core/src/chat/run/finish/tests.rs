@@ -1,0 +1,235 @@
+use super::*;
+use crate::AppConfig;
+use crate::chat::{RunHandle, test_support::state};
+use crate::compaction::test_support::user;
+use crate::store::NewUserTurn;
+use crate::tools::CancelHandle;
+
+#[test]
+fn repairs_pending_events_for_unanswered_tool_calls() {
+    let mut pending = vec![
+        EventPayload::Message {
+            message: json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    { "id": "a", "type": "function", "function": { "name": "read_file", "arguments": "{}" } },
+                    { "id": "b", "type": "function", "function": { "name": "read_file", "arguments": "{}" } },
+                ],
+            }),
+            display: Some(json!({ "runId": "r1" })),
+        },
+        EventPayload::Message {
+            message: json!({ "role": "tool", "tool_call_id": "a", "content": "" }),
+            display: Some(json!({
+                "runId": "r1",
+                "name": "read_file",
+                "pending": true,
+            })),
+        },
+    ];
+
+    close_incomplete_tool_calls(&mut pending, "r1");
+    assert_eq!(pending.len(), 3);
+    let EventPayload::Message { message, display } = &pending[1] else {
+        panic!("expected a tool message");
+    };
+    assert!(
+        message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("unknown"))
+    );
+    assert_eq!(
+        display
+            .as_ref()
+            .and_then(|display| display.get("pending"))
+            .and_then(serde_json::Value::as_bool),
+        None
+    );
+    let EventPayload::Message { message, .. } = &pending[2] else {
+        panic!("expected a synthetic tool result");
+    };
+    assert_eq!(message["tool_call_id"], "b");
+}
+
+#[tokio::test]
+async fn reasoning_time_is_saved_for_completed_and_interrupted_replies() {
+    for status in ["done", "stopped", "error"] {
+        let (state, store, root) = state(AppConfig::default());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let request = user("hi");
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: request.clone(),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
+        ctx.reasoning("thinking");
+        ctx.reasoning(" more");
+        let mut messages = vec![request];
+        if status == "done" {
+            ctx.delta("answer");
+            messages.push(ctx.record_message(
+                json!({
+                    "role": "assistant", "content": "answer", "reasoning_content": "thinking more",
+                }),
+                None,
+            ));
+            ctx.finish_done(messages).await;
+        } else if status == "stopped" {
+            ctx.finish_stopped(messages).await;
+        } else {
+            ctx.finish_error(messages, "failed").await;
+        }
+        let saved = store.get_session("s").unwrap().unwrap();
+        let display = saved
+            .events
+            .iter()
+            .find_map(|event| match &event.payload {
+                crate::store::EventPayload::Message { message, display }
+                    if message["reasoning_content"] == "thinking more" =>
+                {
+                    display.as_ref()
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            display["reasoningDurationMs"].as_u64().is_some(),
+            "{status}"
+        );
+        let (model, _) = store.context_snapshot("s").unwrap();
+        assert!(model.last().unwrap().get("reasoningDurationMs").is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_agent_settles_the_run_as_an_error() {
+    let (state, store, root) = state(AppConfig::default());
+    store.create_session("s", "/tmp", 1).unwrap();
+    let request = user("hi");
+    let started = store
+        .begin_run(
+            "s",
+            "r",
+            &NewUserTurn {
+                message: request.clone(),
+                display: None,
+                title: None,
+            },
+            2,
+        )
+        .unwrap();
+    let ctx = RunContext::without_window(state, "s", "r", started);
+
+    crate::chat::settle_on_panic(async { panic!("boom") }, ctx, vec![request]).await;
+
+    let saved = store.get_session("s").unwrap().unwrap();
+    assert!(saved.events.iter().any(|event| matches!(
+        &event.payload,
+        crate::store::EventPayload::Notice { tone, text }
+            if tone == "error" && text.contains("boom")
+    )));
+    // The run is terminal, so there is no stale running row to interrupt.
+    assert_eq!(store.interrupt_stale_runs(10, &json!({})).unwrap(), 0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn live_run() -> (RunContext, store::Store, std::path::PathBuf) {
+    let (state, store, root) = state(AppConfig::default());
+    store.create_session("s", "/tmp", 1).unwrap();
+    let started = store
+        .begin_run(
+            "s",
+            "r",
+            &NewUserTurn {
+                message: user("hi"),
+                display: None,
+                title: None,
+            },
+            2,
+        )
+        .unwrap();
+    let ctx = RunContext::without_window(state, "s", "r", started);
+    let (cancel, _cancel) = CancelHandle::new();
+    ctx.state.chat.live().runs.insert(
+        "r".into(),
+        RunHandle {
+            session_id: "s".into(),
+            window: "test".into(),
+            cancel,
+            view: ctx.view.clone(),
+        },
+    );
+    (ctx, store, root)
+}
+
+#[tokio::test]
+async fn finishing_twice_saves_the_reply_and_settles_the_run_only_once() {
+    let (ctx, store, root) = live_run();
+    ctx.record_message(json!({"role":"assistant", "content":"answer"}), None);
+    ctx.finish_done(Vec::new()).await;
+    let saved = store.get_session("s").unwrap().unwrap();
+    assert_eq!(saved.events.len(), 2);
+    assert!(ctx.state.chat.live().runs.is_empty());
+    assert!(!ctx.view.lock().unwrap().running);
+
+    ctx.finish_error(Vec::new(), "late failure").await;
+    assert_eq!(
+        store.get_session("s").unwrap().unwrap().events,
+        saved.events
+    );
+    assert!(ctx.state.chat.live().unsaved.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_finish_keeps_the_partial_reply_until_its_window_drains() {
+    let (ctx, store, root) = live_run();
+    let blocker = rusqlite::Connection::open(root.join("oaklet.db")).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    ctx.delta("partial answer");
+    ctx.finish_stopped(Vec::new()).await;
+    assert!(ctx.state.chat.live().runs.is_empty());
+    assert!(ctx.state.chat.live().unsaved.contains_key("r"));
+    let view = ctx.view.lock().unwrap().clone();
+    assert!(!view.running);
+    assert!(
+        view.items
+            .iter()
+            .any(|item| item["text"] == "partial answer")
+    );
+    assert_eq!(store.get_session("s").unwrap().unwrap().events.len(), 1);
+    blocker.execute_batch("ROLLBACK").unwrap();
+
+    ctx.state.chat.drain(Some("another-window")).await.unwrap();
+    assert!(ctx.state.chat.live().unsaved.contains_key("r"));
+    ctx.state.chat.drain(Some("test")).await.unwrap();
+    assert!(ctx.state.chat.live().unsaved.is_empty());
+    let saved = store.get_session("s").unwrap().unwrap();
+    assert_eq!(
+        saved
+            .events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload, EventPayload::Message { message, .. }
+                    if message["content"] == "partial answer"
+            ))
+            .count(),
+        1
+    );
+    ctx.state.chat.drain(None).await.unwrap();
+    assert_eq!(
+        store.get_session("s").unwrap().unwrap().events,
+        saved.events
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
