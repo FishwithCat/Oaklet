@@ -1226,6 +1226,17 @@ pub fn run() {
                 ids: AtomicU64::new(0),
             });
             app.manage(state.clone());
+            // A settled background job reports to the session that started it;
+            // the write and the possible new run must not block the job task.
+            let notice_app = app.handle().clone();
+            let notice_state = state.clone();
+            state.jobs.set_notifier(Arc::new(move |job| {
+                let app = notice_app.clone();
+                let state = notice_state.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    chat::job_settled(&app, &state, job);
+                });
+            }));
             #[cfg(target_os = "macos")]
             shutdown::install_native_quit(app.handle()).map_err(std::io::Error::other)?;
             if cli_workspace {

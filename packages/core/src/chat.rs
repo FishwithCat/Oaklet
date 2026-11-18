@@ -31,6 +31,22 @@ const ATTACHMENT_HEAD_CHARS: usize = 6_000;
 const ATTACHMENT_TAIL_CHARS: usize = 2_000;
 const INTERRUPTED_NOTICE: &str = "The app closed while this run was working. \
     Send another message to continue.";
+/// Largest job output a completion notice carries inline; a bigger one leaves
+/// the read to `job_output`.
+const INLINE_NOTICE_CHARS: usize = 2_000;
+/// Turns one session may open from job notices between two user messages, so a
+/// job whose completion starts another job cannot wake it forever.
+const MAX_WAKES: u32 = 8;
+/// Longest command label shown in a notice summary.
+const NOTICE_LABEL_CHARS: usize = 80;
+
+/// A settled background job waiting for its session: the one-line transcript
+/// notice and the model-facing message it carries.
+#[derive(Clone)]
+pub struct JobNotice {
+    pub summary: String,
+    pub message: Value,
+}
 
 /// One window of what the UI needs to render a conversation. Model-facing
 /// `messages` stay in Rust so long base64 image history never crosses IPC on
@@ -183,6 +199,10 @@ struct ChatLive {
     compacting: HashMap<String, CompactionHandle>,
     closing: HashSet<String>,
     unsaved: HashMap<String, (String, Arc<RunEnd>)>,
+    /// Job notices waiting for a busy session's next step.
+    notices: HashMap<String, Vec<JobNotice>>,
+    /// Wakes opened by job notices since the session's last user message.
+    wakes: HashMap<String, u32>,
 }
 
 struct RunHandle {
@@ -246,6 +266,11 @@ impl ChatState {
         self.live
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Take the job notices queued while a run of this session was busy.
+    pub fn take_notices(&self, session_id: &str) -> Vec<JobNotice> {
+        self.live().notices.remove(session_id).unwrap_or_default()
     }
 
     /// True while any chat in this window is still producing a turn.
@@ -675,7 +700,6 @@ pub async fn session_send(
     config.workspace = meta.workspace.clone();
 
     let text = text.trim().to_string();
-    let run_id = state.next_id();
     let (message, display, attachment_names) =
         build_user_turn(&text, &attachments, &state.spill_root, &session_id)?;
     let title = if meta.turns == 0 {
@@ -691,12 +715,47 @@ pub async fn session_send(
     };
 
     let (cancel_handle, cancel) = CancelHandle::new();
+    let (run_id, view) = start_run(
+        &app,
+        state.inner(),
+        window.label(),
+        &session_id,
+        config,
+        turn,
+        cancel,
+        cancel_handle,
+    )?;
+    // A user message ends the wake chain a job notice may have started.
+    state.chat.live().wakes.remove(&session_id);
+
+    let session = view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    Ok(SendResult { run_id, session })
+}
+
+/// Register a run for an already-built user turn and spawn the agent loop. The
+/// caller decides what the turn means: a typed message or a job notice.
+#[allow(clippy::too_many_arguments)]
+fn start_run(
+    app: &AppHandle,
+    state: &SharedState,
+    window: &str,
+    session_id: &str,
+    config: crate::AppConfig,
+    turn: NewUserTurn,
+    cancel: crate::tools::Cancel,
+    cancel_handle: CancelHandle,
+) -> Result<(String, Arc<Mutex<SessionView>>), String> {
+    let store = state.chat.store.clone();
+    let run_id = state.next_id();
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
     let (view, start_seq, messages) = {
         let mut live = state.chat.live();
-        if live.closing.contains(window.label())
+        if live.closing.contains(window)
             || live
                 .unsaved
                 .values()
@@ -704,12 +763,12 @@ pub async fn session_send(
         {
             return Err("This window is closing or has an unsaved reply. Retry closing it to save the chat.".into());
         }
-        if live.compacting.contains_key(&session_id)
+        if live.compacting.contains_key(session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
         {
             return Err("This chat is already working.".into());
         }
-        let started = store.begin_run(&session_id, &run_id, &turn, store::now_ms())?;
+        let started = store.begin_run(session_id, &run_id, &turn, store::now_ms())?;
         // `prior_messages` is the surface before this user turn, read in the
         // same transaction that appended it. Trim an incomplete tool block
         // before adding the new turn so the request stays valid.
@@ -725,8 +784,8 @@ pub async fn session_send(
         live.runs.insert(
             run_id.clone(),
             RunHandle {
-                session_id: session_id.clone(),
-                window: window.label().to_string(),
+                session_id: session_id.to_string(),
+                window: window.to_string(),
                 cancel: cancel_handle,
                 view: view.clone(),
             },
@@ -736,10 +795,10 @@ pub async fn session_send(
 
     let ctx = RunContext {
         app: Some(app.clone()),
-        state: state.inner().clone(),
-        session_id,
+        state: state.clone(),
+        session_id: session_id.to_string(),
         run_id: run_id.clone(),
-        window_label: window.label().to_string(),
+        window_label: window.to_string(),
         start_seq,
         view: view.clone(),
         finished: Arc::new(AtomicBool::new(false)),
@@ -752,12 +811,7 @@ pub async fn session_send(
     tauri::async_runtime::spawn(async move {
         crate::agent::run(config, messages, cancel, ctx).await;
     });
-
-    let session = view
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    Ok(SendResult { run_id, session })
+    Ok((run_id, view))
 }
 
 #[tauri::command]
@@ -782,6 +836,199 @@ pub fn session_stop(window: WebviewWindow, state: State<'_, SharedState>, sessio
     if let Some(run_id) = run_id {
         resolve_approvals(state.inner(), &run_id);
     }
+}
+
+/// Announce a settled background job to the session that started it. A busy
+/// session gets the notice queued for its next step; an idle one wakes with it,
+/// bounded by [`MAX_WAKES`] so a job whose completion starts another job cannot
+/// wake the session forever.
+pub(crate) fn job_settled(
+    app: &AppHandle,
+    state: &SharedState,
+    job: crate::tools::jobs::JobSettled,
+) {
+    let (summary, message) = job_notice(&job);
+    let notice = JobNotice { summary, message };
+    let session_id = job.owner.session_id.clone();
+    let window = job.owner.window.clone();
+    let chat = &state.chat;
+
+    let wake = {
+        let mut live = chat.live();
+        let busy = live.runs.values().any(|run| run.session_id == session_id)
+            || live.compacting.contains_key(&session_id)
+            || live.closing.contains(&window)
+            || live
+                .unsaved
+                .values()
+                .any(|(_, end)| end.session_id == session_id);
+        let spent = live.wakes.get(&session_id).copied().unwrap_or(0);
+        if busy || spent >= MAX_WAKES {
+            live.notices
+                .entry(session_id.clone())
+                .or_default()
+                .push(notice.clone());
+            false
+        } else {
+            true
+        }
+    };
+    if !wake {
+        return;
+    }
+
+    if let Err(error) = wake_notice(app, state, &window, &session_id, notice.clone()) {
+        crate::log::key(format_args!("[oaklet] job notice not delivered: {error}"));
+        queue_notice(chat, &session_id, notice);
+    }
+}
+
+/// Open one turn on an idle session so it reads a settled job's result.
+fn wake_notice(
+    app: &AppHandle,
+    state: &SharedState,
+    window: &str,
+    session_id: &str,
+    notice: JobNotice,
+) -> Result<(), String> {
+    if app.get_webview_window(window).is_none() {
+        return Err("The window is closed.".into());
+    }
+    let Some(meta) = state.chat.store.session_meta(session_id)? else {
+        return Err("The session no longer exists.".into());
+    };
+    let mut config = state
+        .config
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .clone();
+    config.workspace = meta.workspace;
+    let turn = NewUserTurn {
+        message: notice.message,
+        display: Some(json!({ "hidden": true })),
+        title: None,
+    };
+    let (cancel_handle, cancel) = CancelHandle::new();
+    start_run(
+        app,
+        state,
+        window,
+        session_id,
+        config,
+        turn,
+        cancel,
+        cancel_handle,
+    )?;
+    let spent = state
+        .chat
+        .live()
+        .wakes
+        .get(session_id)
+        .copied()
+        .unwrap_or(0);
+    state
+        .chat
+        .live()
+        .wakes
+        .insert(session_id.to_string(), spent.saturating_add(1));
+    if let Err(error) =
+        state
+            .chat
+            .store
+            .append_notice(session_id, "muted", &notice.summary, store::now_ms())
+    {
+        crate::log::key(format_args!(
+            "[oaklet] could not record a job notice: {error}"
+        ));
+    }
+    Ok(())
+}
+
+fn queue_notice(chat: &ChatState, session_id: &str, notice: JobNotice) {
+    chat.live()
+        .notices
+        .entry(session_id.to_string())
+        .or_default()
+        .push(notice);
+}
+
+/// Deliver notices that settled while the session was mid-run but arrived
+/// after its last step: the run's end wakes the session once with them.
+fn resume_notices(ctx: &RunContext) {
+    let chat = &ctx.state.chat;
+    let spent = {
+        let live = chat.live();
+        if live.notices.get(&ctx.session_id).is_none_or(Vec::is_empty) {
+            return;
+        }
+        live.wakes.get(&ctx.session_id).copied().unwrap_or(0)
+    };
+    if spent >= MAX_WAKES {
+        return;
+    }
+    let notices = chat.take_notices(&ctx.session_id);
+    let summary = notices
+        .iter()
+        .map(|notice| notice.summary.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = notices
+        .iter()
+        .filter_map(|notice| {
+            notice
+                .message
+                .pointer("/content/0/text")
+                .and_then(Value::as_str)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let notice = JobNotice {
+        summary,
+        message: json!({ "role": "user", "content": [{ "type": "text", "text": text }] }),
+    };
+    if let Err(error) = wake_notice(
+        ctx.app(),
+        &ctx.state,
+        &ctx.window_label,
+        &ctx.session_id,
+        notice.clone(),
+    ) {
+        crate::log::key(format_args!("[oaklet] job notice not delivered: {error}"));
+        queue_notice(chat, &ctx.session_id, notice);
+    }
+}
+
+/// The model-facing completion text and the one-line transcript summary.
+fn job_notice(job: &crate::tools::jobs::JobSettled) -> (String, Value) {
+    let line = job.command.lines().next().unwrap_or("").trim();
+    let mut label: String = line.chars().take(NOTICE_LABEL_CHARS).collect();
+    if label.chars().count() < line.chars().count() {
+        label.push('…');
+    }
+    let origin = if label.is_empty() {
+        String::new()
+    } else {
+        format!(" (bash: {label})")
+    };
+    let status = match job.exit {
+        Some(code) => format!("[status: {}, exit code: {code}]", job.status),
+        None => format!("[status: {}]", job.status),
+    };
+    let summary = format!("background job {}{origin} finished {status}", job.id);
+    let body = job.output.trim_end();
+    let text = if job.output.chars().count() <= INLINE_NOTICE_CHARS {
+        if body.is_empty() {
+            format!("{summary}. No new output.")
+        } else {
+            format!("{summary}. Output:\n{body}")
+        }
+    } else {
+        format!("{summary}. Read its output with job_output.")
+    };
+    (
+        summary,
+        json!({ "role": "user", "content": [{ "type": "text", "text": text }] }),
+    )
 }
 
 #[tauri::command]
@@ -1664,6 +1911,12 @@ impl RunContext {
         &self.window_label
     }
 
+    /// Job notices that settled while this run was busy; they join the next
+    /// model step.
+    pub fn take_notices(&self) -> Vec<JobNotice> {
+        self.state.chat.take_notices(&self.session_id)
+    }
+
     pub fn store(&self) -> crate::store::Store {
         self.state.chat.store.clone()
     }
@@ -2256,6 +2509,12 @@ impl RunContext {
                     session: Some(session),
                 },
             ),
+        }
+
+        // Anything that settled after this run's last step still reaches the
+        // session, in one turn instead of one per job.
+        if status != "stopped" {
+            resume_notices(self);
         }
     }
 }
@@ -3219,5 +3478,63 @@ mod checkpoint_text_regressions {
             assert_eq!(items[0]["kind"], "user");
             assert_eq!(surface_messages(&events), [message]);
         }
+    }
+}
+
+#[cfg(test)]
+mod job_notice_tests {
+    use super::{ChatState, JobNotice, job_notice};
+    use crate::tools::jobs::{JobOwner, JobSettled};
+    use serde_json::json;
+
+    fn settled(output: &str) -> JobSettled {
+        JobSettled {
+            id: "job-1a1ec825407-2".into(),
+            owner: JobOwner {
+                session_id: "s1".into(),
+                window: "main".into(),
+            },
+            command: "cargo test".into(),
+            status: "succeeded",
+            exit: Some(0),
+            output: output.into(),
+        }
+    }
+
+    #[test]
+    fn small_output_rides_along_and_large_output_points_at_job_output() {
+        let (summary, message) = job_notice(&settled("ok\n"));
+        assert_eq!(
+            summary,
+            "background job job-1a1ec825407-2 (bash: cargo test) finished \
+             [status: succeeded, exit code: 0]"
+        );
+        assert!(
+            message["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("ok")
+        );
+
+        let (_, message) = job_notice(&settled(&"x".repeat(super::INLINE_NOTICE_CHARS + 1)));
+        let text = message["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("job_output"));
+        assert!(!text.contains("xxx"));
+    }
+
+    #[test]
+    fn queued_notices_are_taken_once() {
+        let state = ChatState::in_memory();
+        state
+            .live()
+            .notices
+            .entry("s1".into())
+            .or_default()
+            .push(JobNotice {
+                summary: "done".into(),
+                message: json!({}),
+            });
+        assert_eq!(state.take_notices("s1").len(), 1);
+        assert!(state.take_notices("s1").is_empty());
     }
 }

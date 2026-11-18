@@ -285,6 +285,8 @@ pub struct ToolContext {
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session that owns spill files.
     pub session_id: String,
+    /// Window label, so a background job can report back to its session.
+    pub window: String,
     /// App-owned spill directory, outside the workspace.
     pub spill_root: PathBuf,
 }
@@ -626,6 +628,7 @@ pub(crate) mod test_support {
                 cancel,
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 session_id: "run-test".into(),
+                window: "main".into(),
                 spill_root: root.join("spill"),
             },
             root,

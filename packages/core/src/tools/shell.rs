@@ -67,7 +67,7 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately. Returns combined stdout and stderr."
+        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr."
     }
 
     fn parameters(&self) -> Value {
@@ -141,7 +141,14 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
     if args.run_in_background {
         let id = ctx
             .jobs
-            .start(ctx.workspace.root(), &args.command)
+            .start(
+                ctx.workspace.root(),
+                &args.command,
+                super::jobs::JobOwner {
+                    session_id: ctx.session_id.clone(),
+                    window: ctx.window.clone(),
+                },
+            )
             .map_err(ToolError::Failed)?;
         return Ok(format!(
             "Started background job {id}. Use job_output with job_id \"{id}\" to read its output, and job_kill to stop it."
@@ -344,6 +351,7 @@ mod tests {
             cancel,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "run-test".into(),
+            window: "main".into(),
             spill_root: root.join("spill"),
         };
 

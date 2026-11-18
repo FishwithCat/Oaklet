@@ -181,6 +181,7 @@ mod tests {
             cancel,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "run-test".into(),
+            window: "main".into(),
             spill_root: std::env::temp_dir().join("oaklet-likec4-spill"),
         };
         let tool = LikeC4 {

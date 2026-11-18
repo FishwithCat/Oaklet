@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,29 @@ const MAX_FINISHED_JOBS: usize = 32;
 const WAIT_DEFAULT_MS: u64 = 10_000;
 const WAIT_MAX_MS: u64 = 30_000;
 const JOB_OUTPUT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The session and window a completion notice returns to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobOwner {
+    pub session_id: String,
+    pub window: String,
+}
+
+/// A job that settled without the model asking it to stop, handed to the app's
+/// notifier so the owning session can read the result.
+#[derive(Clone, Debug)]
+pub struct JobSettled {
+    pub id: String,
+    pub owner: JobOwner,
+    pub command: String,
+    /// `succeeded` or `failed`.
+    pub status: &'static str,
+    pub exit: Option<i32>,
+    /// Everything the job captured; the notice decides whether it fits.
+    pub output: String,
+}
+
+type Notifier = Arc<dyn Fn(JobSettled) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JobStatus {
@@ -71,9 +94,13 @@ struct JobState {
 struct Job {
     id: String,
     workspace: std::path::PathBuf,
+    owner: JobOwner,
     command: String,
     started_at: u64,
     state: Mutex<JobState>,
+    /// Set once the model has read the settlement through `job_output`, so the
+    /// notice does not repeat a result it already holds.
+    collected: AtomicBool,
     cancel: CancelHandle,
     #[cfg(unix)]
     group: Mutex<ProcessGroupGuard>,
@@ -154,7 +181,18 @@ impl Job {
             .unwrap_or_default()
             .to_string();
         state.read_pos = state.output.len();
+        if !state.status.running() {
+            self.collected.store(true, Ordering::SeqCst);
+        }
         (chunk, state.status, state.exit)
+    }
+
+    fn output_snapshot(&self) -> String {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .output
+            .clone()
     }
 
     fn snapshot(&self) -> (JobStatus, Option<i32>, usize, bool) {
@@ -194,6 +232,7 @@ pub struct JobRegistry {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
     closed_workspaces: Mutex<HashSet<std::path::PathBuf>>,
     next_id: AtomicU64,
+    notifier: Mutex<Option<Notifier>>,
 }
 
 impl JobRegistry {
@@ -201,8 +240,21 @@ impl JobRegistry {
         Self::default()
     }
 
+    /// Install the app's completion notifier. Tests leave it unset.
+    pub fn set_notifier(&self, notifier: Arc<dyn Fn(JobSettled) + Send + Sync>) {
+        *self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
+    }
+
     /// Start one detached shell command and return its job id immediately.
-    pub fn start(&self, workspace: &Path, command: &str) -> Result<String, String> {
+    pub fn start(
+        &self,
+        workspace: &Path,
+        command: &str,
+        owner: JobOwner,
+    ) -> Result<String, String> {
         let closed = self
             .closed_workspaces
             .lock()
@@ -233,6 +285,7 @@ impl JobRegistry {
         let job = Arc::new(Job {
             id: id.clone(),
             workspace: workspace.to_path_buf(),
+            owner,
             command: command.to_string(),
             started_at: store::now_ms() as u64,
             state: Mutex::new(JobState {
@@ -242,6 +295,7 @@ impl JobRegistry {
                 exit: None,
                 truncated: false,
             }),
+            collected: AtomicBool::new(false),
             cancel,
             #[cfg(unix)]
             group: Mutex::new(ProcessGroupGuard::new(child.id())),
@@ -251,7 +305,12 @@ impl JobRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id.clone(), job.clone());
 
-        tokio::spawn(run_job(job, child, cancellation));
+        let notifier = self
+            .notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        tokio::spawn(run_job(job, child, cancellation, notifier));
         Ok(id)
     }
 
@@ -428,7 +487,12 @@ impl JobRegistry {
     }
 }
 
-async fn run_job(job: Arc<Job>, mut child: tokio::process::Child, cancel: Cancel) {
+async fn run_job(
+    job: Arc<Job>,
+    mut child: tokio::process::Child,
+    cancel: Cancel,
+    notifier: Option<Notifier>,
+) {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (status, exit) = tokio::select! {
@@ -456,6 +520,24 @@ async fn run_job(job: Arc<Job>, mut child: tokio::process::Child, cancel: Cancel
         },
     };
     job.finish(status, exit);
+    // A job the model stopped, or one it already read, needs no notice.
+    if let Some(notify) = notifier
+        && matches!(status, JobStatus::Succeeded | JobStatus::Failed)
+        && !job.collected.load(Ordering::SeqCst)
+    {
+        notify(JobSettled {
+            id: job.id.clone(),
+            owner: job.owner.clone(),
+            command: job.command.clone(),
+            status: if status == JobStatus::Succeeded {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            exit,
+            output: job.output_snapshot(),
+        });
+    }
 }
 
 async fn read_stream<R: AsyncRead + Unpin>(reader: Option<R>, job: Arc<Job>) {
@@ -629,14 +711,21 @@ impl Tool for JobKill {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{Job, JobRegistry, JobState, JobStatus, MAX_FINISHED_JOBS};
+    use super::{Job, JobOwner, JobRegistry, JobSettled, JobState, JobStatus, MAX_FINISHED_JOBS};
+
+    fn owner() -> JobOwner {
+        JobOwner {
+            session_id: "session-test".into(),
+            window: "main".into(),
+        }
+    }
 
     #[tokio::test]
     async fn background_jobs_capture_output_and_finish() {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, "printf 'hello\\n'")
+            .start(&root, "printf 'hello\\n'", owner())
             .expect("job should start");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let output = registry
@@ -665,7 +754,9 @@ mod tests {
         let registry = JobRegistry::new();
         let first = crate::tools::test_support::temp_root("job-workspace-a");
         let second = crate::tools::test_support::temp_root("job-workspace-b");
-        let id = registry.start(&first, "true").expect("job should start");
+        let id = registry
+            .start(&first, "true", owner())
+            .expect("job should start");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         assert!(registry.list(&first).contains(&id));
@@ -682,11 +773,11 @@ mod tests {
         let registry = JobRegistry::new();
         let workspace = crate::tools::test_support::temp_root("job-closed-workspace");
         registry.close_workspace(&workspace);
-        assert!(registry.start(&workspace, "true").is_err());
+        assert!(registry.start(&workspace, "true", owner()).is_err());
 
         registry.open_workspace(&workspace);
         let id = registry
-            .start(&workspace, "true")
+            .start(&workspace, "true", owner())
             .expect("job should start");
         assert!(registry.list(&workspace).contains(&id));
 
@@ -706,6 +797,7 @@ mod tests {
                     Arc::new(Job {
                         id,
                         workspace: std::env::temp_dir(),
+                        owner: owner(),
                         command: "true".into(),
                         started_at: index as u64,
                         state: Mutex::new(JobState {
@@ -715,6 +807,7 @@ mod tests {
                             exit: Some(0),
                             truncated: false,
                         }),
+                        collected: std::sync::atomic::AtomicBool::new(false),
                         cancel: crate::tools::CancelHandle::new().0,
                         #[cfg(unix)]
                         group: Mutex::new(super::ProcessGroupGuard::new(None)),
@@ -738,7 +831,9 @@ mod tests {
     async fn kill_stops_a_running_job() {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
-        let id = registry.start(&root, "sleep 30").expect("job should start");
+        let id = registry
+            .start(&root, "sleep 30", owner())
+            .expect("job should start");
         let message = registry.kill(&root, &id, Some("test")).await.unwrap();
         assert!(message.contains("Requested cancellation"));
         tokio::time::timeout(
@@ -756,7 +851,9 @@ mod tests {
     async fn stopping_a_job_after_its_shell_exits_kills_the_remaining_process_group() {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
-        let id = registry.start(&root, "sleep 30 & echo shell-done").unwrap();
+        let id = registry
+            .start(&root, "sleep 30 & echo shell-done", owner())
+            .unwrap();
         let job = registry.get(&root, &id).unwrap();
         job.wait_for_output(std::time::Duration::from_secs(2)).await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -776,7 +873,7 @@ mod tests {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, "sleep 30 >/dev/null 2>&1 & echo shell-done")
+            .start(&root, "sleep 30 >/dev/null 2>&1 & echo shell-done", owner())
             .unwrap();
         let job = registry.get(&root, &id).unwrap();
         job.wait_for_output(std::time::Duration::from_secs(2)).await;
@@ -791,5 +888,46 @@ mod tests {
         .unwrap();
         assert_eq!(job.snapshot().0, JobStatus::Killed);
         assert!(!job.group.lock().unwrap().running());
+    }
+
+    #[tokio::test]
+    async fn a_settled_job_notifies_its_owner_with_output() {
+        let registry = JobRegistry::new();
+        let seen: Arc<Mutex<Vec<JobSettled>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        registry.set_notifier(Arc::new(move |job| {
+            sink.lock().unwrap().push(job);
+        }));
+        let root = std::env::temp_dir();
+        registry
+            .start(&root, "printf 'notice-me\\n'", owner())
+            .unwrap();
+        registry.wait_for_exit(Some(&root)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].owner, owner());
+        assert_eq!(seen[0].status, "succeeded");
+        assert!(seen[0].output.contains("notice-me"));
+    }
+
+    #[tokio::test]
+    async fn a_killed_job_does_not_notify() {
+        let registry = JobRegistry::new();
+        let seen: Arc<Mutex<Vec<JobSettled>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        registry.set_notifier(Arc::new(move |job| {
+            sink.lock().unwrap().push(job);
+        }));
+        let root = std::env::temp_dir();
+        let id = registry
+            .start(&root, "sleep 30", owner())
+            .expect("job should start");
+        registry.kill(&root, &id, None).await.unwrap();
+        registry.wait_for_exit(Some(&root)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(seen.lock().unwrap().is_empty());
     }
 }
