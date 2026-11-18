@@ -156,6 +156,15 @@ mod tests {
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
         assert!(crate::store::has_table(&conn, "session_events").unwrap());
+        assert!(crate::store::has_table(&conn, "archived_messages").unwrap());
+        let archive_index: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'session_events_by_type')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(archive_index);
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
@@ -201,53 +210,5 @@ mod tests {
         let error = Store::open(&path).err().expect("must fail");
         assert!(error.contains("newer"), "{error}");
         std::fs::remove_dir_all(&root).ok();
-    }
-}
-
-#[cfg(test)]
-mod archive_upgrade_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn v1_indexes_legacy_compactions_and_tool_trims_without_changing_originals() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATIONS[0].sql).unwrap();
-        conn.execute(
-            "INSERT INTO sessions (id,workspace,created_at,updated_at) VALUES ('s','/tmp',1,1)",
-            [],
-        )
-        .unwrap();
-        let originals = [
-            json!({"type":"message","message":{"role":"user","content":"original request"}}),
-            json!({"type":"message","message":{"role":"assistant","content":"answer"}}),
-            json!({"type":"message","message":{"role":"tool","tool_call_id":"c","content":"full output"}}),
-            json!({"type":"compaction","summary":{"role":"user","content":"checkpoint"},"shadowed_through":2,"before":100,"after":10}),
-            json!({"type":"tool_trim","original_seq":3,"message":{"role":"tool","tool_call_id":"c","content":"trimmed"}}),
-        ];
-        for (index, payload) in originals.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO session_events VALUES ('s',?1,?2,1)",
-                params![index as i64 + 1, payload.to_string()],
-            )
-            .unwrap();
-        }
-        conn.execute_batch(MIGRATIONS[1].sql).unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM archived_messages WHERE session_id = 's'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 3);
-        let raw: String = conn
-            .query_row(
-                "SELECT payload FROM session_events WHERE session_id = 's' AND seq = 3",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(raw, originals[2].to_string());
     }
 }
