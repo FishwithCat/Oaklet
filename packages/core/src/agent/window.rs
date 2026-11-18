@@ -1,7 +1,7 @@
 //! All context changes enter through one reducer and one recording path.
 use crate::chat::RunContext;
 use crate::context::Meter;
-use crate::tools::{Cancel, ToolRegistry};
+use crate::tools::{Cancel, Tool, ToolRegistry};
 use crate::{AppConfig, compaction, context};
 use serde_json::Value;
 
@@ -63,7 +63,7 @@ pub(super) async fn recover(
 }
 
 async fn apply(
-    next: Vec<Value>,
+    mut next: Vec<Value>,
     messages: &mut Vec<Value>,
     config: &AppConfig,
     tools: &mut ToolRegistry,
@@ -71,11 +71,27 @@ async fn apply(
 ) -> Result<(), String> {
     let before = context::request_tokens(messages, &tools.schemas());
     if tools.get("history_read").is_none() {
-        tools.push(Box::new(crate::tools::history::HistoryRead::new(
+        let history = crate::tools::history::HistoryRead::new(
             ctx.store(),
             ctx.session_id().into(),
             ctx.archived(),
-        )));
+        );
+        match next
+            .first_mut()
+            .filter(|message| message["role"] == "system")
+            .and_then(|message| message.get_mut("content"))
+        {
+            Some(Value::String(text)) => {
+                text.push_str("\n\n");
+                text.push_str(history.guidance());
+            }
+            _ => {
+                return Err(
+                    "The agent system prompt is unavailable; history was preserved.".into(),
+                );
+            }
+        }
+        tools.push(Box::new(history));
     }
     let after = context::request_tokens(&next, &tools.schemas());
     if after >= before {
@@ -283,8 +299,10 @@ mod tests {
             )
             .unwrap();
         let ctx = RunContext::without_window(state, "s", "r", started);
+        let system_text =
+            "system\n\nWorkspace instructions: never deploy.\nArchitecture sources: model.c4";
         let mut messages = vec![
-            json!({"role":"system","content":"system"}),
+            json!({"role":"system","content":system_text}),
             identify(request.clone(), MessageId::Stored(1)),
         ];
         messages.push(ctx.record_message(
@@ -329,6 +347,19 @@ mod tests {
         ctx.finish_done(messages[1..].to_vec()).await;
         server.join().unwrap();
         assert_eq!(seen.lock().unwrap().len(), 3);
+        let retry: Value = serde_json::from_str(&seen.lock().unwrap()[2]).unwrap();
+        let expected_after =
+            context::request_tokens(retry["messages"].as_array().unwrap(), &retry["tools"]);
+        let session = store.get_session("s").unwrap().unwrap();
+        let recorded_after = session.events.iter().find_map(|event| match event.payload {
+            crate::store::EventPayload::Context { after, .. } => Some(after),
+            _ => None,
+        });
+        assert_eq!(recorded_after, Some(expected_after));
+        let guidance = tools.get("history_read").unwrap().guidance();
+        let retry_system = retry["messages"][0]["content"].as_str().unwrap();
+        assert!(retry_system.starts_with(system_text));
+        assert_eq!(retry_system.matches(guidance).count(), 1);
         let (restored, _) = store.context_snapshot("s").unwrap();
         assert!(crate::store::is_checkpoint(&restored[0]));
         assert_eq!(restored[1], identify(request, MessageId::Stored(1)));
