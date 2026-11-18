@@ -429,7 +429,10 @@
 
 .composer {
   position: relative;
-  margin: 0 30px;
+  /* The composer sits outside .chat, so add the mirrored scrollbar width to the
+     thread's 30px inset, then subtract the 17px the process rule hangs into
+     that gutter. This lands the box's left border under the rule. */
+  margin: 0 30px 0 calc(30px + var(--scrollbar-size) - 17px);
   display: flex;
   flex-direction: column;
   gap: 6px;
