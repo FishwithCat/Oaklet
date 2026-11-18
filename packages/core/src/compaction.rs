@@ -17,6 +17,9 @@ pub(crate) enum Trigger {
     Overflow,
 }
 
+// Tiny manual replacements rarely repay the summary request and checkpoint framing.
+const MIN_REPLACED: usize = 4_000;
+
 pub fn trigger_at(window: usize) -> usize {
     context::input_limit(window).min(window - window.div_ceil(5))
 }
@@ -47,6 +50,9 @@ pub async fn compact(
     let Some(mut plan) = history::plan(messages, retain)? else {
         return Ok(None);
     };
+    if matches!(trigger, Trigger::Manual) && plan.replaced_tokens(messages) < MIN_REPLACED {
+        return Ok(None);
+    }
     // Prefix cost is monotone; find the largest safe prefix without repeatedly
     // scanning and cloning every earlier candidate in a long conversation.
     let mut low = 0;
@@ -63,6 +69,9 @@ pub async fn compact(
         return Err("No complete context block fits the summary model's window; increase its context window or reduce the input. History was preserved.".into());
     }
     plan.cut = plan.candidates[low - 1];
+    if matches!(trigger, Trigger::Manual) && plan.replaced_tokens(messages) < MIN_REPLACED {
+        return Ok(None);
+    }
     let replay_tools =
         summary::prefix_fits(messages, plan.cut, config, Some(tools))?.then_some(tools);
     let summary =

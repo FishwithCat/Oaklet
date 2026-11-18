@@ -119,12 +119,73 @@ async fn cancellation_preserves_the_input() {
 }
 
 #[tokio::test]
+async fn manual_compaction_skips_short_history_without_a_summary_request() {
+    let (_handle, cancel) = CancelHandle::new();
+    for (system_text, current_request) in [
+        ("system".to_string(), "continue".to_string()),
+        ("s".repeat(40_000), "r".repeat(20_000)),
+    ] {
+        let messages = vec![
+            json!({"role":"system", "content":system_text}),
+            user("hi"),
+            assistant("hello"),
+            user(&current_request),
+            assistant("latest answer"),
+        ];
+        let next = compact(
+            &reqwest::Client::new(),
+            &config("invalid://summary-must-not-be-called".into()),
+            &messages,
+            &ToolRegistry::new(),
+            Trigger::Manual,
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert!(next.is_none());
+    }
+}
+
+#[tokio::test]
+async fn manual_compaction_rechecks_the_shorter_prefix_before_requesting_a_summary() {
+    let (_handle, cancel) = CancelHandle::new();
+    let messages = vec![
+        json!({"role":"system", "content":"s".repeat(20_000)}),
+        user(&"u".repeat(4_000)),
+        assistant(&"a".repeat(12_000)),
+        user("continue"),
+        assistant("latest answer"),
+    ];
+    let config = AppConfig {
+        summary_model: "small".into(),
+        summary_context_window: Some(8192),
+        ..config("invalid://summary-must-not-be-called".into())
+    };
+    let next = compact(
+        &reqwest::Client::new(),
+        &config,
+        &messages,
+        &ToolRegistry::new(),
+        Trigger::Manual,
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert!(next.is_none());
+}
+
+#[tokio::test]
 async fn an_unhelpful_summary_is_rejected_after_framing() {
-    let (url, _, server) = summary_server();
+    let response = json!({"choices":[{
+        "finish_reason":"stop",
+        "message":{"content":"s".repeat(16_384)}
+    }]})
+    .to_string();
+    let (url, _, server) = summary_server_with(vec![(200, &response)]);
     let (_handle, cancel) = CancelHandle::new();
     let messages = vec![
         system(),
-        user("hi"),
+        user(&"u".repeat(15_984)),
         assistant("done"),
         user("continue"),
         assistant("yes"),

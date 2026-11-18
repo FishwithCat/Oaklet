@@ -1,5 +1,5 @@
 //! Identity-based selection at complete tool-batch boundaries.
-use crate::context::{estimate_tokens, is_request};
+use crate::context::{estimate_message, estimate_tokens, is_request};
 use crate::tools::spill_pointer;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -8,6 +8,17 @@ pub(super) struct Plan {
     pub cut: usize,
     pub request: Option<usize>,
     pub candidates: Vec<usize>,
+}
+
+impl Plan {
+    pub fn replaced_tokens(&self, messages: &[Value]) -> usize {
+        messages[..self.cut]
+            .iter()
+            .enumerate()
+            .filter(|(index, message)| message["role"] != "system" && Some(*index) != self.request)
+            .map(|(_, message)| estimate_message(message))
+            .sum()
+    }
 }
 
 fn boundaries(messages: &[Value]) -> Result<Vec<usize>, String> {
