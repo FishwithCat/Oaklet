@@ -50,6 +50,16 @@ pub struct Discovery {
 }
 
 impl Discovery {
+    pub(super) fn failed(workspace: PathBuf, error: String) -> Self {
+        Self {
+            workspace,
+            projects: Vec::new(),
+            incomplete: true,
+            warnings: vec![error],
+            files: BTreeSet::new(),
+        }
+    }
+
     pub fn route(&self, input: &str) -> Result<&Project, String> {
         let workspace = Workspace::new(&self.workspace.to_string_lossy())?;
         let file = workspace.resolve(input)?;
@@ -74,11 +84,19 @@ impl Discovery {
 }
 
 pub async fn discover(workspace: &Path) -> Result<Discovery, String> {
+    discover_with_cancel(workspace, None).await
+}
+
+pub(super) async fn discover_with_cancel(
+    workspace: &Path,
+    cancel: Option<crate::tools::Cancel>,
+) -> Result<Discovery, String> {
     let workspace = Workspace::new(&workspace.to_string_lossy())?;
     let root = workspace.root().to_path_buf();
     let deadline = Instant::now() + SCAN_TIMEOUT;
+    let scan_cancel = cancel.clone();
     let (mut result, manifests) =
-        tokio::task::spawn_blocking(move || scan(root, MAX_ENTRIES, deadline))
+        tokio::task::spawn_blocking(move || scan(root, MAX_ENTRIES, deadline, scan_cancel))
             .await
             .map_err(|error| format!("Project discovery failed: {error}"))?;
     let cargo = runtime::find_program(
@@ -87,6 +105,12 @@ pub async fn discover(workspace: &Path) -> Result<Discovery, String> {
         std::env::var_os("PATH").as_deref(),
     );
     for manifest in manifests {
+        if cancel
+            .as_ref()
+            .is_some_and(crate::tools::Cancel::is_cancelled)
+        {
+            return Err("Project discovery cancelled".into());
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let located = if remaining.is_zero() {
             result.incomplete = true;
@@ -160,7 +184,12 @@ async fn locate_cargo_root(
     Ok(root_manifest.parent().unwrap().to_path_buf())
 }
 
-fn scan(root: PathBuf, max_entries: usize, deadline: Instant) -> (Discovery, Vec<PathBuf>) {
+fn scan(
+    root: PathBuf,
+    max_entries: usize,
+    deadline: Instant,
+    cancel: Option<crate::tools::Cancel>,
+) -> (Discovery, Vec<PathBuf>) {
     let mut result = Discovery {
         workspace: root.clone(),
         projects: Vec::new(),
@@ -179,6 +208,12 @@ fn scan(root: PathBuf, max_entries: usize, deadline: Instant) -> (Discovery, Vec
             entry.depth() == 0 || !EXCLUDED.iter().any(|name| entry.file_name() == *name)
         });
     for (index, entry) in walker.build().enumerate() {
+        if cancel
+            .as_ref()
+            .is_some_and(crate::tools::Cancel::is_cancelled)
+        {
+            break;
+        }
         if index >= max_entries || Instant::now() >= deadline {
             result.incomplete = true;
             result.warnings.push(
@@ -239,5 +274,5 @@ fn scan(root: PathBuf, max_entries: usize, deadline: Instant) -> (Discovery, Vec
 
 #[cfg(test)]
 pub(super) fn scan_limited(root: PathBuf, entries: usize, deadline: Instant) -> Discovery {
-    scan(root, entries, deadline).0
+    scan(root, entries, deadline, None).0
 }

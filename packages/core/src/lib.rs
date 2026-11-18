@@ -32,6 +32,7 @@ pub type SharedState = Arc<AppState>;
 const MAX_WORKSPACE_WINDOWS: usize = 8;
 
 pub struct AppState {
+    pub code_index: Arc<code_index::CodeIndexManager>,
     pub exit: Mutex<shutdown::ExitState>,
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
@@ -318,6 +319,18 @@ fn open_workspace_window(
             "[oaklet] could not remember the default workspace: {error}"
         ));
     }
+    let index_config = state
+        .config
+        .lock()
+        .ok()
+        .map(|config| config.code_index.clone());
+    if let Some(config) = index_config
+        && let Ok(windows) = state.windows.lock()
+        && windows.workspace(&label) == Some(&workspace)
+        && let Err(error) = state.code_index.open_workspace(&workspace, config)
+    {
+        log::key(format_args!("[oaklet] could not start code index: {error}"));
+    }
     focus_window(app, &label);
     if let Ok(mut windows) = state.windows.lock() {
         windows.focus(&label);
@@ -354,6 +367,7 @@ fn cleanup_window(state: &AppState, label: &str) {
         return;
     };
 
+    state.code_index.close_workspace(&workspace);
     chat::stop_window(state, label);
     architecture::cancel_workspace(state, &workspace);
     if let Ok(mut terminals) = state.terminal.lock() {
@@ -1228,6 +1242,7 @@ pub fn run() {
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
             let state = Arc::new(AppState {
+                code_index: Arc::new(code_index::CodeIndexManager::new()),
                 exit: Mutex::new(shutdown::ExitState::Running),
                 config: Mutex::new(config),
                 config_path,
@@ -1243,6 +1258,15 @@ pub fn run() {
                 ids: AtomicU64::new(0),
             });
             app.manage(state.clone());
+            {
+                let config = state.config.lock().unwrap();
+                if let Err(error) = state
+                    .code_index
+                    .open_workspace(Path::new(&config.workspace), config.code_index.clone())
+                {
+                    log::key(format_args!("[oaklet] could not start code index: {error}"));
+                }
+            }
             // A settled background job reports to the session that started it;
             // the write and the possible new run must not block the job task.
             let notice_app = app.handle().clone();

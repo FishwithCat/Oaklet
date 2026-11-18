@@ -44,8 +44,8 @@ async fn handles_server_requests_notifications_timeout_and_late_response() {
         .request::<request::WorkspaceSymbolRequest>(json!({"query": "probe"}), DEADLINE)
         .await
         .unwrap();
-    // Dropping async-lsp's outgoing request future does not send $/cancelRequest.
-    assert_eq!(result[0]["name"], "not-cancelled");
+    // The vendored cancellation fix also applies to the spike.
+    assert_eq!(result[0]["name"], "cancelled");
     let error = client
         .request::<request::DocumentSymbolRequest>(
             json!({"textDocument": {"uri": "file:///spike.rs"}}),

@@ -17,17 +17,17 @@ const TRUNCATED: &[u8] = b"[... earlier command output truncated ...]\n";
 /// This covers both an explicit Stop and the pipeline's 120-second timeout,
 /// which drops the command future without running its cancel branch.
 #[cfg(unix)]
-pub(super) struct ProcessGroupGuard {
+pub(crate) struct ProcessGroupGuard {
     pid: Option<u32>,
 }
 
 #[cfg(unix)]
 impl ProcessGroupGuard {
-    pub(super) fn new(pid: Option<u32>) -> Self {
+    pub(crate) fn new(pid: Option<u32>) -> Self {
         Self { pid }
     }
 
-    pub(super) fn kill(&self) {
+    pub(crate) fn kill(&self) {
         if let Some(pid) = self.pid {
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
@@ -47,7 +47,7 @@ impl ProcessGroupGuard {
         true
     }
 
-    pub(super) fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.pid = None;
     }
 }

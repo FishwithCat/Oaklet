@@ -1,8 +1,19 @@
-//! Project discovery and runtime detection for workspace-scoped code indexing.
+//! Workspace-scoped code indexing service and managed language-server sessions.
 
 mod config;
 mod discovery;
+mod framing;
+mod language_servers;
+mod lsp;
+mod manager;
 mod runtime;
+mod types;
+
+pub use manager::CodeIndexManager;
+pub use types::{
+    Call, IndexError, Location, ProjectStatus, Query, QueryData, QueryResult, ServerCapabilities,
+    ServerState, Symbol, WorkspaceStatus,
+};
 
 pub use config::{CodeIndexConfig, ServerConfig};
 pub use discovery::{Discovery, Project, discover};
@@ -31,3 +42,6 @@ impl Language {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lifecycle_tests;

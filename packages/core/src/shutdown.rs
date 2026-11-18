@@ -24,6 +24,8 @@ pub async fn close_workspace(
     state.jobs.kill_workspace(&workspace);
     architecture::cancel_workspace(&state, &workspace);
     state.chat.drain(Some(window.label())).await?;
+    state.code_index.close_workspace(&workspace);
+    state.code_index.drain().await;
     state.jobs.wait_for_exit(Some(&workspace)).await;
     Ok(())
 }
@@ -74,6 +76,7 @@ pub fn request_exit(app: &AppHandle, api: &tauri::ExitRequestApi) {
             return;
         }
         state.jobs.wait_for_exit(None).await;
+        state.code_index.shutdown().await;
         tools::shutdown();
         *state.exit.lock().unwrap() = ExitState::Ready;
         app.exit(0);

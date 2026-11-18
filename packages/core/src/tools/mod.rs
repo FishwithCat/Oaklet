@@ -31,6 +31,9 @@ pub(crate) mod web;
 mod web_fetch;
 mod workspace;
 
+#[cfg(unix)]
+pub(crate) use shell::ProcessGroupGuard;
+
 pub use diff::FileDiff;
 pub use workspace::Workspace;
 

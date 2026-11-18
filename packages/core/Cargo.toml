@@ -52,3 +52,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+async-lsp = { path = "vendor/async-lsp" }
