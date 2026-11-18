@@ -11,7 +11,7 @@ use crate::tools::Workspace;
 
 const MAX_ENTRIES: usize = 50_000;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
-const EXCLUDED: &[&str] = &[
+pub(super) const EXCLUDED: &[&str] = &[
     ".git",
     ".hg",
     ".svn",
@@ -46,7 +46,7 @@ pub struct Discovery {
     pub incomplete: bool,
     pub warnings: Vec<String>,
     #[serde(skip)]
-    files: BTreeSet<PathBuf>,
+    pub(super) files: BTreeSet<PathBuf>,
 }
 
 impl Discovery {
@@ -236,9 +236,10 @@ fn scan(
             continue;
         }
         let path = entry.into_path();
-        if Language::for_file(&path).is_some() {
-            result.files.insert(path.clone());
+        if super::watch::temporary(&path) {
+            continue;
         }
+        result.files.insert(path.clone());
         match path.file_name().and_then(|name| name.to_str()) {
             Some("Cargo.toml") => cargo.push(path),
             Some("package.json" | "tsconfig.json" | "jsconfig.json") => {

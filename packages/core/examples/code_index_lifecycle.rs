@@ -9,6 +9,7 @@ async fn settled(manager: &CodeIndexManager, root: &Path) -> Result<WorkspaceSta
         loop {
             let status = manager.status(root).map_err(|error| error.to_string())?;
             if !status.discovering
+                && !status.stale
                 && status.projects.iter().all(|project| {
                     !matches!(project.state, ServerState::Queued | ServerState::Starting)
                 })

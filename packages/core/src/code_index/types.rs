@@ -36,7 +36,7 @@ impl Query {
     }
 }
 
-/// Positions use zero-based lines and UTF-16 columns, matching negotiated LSP encoding.
+/// Positions use zero-based lines and UTF-16 columns; the LSP adapter converts negotiated encodings.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Location {
     pub path: PathBuf,
@@ -129,6 +129,8 @@ pub struct ProjectStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatus {
+    pub revision: u64,
+    pub stale: bool,
     pub discovering: bool,
     pub incomplete: bool,
     pub warnings: Vec<String>,

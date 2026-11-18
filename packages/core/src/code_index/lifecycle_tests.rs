@@ -19,7 +19,11 @@ impl Fixture {
             "[package]\nname = \"lifecycle_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn alive() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub fn alive() {{}}\n{}", "\n".repeat(99)),
+        )
+        .unwrap();
         Self(root)
     }
     fn events(&self) -> Vec<Value> {
@@ -121,6 +125,7 @@ async fn ready(manager: &CodeIndexManager, root: &Path) {
     until(|| {
         manager.status(root).is_ok_and(|status| {
             !status.discovering
+                && !status.stale
                 && status.projects.len() == 1
                 && status.projects[0].state == ServerState::Ready
         })
@@ -299,7 +304,7 @@ async fn closing_during_initialize_and_discovery_cannot_resurrect_servers() {
         .unwrap();
     until(|| fixture.count("initialize") == 1).await;
     manager.close_workspace(&fixture.0);
-    tokio::time::timeout(Duration::from_secs(6), manager.drain())
+    tokio::time::timeout(Duration::from_secs(12), manager.drain())
         .await
         .unwrap();
     assert_eq!(manager.status(&fixture.0).unwrap_err(), IndexError::Closed);
@@ -400,7 +405,8 @@ async fn retry_detects_a_previously_missing_server_and_disabled_projects_stay_di
     let manager = Arc::new(CodeIndexManager::new());
     let mut config = fixture.config();
     let program = fixture.command().program;
-    let installed = fixture.0.join("installed-python");
+    let installed = fixture.0.join("bin/python3");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
     config.servers.get_mut(&Language::Rust).unwrap().command =
         Some(installed.to_string_lossy().into_owned());
     manager.open_workspace(&fixture.0, config).unwrap();
@@ -418,10 +424,11 @@ async fn retry_detects_a_previously_missing_server_and_disabled_projects_stay_di
     .await;
     until(|| {
         manager.status(&disabled.0).is_ok_and(|status| {
-            status
-                .projects
-                .first()
-                .is_some_and(|project| project.state == ServerState::Disabled)
+            !status.stale
+                && status
+                    .projects
+                    .first()
+                    .is_some_and(|project| project.state == ServerState::Disabled)
         })
     })
     .await;
@@ -491,4 +498,295 @@ async fn simultaneous_first_queries_share_one_startup() {
     pool.close_workspace(&fixture.0).await.unwrap();
     #[cfg(unix)]
     fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn saved_changes_atomic_rename_delete_and_new_files_update_without_queries() {
+    let fixture = Fixture::new("index-saved-files");
+    let manifest = std::fs::read_to_string(fixture.0.join("Cargo.toml")).unwrap();
+    std::fs::write(
+        fixture.0.join("Cargo.toml"),
+        format!("{manifest}\n[lib]\npath = \"src/entry.rs\"\n"),
+    )
+    .unwrap();
+    std::fs::write(fixture.0.join("src/entry.rs"), "mod lib;\n").unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let (_owner, cancel) = CancelHandle::new();
+    assert_symbol(manager.query(&fixture.0, symbols(), &cancel).await.unwrap());
+    until(|| fixture.count("watch-registered") == 1).await;
+    let saved = "pub fn alive() { let _ = \"😀中\"; }\r\n";
+    std::fs::write(fixture.0.join("src/lib.rs.tmp"), saved).unwrap();
+    std::fs::rename(
+        fixture.0.join("src/lib.rs.tmp"),
+        fixture.0.join("src/lib.rs"),
+    )
+    .unwrap();
+    // No query triggers this update: the native watcher must deliver it.
+    until(|| {
+        fixture
+            .events()
+            .iter()
+            .any(|event| event["event"] == "change" && event["document"]["text"] == saved)
+    })
+    .await;
+    until(|| fixture.count("files") >= 1).await;
+    until(|| manager.status(&fixture.0).is_ok_and(|s| !s.stale)).await;
+    assert_eq!(fixture.count("spawn"), 1);
+    let opened = fixture.count("open");
+    assert_symbol(manager.query(&fixture.0, symbols(), &cancel).await.unwrap());
+    assert_eq!(fixture.count("open"), opened);
+    std::fs::rename(fixture.0.join("src/lib.rs"), fixture.0.join("src/moved.rs")).unwrap();
+    until(|| fixture.count("close") == 1).await;
+    until(|| manager.status(&fixture.0).is_ok_and(|s| !s.stale)).await;
+    assert!(matches!(
+        manager.query(&fixture.0, symbols(), &cancel).await,
+        Err(IndexError::Invalid(_))
+    ));
+    assert_symbol(
+        manager
+            .query(
+                &fixture.0,
+                Query::Symbols {
+                    file: "src/moved.rs".into(),
+                },
+                &cancel,
+            )
+            .await
+            .unwrap(),
+    );
+    std::fs::remove_file(fixture.0.join("src/moved.rs")).unwrap();
+    until(|| fixture.count("close") == 2).await;
+    std::fs::write(fixture.0.join("src/new.rs"), "pub fn alive() {}\n").unwrap();
+    until(|| {
+        manager
+            .status(&fixture.0)
+            .is_ok_and(|s| !s.stale && s.revision >= 4)
+    })
+    .await;
+    // Discovery can be pending in the 200 ms merge window: wait for routing, not a guessed delay.
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        assert!(Instant::now() < deadline);
+        match manager
+            .query(
+                &fixture.0,
+                Query::Symbols {
+                    file: "src/new.rs".into(),
+                },
+                &cancel,
+            )
+            .await
+        {
+            Ok(result) => {
+                assert_symbol(result);
+                break;
+            }
+            Err(IndexError::NotReady | IndexError::Invalid(_)) => {
+                tokio::time::sleep(Duration::from_millis(30)).await
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+    let generation = manager.status(&fixture.0).unwrap().projects[0].generation;
+    std::fs::write(fixture.0.join(".ignore"), "src/new.rs\n").unwrap();
+    until(|| {
+        manager
+            .status(&fixture.0)
+            .is_ok_and(|s| !s.stale && s.projects[0].generation > generation)
+    })
+    .await;
+    assert!(matches!(
+        manager
+            .query(
+                &fixture.0,
+                Query::Symbols {
+                    file: "src/new.rs".into()
+                },
+                &cancel
+            )
+            .await,
+        Err(IndexError::Invalid(_))
+    ));
+    manager.shutdown().await;
+    #[cfg(unix)]
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn full_sync_and_utf8_positions_use_saved_content_and_reject_invalid_input() {
+    let fixture = Fixture::new("index-utf8-full-sync");
+    std::fs::write(
+        fixture.0.join("sync-options.json"),
+        r#"{"encoding":"utf-8","syncKind":1,"unicodeResult":true}"#,
+    )
+    .unwrap();
+    std::fs::write(fixture.0.join("src/lib.rs"), "😀alive\r\n").unwrap();
+    let pool = LanguageServerManager::new();
+    let key = fixture.register(&pool);
+    let (_owner, cancel) = CancelHandle::new();
+    let result = pool
+        .query(&key, &fixture.0.join("src/lib.rs"), &symbols(), &cancel)
+        .await
+        .unwrap();
+    match result.data {
+        QueryData::Symbols(items) => {
+            assert_eq!(items[0].location.column, 2);
+            assert_eq!(items[0].location.end_column, 7);
+        }
+        _ => panic!("Wrong result"),
+    }
+    std::fs::write(fixture.0.join("src/lib.rs"), "😀alive changed\r\n").unwrap();
+    pool.query(&key, &fixture.0.join("src/lib.rs"), &symbols(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(fixture.count("change"), 1);
+    assert!(matches!(
+        pool.query(
+            &key,
+            &fixture.0.join("src/lib.rs"),
+            &Query::Definition {
+                file: "src/lib.rs".into(),
+                line: 0,
+                column: 1
+            },
+            &cancel
+        )
+        .await,
+        Err(IndexError::Invalid(_))
+    ));
+    assert_eq!(fixture.count("query"), 0);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/etc/hosts", fixture.0.join("src/escape.rs")).unwrap();
+        assert!(matches!(
+            pool.query(&key, &fixture.0.join("src/escape.rs"), &symbols(), &cancel)
+                .await,
+            Err(IndexError::Invalid(_))
+        ));
+    }
+    pool.close_workspace(&fixture.0).await.unwrap();
+}
+
+#[tokio::test]
+async fn configuration_restarts_the_project_and_startup_changes_are_discovered() {
+    let fixture = Fixture::new("index-config-refresh");
+    let independent = fixture.0.join("independent");
+    std::fs::create_dir_all(independent.join("src")).unwrap();
+    std::fs::write(
+        independent.join("Cargo.toml"),
+        "[package]\nname = \"independent\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n",
+    )
+    .unwrap();
+    std::fs::write(independent.join("src/lib.rs"), "pub fn alive() {}\n").unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    std::fs::write(
+        fixture.0.join("src/during-startup.rs"),
+        "pub fn alive() {}\n",
+    )
+    .unwrap();
+    until(|| {
+        manager.status(&fixture.0).is_ok_and(|s| {
+            !s.stale
+                && s.projects.len() == 2
+                && s.projects.iter().all(|p| p.state == ServerState::Ready)
+        })
+    })
+    .await;
+    let independent_generation = manager
+        .status(&fixture.0)
+        .unwrap()
+        .projects
+        .iter()
+        .find(|p| p.root == independent)
+        .unwrap()
+        .generation;
+    let (_owner, cancel) = CancelHandle::new();
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        if manager
+            .query(
+                &fixture.0,
+                Query::Symbols {
+                    file: "src/during-startup.rs".into(),
+                },
+                &cancel,
+            )
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let generation = manager.status(&fixture.0).unwrap().projects[0].generation;
+    let manifest = std::fs::read_to_string(fixture.0.join("Cargo.toml")).unwrap();
+    std::fs::write(
+        fixture.0.join("Cargo.toml"),
+        format!("{manifest}\n# changed externally\n"),
+    )
+    .unwrap();
+    until(|| {
+        manager.status(&fixture.0).is_ok_and(|s| {
+            !s.stale
+                && s.projects[0].state == ServerState::Ready
+                && s.projects[0].generation > generation
+        })
+    })
+    .await;
+    assert_eq!(fixture.count("spawn"), 2);
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .projects
+            .iter()
+            .find(|p| p.root == independent)
+            .unwrap()
+            .generation,
+        independent_generation
+    );
+    manager.shutdown().await;
+    #[cfg(unix)]
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn registered_non_source_files_preserve_create_change_delete_kinds() {
+    let fixture = Fixture::new("index-registered-data");
+    std::fs::write(fixture.0.join("sync-options.json"), r#"{"watchData":true}"#).unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    until(|| fixture.count("watch-registered") == 1).await;
+    let path = fixture.0.join("schema.oaklet-data");
+    let uri = lsp_types::Url::from_file_path(&path).unwrap().to_string();
+    for kind in 1..=3 {
+        if kind == 3 {
+            std::fs::remove_file(&path).unwrap();
+        } else {
+            std::fs::write(&path, kind.to_string()).unwrap();
+        }
+        until(|| {
+            fixture.events().iter().any(|event| {
+                event["event"] == "files"
+                    && event["changes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|change| change["uri"] == uri && change["type"] == kind)
+            })
+        })
+        .await;
+    }
+    manager.shutdown().await;
 }

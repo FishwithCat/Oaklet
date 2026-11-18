@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     ops::ControlFlow,
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc, Mutex,
@@ -31,6 +31,12 @@ fn backend(error: impl std::fmt::Display) -> IndexError {
     IndexError::Backend(error.to_string())
 }
 
+#[derive(Default)]
+pub(super) struct ClientState {
+    pub progress: Mutex<BTreeMap<String, String>>,
+    pub watches: Mutex<super::watch::Registrations>,
+}
+
 pub(super) struct LanguageServerSession {
     socket: ServerSocket,
     child: Child,
@@ -40,17 +46,22 @@ pub(super) struct LanguageServerSession {
     alive: Arc<AtomicBool>,
     stderr: Arc<Mutex<Vec<u8>>>,
     capabilities: Value,
+    workspace: PathBuf,
+    language: Language,
+    documents: BTreeMap<PathBuf, (i32, String)>,
+    client: Arc<ClientState>,
     pub generation: u64,
 }
 
 impl LanguageServerSession {
     pub async fn start(
         root: &Path,
+        workspace: &Path,
         language: Language,
         command: &ServerCommand,
         generation: u64,
         cancel: &Cancel,
-        progress: Arc<Mutex<BTreeMap<String, String>>>,
+        client: Arc<ClientState>,
     ) -> Result<Self> {
         let config = match language {
             Language::Rust => {
@@ -59,6 +70,9 @@ impl LanguageServerSession {
             Language::TypeScript => json!({}),
         };
         let settings = config.clone();
+        let watches = client.clone();
+        let progress = client.clone();
+        let watch_root = root.to_path_buf();
         let (mainloop, socket) = MainLoop::new_client(move |_| {
             let mut router = Router::<_, ResponseError>::new(settings);
             router.request::<request::WorkspaceConfiguration, _>(|config, params| {
@@ -87,12 +101,32 @@ impl LanguageServerSession {
                     failed_change: None,
                 })
             });
-            // No dynamic capabilities are advertised. Progress does not prove semantic readiness.
+            let registration = watches.clone();
+            router.request::<request::RegisterCapability, _>(move |_, params| {
+                let result = registration
+                    .watches
+                    .lock()
+                    .unwrap()
+                    .register(serde_json::to_value(params).unwrap(), &watch_root)
+                    .map_err(|error| {
+                        ResponseError::new(async_lsp::ErrorCode::INVALID_PARAMS, error.to_string())
+                    });
+                async move { result }
+            });
+            router.request::<request::UnregisterCapability, _>(move |_, params| {
+                watches
+                    .watches
+                    .lock()
+                    .unwrap()
+                    .unregister(serde_json::to_value(params).unwrap());
+                async { Ok(()) }
+            });
+            // Progress does not prove semantic readiness.
             router.unhandled_notification(move |_, notification| {
                 if notification.method == "$/progress" {
                     let token = notification.params["token"].to_string();
                     let value = &notification.params["value"];
-                    let mut active = progress.lock().unwrap();
+                    let mut active = progress.progress.lock().unwrap();
                     if value["kind"] == "end" {
                         active.remove(&token);
                     } else if token.len() <= 128
@@ -172,6 +206,10 @@ impl LanguageServerSession {
             alive,
             stderr,
             capabilities: Value::Null,
+            workspace: workspace.to_path_buf(),
+            language,
+            documents: BTreeMap::new(),
+            client,
             generation,
         };
         let uri = lsp_types::Url::from_directory_path(root)
@@ -184,10 +222,10 @@ impl LanguageServerSession {
         let initialized = session.request::<request::Initialize>(json!({
             "processId": std::process::id(), "rootUri": uri,
             "workspaceFolders": [{"uri": uri, "name": root.file_name().unwrap_or_default().to_string_lossy()}],
-            "capabilities": {"general": {"positionEncodings": ["utf-16"]},
+            "capabilities": {"general": {"positionEncodings": ["utf-16", "utf-8", "utf-32"]},
                 "textDocument": {"callHierarchy": {"dynamicRegistration": false},
                     "documentSymbol": {"hierarchicalDocumentSymbolSupport": true}, "definition": {"linkSupport": true}},
-                "workspace": {"configuration": true}, "window": {"workDoneProgress": true}},
+                "workspace": {"configuration": true, "didChangeWatchedFiles": {"dynamicRegistration": true, "relativePatternSupport": true}}, "window": {"workDoneProgress": true}},
             "initializationOptions": options, "clientInfo": {"name": "oaklet", "version": env!("CARGO_PKG_VERSION")}
         }), Duration::from_secs(60), cancel).await;
         match initialized {
@@ -197,11 +235,11 @@ impl LanguageServerSession {
                     .capabilities
                     .get("positionEncoding")
                     .and_then(Value::as_str)
-                    .is_some_and(|encoding| encoding != "utf-16")
+                    .is_some_and(|encoding| !["utf-16", "utf-8", "utf-32"].contains(&encoding))
                 {
                     session.finish().await;
                     return Err(IndexError::Unsupported(
-                        "Server selected a position encoding other than UTF-16".into(),
+                        "Server selected an unsupported position encoding".into(),
                     ));
                 }
                 session
@@ -274,7 +312,12 @@ impl LanguageServerSession {
         }
     }
 
-    pub async fn query(&self, path: &Path, query: &Query, cancel: &Cancel) -> Result<QueryResult> {
+    pub async fn query(
+        &mut self,
+        path: &Path,
+        query: &Query,
+        cancel: &Cancel,
+    ) -> Result<QueryResult> {
         if !self.alive() {
             return Err(self.failure());
         }
@@ -291,16 +334,25 @@ impl LanguageServerSession {
         {
             return Err(IndexError::Unsupported(capability.into()));
         }
+        self.sync_document(path).await?;
         let uri = lsp_types::Url::from_file_path(path).map_err(|_| backend("Invalid file URI"))?;
         let position = match query {
             Query::Symbols { .. } => Value::Null,
             Query::Definition { line, column, .. }
             | Query::References { line, column, .. }
-            | Query::Calls { line, column, .. } => json!({"line": line, "character": column}),
+            | Query::Calls { line, column, .. } => {
+                let position = super::documents::convert(
+                    &self.documents[path].1,
+                    lsp_types::Position::new(*line, *column),
+                    "utf-16",
+                    self.encoding(),
+                )?;
+                json!(position)
+            }
         };
         let params = json!({"textDocument": {"uri": uri}, "position": position});
         let deadline = Duration::from_secs(30);
-        let data = match query {
+        let mut data = match query {
             Query::Symbols { .. } => {
                 let value = self
                     .request::<request::DocumentSymbolRequest>(params, deadline, cancel)
@@ -390,20 +442,183 @@ impl LanguageServerSession {
                         });
                     }
                 }
+                let mut data = QueryData::Calls(calls);
+                super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
                 return Ok(QueryResult {
-                    data: QueryData::Calls(calls),
+                    data,
                     generation: self.generation,
                     truncated: items.as_array().is_some_and(|items| items.len() > 32),
                     completeness_known: false,
                 });
             }
         };
+        super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
         Ok(QueryResult {
             data,
             generation: self.generation,
             truncated: false,
             completeness_known: false,
         })
+    }
+
+    fn encoding(&self) -> &str {
+        self.capabilities["positionEncoding"]
+            .as_str()
+            .unwrap_or("utf-16")
+    }
+
+    fn close_document(&mut self, path: &Path) -> Result<()> {
+        if self.documents.remove(path).is_some()
+            && (self.capabilities["textDocumentSync"]["openClose"] == true
+                || self.capabilities["textDocumentSync"].is_number())
+        {
+            let uri =
+                lsp_types::Url::from_file_path(path).map_err(|_| backend("Invalid file URI"))?;
+            self.socket
+                .notify::<notification::DidCloseTextDocument>(
+                    lsp_types::DidCloseTextDocumentParams {
+                        text_document: lsp_types::TextDocumentIdentifier { uri },
+                    },
+                )
+                .map_err(backend)?;
+        }
+        Ok(())
+    }
+
+    async fn sync_document(&mut self, path: &Path) -> Result<()> {
+        let text = super::documents::read(&self.workspace, path).await?;
+        let sync = &self.capabilities["textDocumentSync"];
+        let mode = sync
+            .as_u64()
+            .or_else(|| sync["change"].as_u64())
+            .unwrap_or(0);
+        // The legacy numeric form implies open/close support.
+        let open_close = sync.is_number() && mode != 0 || sync["openClose"] == true;
+        let uri = lsp_types::Url::from_file_path(path).map_err(|_| backend("Invalid file URI"))?;
+        // Bound retained overlays as well as each individual file.
+        while self
+            .documents
+            .values()
+            .map(|(_, text)| text.len())
+            .sum::<usize>()
+            - self.documents.get(path).map_or(0, |(_, old)| old.len())
+            + text.len()
+            > 32 * 1024 * 1024
+        {
+            let evicted = self
+                .documents
+                .keys()
+                .find(|key| key.as_path() != path)
+                .unwrap()
+                .clone();
+            self.close_document(&evicted)?;
+        }
+        let existing = self.documents.get(path);
+        if existing.is_some_and(|(_, old)| old == &text) {
+            return Ok(());
+        }
+        if let Some((version, old)) = existing {
+            if mode == 0 {
+                return Err(IndexError::Unsupported(
+                    "Server does not accept saved document changes".into(),
+                ));
+            }
+            let version = version
+                .checked_add(1)
+                .ok_or_else(|| backend("Document version exhausted"))?;
+            let range = (mode == 2).then(|| {
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    super::documents::end(old, self.encoding()),
+                )
+            });
+            self.socket
+                .notify::<notification::DidChangeTextDocument>(
+                    lsp_types::DidChangeTextDocumentParams {
+                        text_document: lsp_types::VersionedTextDocumentIdentifier {
+                            uri: uri.clone(),
+                            version,
+                        },
+                        content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                            range,
+                            range_length: None,
+                            text: text.clone(),
+                        }],
+                    },
+                )
+                .map_err(backend)?;
+            self.documents
+                .insert(path.to_path_buf(), (version, text.clone()));
+        } else {
+            if self.documents.len() >= 64 {
+                let evicted = self.documents.keys().next().unwrap().clone();
+                self.close_document(&evicted)?;
+            }
+            let language_id = match path.extension().and_then(|ext| ext.to_str()) {
+                Some("tsx") => "typescriptreact",
+                Some("jsx") => "javascriptreact",
+                Some("js" | "mjs" | "cjs") => "javascript",
+                _ if self.language == Language::Rust => "rust",
+                _ => "typescript",
+            };
+            if open_close {
+                self.socket
+                    .notify::<notification::DidOpenTextDocument>(
+                        lsp_types::DidOpenTextDocumentParams {
+                            text_document: lsp_types::TextDocumentItem {
+                                uri: uri.clone(),
+                                language_id: language_id.into(),
+                                version: 1,
+                                text: text.clone(),
+                            },
+                        },
+                    )
+                    .map_err(backend)?;
+            }
+            self.documents.insert(path.to_path_buf(), (1, text.clone()));
+        }
+        let save = &self.capabilities["textDocumentSync"]["save"];
+        if save == &Value::Bool(true) || save.is_object() {
+            self.socket
+                .notify::<notification::DidSaveTextDocument>(lsp_types::DidSaveTextDocumentParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri },
+                    text: (save["includeText"] == true).then_some(text),
+                })
+                .map_err(backend)?;
+        }
+        Ok(())
+    }
+
+    pub async fn files_changed(&mut self, changes: &[(PathBuf, u64)]) -> Result<()> {
+        let mut events = Vec::new();
+        for (path, kind) in changes {
+            if self.documents.contains_key(path) {
+                if *kind == 3 {
+                    self.close_document(path)?;
+                } else {
+                    self.sync_document(path).await?;
+                }
+            }
+            if self.client.watches.lock().unwrap().matches(path, *kind) {
+                events.push(lsp_types::FileEvent {
+                    uri: lsp_types::Url::from_file_path(path)
+                        .map_err(|_| backend("Invalid file URI"))?,
+                    typ: match kind {
+                        1 => lsp_types::FileChangeType::CREATED,
+                        2 => lsp_types::FileChangeType::CHANGED,
+                        _ => lsp_types::FileChangeType::DELETED,
+                    },
+                });
+            }
+        }
+        if !events.is_empty() {
+            self.socket
+                .notify::<notification::DidChangeWatchedFiles>(
+                    lsp_types::DidChangeWatchedFilesParams { changes: events },
+                )
+                .map_err(backend)?;
+        }
+        Ok(())
     }
 
     pub async fn finish(&mut self) {
@@ -507,14 +722,16 @@ mod tests {
         let (_owner, cancel) = CancelHandle::new();
         let mut session = LanguageServerSession::start(
             &root,
+            &root,
             Language::Rust,
             &command,
             1,
             &cancel,
-            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(ClientState::default()),
         )
         .await
         .unwrap();
+        std::fs::write(root.join("lib.rs"), "pub fn alive() {}\n").unwrap();
         let params = json!({"textDocument": {"uri": lsp_types::Url::from_file_path(root.join("lib.rs")).unwrap()}, "position": {"line": 0, "character": 0}});
         assert_eq!(
             session

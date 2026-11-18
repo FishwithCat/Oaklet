@@ -12,7 +12,8 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::{
     IndexError, Language, ProjectStatus, Query, QueryResult, ServerCapabilities, ServerCommand,
-    ServerState, lsp::LanguageServerSession,
+    ServerState,
+    lsp::{ClientState, LanguageServerSession},
 };
 use crate::tools::{Cancel, CancelHandle};
 
@@ -42,7 +43,7 @@ struct Entry {
     key: ProjectKey,
     command: ServerCommand,
     capabilities: Mutex<Option<ServerCapabilities>>,
-    progress: Arc<Mutex<BTreeMap<String, String>>>,
+    client: Arc<ClientState>,
     generation: AtomicU64,
     state: Mutex<ServerState>,
     running: AsyncMutex<Option<Running>>,
@@ -103,7 +104,7 @@ impl LanguageServerManager {
                 key: key.clone(),
                 command,
                 capabilities: Mutex::new(None),
-                progress: Arc::new(Mutex::new(BTreeMap::new())),
+                client: Arc::new(ClientState::default()),
                 generation: AtomicU64::new(sequence),
                 state: Mutex::new(ServerState::Queued),
                 running: AsyncMutex::new(None),
@@ -237,17 +238,19 @@ impl LanguageServerManager {
         };
         *entry.state.lock().unwrap() = ServerState::Starting;
         *entry.capabilities.lock().unwrap() = None;
-        entry.progress.lock().unwrap().clear();
+        entry.client.progress.lock().unwrap().clear();
+        *entry.client.watches.lock().unwrap() = Default::default();
         let generation = self.next.fetch_add(1, Ordering::Relaxed);
         entry.generation.store(generation, Ordering::Release);
         // Initialization belongs to the workspace, not whichever chat first requested it.
         match LanguageServerSession::start(
             &entry.key.root,
+            &entry.key.workspace,
             entry.key.language,
             &entry.command,
             generation,
             &entry.cancel,
-            entry.progress.clone(),
+            entry.client.clone(),
         )
         .await
         {
@@ -319,7 +322,7 @@ impl LanguageServerManager {
             _ = cancel.cancelled() => return Err(IndexError::Cancelled),
             running = entry.running.lock() => running,
         };
-        let Some(instance) = running.as_ref() else {
+        let Some(instance) = running.as_mut() else {
             return Err(IndexError::NotReady);
         };
         let result = tokio::select! {
@@ -342,6 +345,52 @@ impl LanguageServerManager {
         result
     }
 
+    pub fn watches(&self, workspace: &Path, path: &Path) -> bool {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|entry| entry.key.workspace == workspace)
+            .any(|entry| {
+                let rules = entry.client.watches.lock().unwrap();
+                (1..=3).any(|kind| rules.matches(path, kind))
+            })
+    }
+
+    pub async fn files_changed(
+        &self,
+        workspace: &Path,
+        changes: &[(PathBuf, u64)],
+    ) -> Result<(), IndexError> {
+        let entries: Vec<_> = self
+            .entries
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|entry| entry.key.workspace == workspace)
+            .cloned()
+            .collect();
+        for entry in entries {
+            let mut running = tokio::select! { _ = entry.cancel.cancelled() => continue, guard = entry.running.lock() => guard };
+            if let Some(instance) = running.as_mut() {
+                tokio::select! { _ = entry.cancel.cancelled() => {}, result = instance.session.files_changed(changes) => result? }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn retire(&self, key: &ProjectKey) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let entry = self.entries.lock().unwrap().remove(key)?;
+        entry.closed.store(true, Ordering::Release);
+        entry.owner.cancel();
+        self.changed.notify_waiters();
+        Some(tauri::async_runtime::spawn(async move {
+            if let Some(mut old) = entry.running.lock().await.take() {
+                old.session.finish().await;
+            }
+        }))
+    }
+
     pub fn status(&self, key: &ProjectKey) -> Option<ProjectStatus> {
         let entry = self.entry(key).ok()?;
         if let Ok(running) = entry.running.try_lock()
@@ -357,7 +406,14 @@ impl LanguageServerManager {
             language: key.language,
             state,
             capabilities: entry.capabilities.lock().unwrap().clone(),
-            progress: entry.progress.lock().unwrap().values().cloned().collect(),
+            progress: entry
+                .client
+                .progress
+                .lock()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect(),
             generation: entry.generation.load(Ordering::Acquire),
         })
     }

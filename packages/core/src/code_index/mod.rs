@@ -2,13 +2,16 @@
 
 mod config;
 mod discovery;
+mod documents;
 mod framing;
 mod language_servers;
 mod lsp;
 mod manager;
 mod runtime;
 mod types;
+mod watch;
 
+pub use crate::tools::{Cancel, CancelHandle};
 pub use manager::CodeIndexManager;
 pub use types::{
     Call, IndexError, Location, ProjectStatus, Query, QueryData, QueryResult, ServerCapabilities,
