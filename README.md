@@ -263,8 +263,9 @@ to 200,000 characters and reduces HTML to readable text.
 - `web_fetch` reads any HTTP(S) URL and returns bounded text. It can reach
   localhost and private addresses, so treat fetched content as untrusted data.
 - **Allow all in workspace** on an approval card stops prompting in that
-  window's workspace for the rest of the app session. The sidebar leaf revokes
-  that grant. Grants never apply to file tools or another workspace, and
+  window's workspace for the rest of the app session. The sidebar toggle grants
+  or revokes it (revoking asks first). Grants never apply to file tools or
+  another workspace, and
   commands can still touch files outside the workspace, so allow them only in a
   project you trust.
 - Commands typed in the terminal run immediately in the workspace, without

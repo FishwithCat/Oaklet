@@ -561,6 +561,12 @@ export function useAgentSession({
       .catch((error) => showError(errorText(error)));
   }
 
+  function grantAllowAll() {
+    invoke("grant_command_allow_all")
+      .then(() => setAllowAll(true))
+      .catch((error) => showError(errorText(error)));
+  }
+
   const tabs = openTabs.flatMap(({ id, number }) => {
     const view = sessions[id];
     return view ? [toChatTabInfo(view, number)] : [];
@@ -603,6 +609,7 @@ export function useAgentSession({
     loadOlder,
     respondToApproval,
     revokeAllowAll,
+    grantAllowAll,
     reloadAllowance: loadAllowance,
     refreshHistory,
   };

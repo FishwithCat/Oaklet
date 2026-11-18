@@ -460,8 +460,8 @@ export function SettingsPanel({
                     <strong>Run commands without approval</strong>
                     <span className="field-hint">
                       The agent runs run_command in this workspace without an
-                      approval card. The sidebar leaf revokes it until the next
-                      app start. File tools never ask for approval, so this
+                      approval card. The sidebar toggle grants or revokes it for
+                      this session. File tools never ask for approval, so this
                       setting does not cover them.
                     </span>
                   </span>

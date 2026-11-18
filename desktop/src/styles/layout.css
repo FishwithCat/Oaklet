@@ -108,10 +108,14 @@
 }
 
 button.allow-all-chip {
+  color: var(--muted);
+}
+
+button.allow-all-chip.allow-all-on {
   color: var(--green);
 }
 
-.sidebar button.icon-button.allow-all-chip:hover:not(:disabled) {
+.sidebar button.icon-button.allow-all-chip.allow-all-on:hover:not(:disabled) {
   color: var(--green);
   background: transparent;
 }

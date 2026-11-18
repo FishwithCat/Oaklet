@@ -397,7 +397,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub search_api_key: String,
     /// Skip the approval card for `run_command` in the configured workspace.
-    /// On by default; the sidebar leaf still revokes it for this session.
+    /// On by default; the sidebar toggle grants or revokes it for this session.
     #[serde(default = "default_true")]
     pub allow_all_commands: bool,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
@@ -883,6 +883,18 @@ fn revoke_command_allow_all(
     Ok(())
 }
 
+#[tauri::command]
+fn grant_command_allow_all(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    if let Ok(mut granted) = state.command_allow_all.lock() {
+        granted.insert(workspace);
+    }
+    Ok(())
+}
+
 /// Read-only snapshot of discovered skills for Settings.
 #[tauri::command]
 async fn skills_list(
@@ -1267,6 +1279,7 @@ pub fn run() {
             approve_tool,
             command_allow_all_active,
             revoke_command_allow_all,
+            grant_command_allow_all,
             skills_list,
             files::files_list,
             files::files_read,

@@ -126,6 +126,23 @@ function App() {
     onRefresh: () => setWorkspaceTick((value) => value + 1),
   });
 
+  async function toggleAllowAll() {
+    if (!session.allowAll) {
+      session.grantAllowAll();
+      return;
+    }
+    const proceed = await confirm(
+      "All commands in this workspace will need approval again. Turn off allow all?",
+      {
+        title: "Allow all commands",
+        kind: "warning",
+        okLabel: "Require approval",
+        cancelLabel: "Keep allowing",
+      },
+    ).catch(() => false);
+    if (proceed) session.revokeAllowAll();
+  }
+
   async function switchWorkspaceBranch(nextBranch: string): Promise<boolean> {
     if (session.running) {
       reportBranchError("Stop the running chat before switching branches.");
@@ -300,7 +317,7 @@ function App() {
         onSelectView={selectView}
         changeCount={changeCount}
         allowAll={session.allowAll}
-        onRevokeAllowAll={session.revokeAllowAll}
+        onToggleAllowAll={toggleAllowAll}
         onChooseWorkspace={chooseWorkspace}
         browsingWorkspace={browsingWorkspace}
         workspace={workspace}

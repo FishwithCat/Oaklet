@@ -5,11 +5,12 @@ import {
   LighthouseRegular,
   GitCommitHorizontalRegular,
   Message4Regular,
+  SafeLockRegular,
   Settings5Regular,
   Sparkles3Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
-import { LeafFilled } from "@mingcute/react/core-filled";
+import { FlashFilled } from "@mingcute/react/core-filled";
 
 export type AppView = "chat" | "terminal" | "git" | "architecture" | "files";
 
@@ -18,7 +19,7 @@ export function Sidebar({
   onSelectView,
   changeCount,
   allowAll,
-  onRevokeAllowAll,
+  onToggleAllowAll,
   onChooseWorkspace,
   browsingWorkspace,
   workspace,
@@ -31,7 +32,7 @@ export function Sidebar({
   onSelectView: (view: AppView) => void;
   changeCount: number | null;
   allowAll: boolean;
-  onRevokeAllowAll: () => void;
+  onToggleAllowAll: () => void;
   onChooseWorkspace: () => void;
   browsingWorkspace: boolean;
   workspace: string;
@@ -113,17 +114,26 @@ export function Sidebar({
         <FolderTreeRegular size={18} />
       </button>
       <div className="sidebar-foot">
-        {allowAll && (
-          <button
-            type="button"
-            className="ghost icon-button allow-all-chip"
-            onClick={onRevokeAllowAll}
-            aria-label="Revoke allowance for all commands"
-            title="All commands in this workspace run without approval. Click to ask again."
-          >
-            <LeafFilled size={16} />
-          </button>
-        )}
+        <button
+          type="button"
+          className={`ghost icon-button allow-all-chip${
+            allowAll ? " allow-all-on" : ""
+          }`}
+          onClick={onToggleAllowAll}
+          aria-label={
+            allowAll
+              ? "Require approval for all commands"
+              : "Allow all commands without approval"
+          }
+          aria-pressed={allowAll}
+          title={
+            allowAll
+              ? "All commands in this workspace run without approval. Click to ask again."
+              : "Commands in this workspace ask for approval. Click to allow all without asking."
+          }
+        >
+          {allowAll ? <FlashFilled size={16} /> : <SafeLockRegular size={16} />}
+        </button>
         <button
           type="button"
           className="ghost icon-button"
