@@ -15,6 +15,9 @@ export type DiffFile = {
   hunks: DiffHunk[];
 };
 
+/** A line in the new file that differs from its previous version. */
+export type ChangedLine = { line: number; kind: "added" | "modified" };
+
 const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 function unquotePath(path: string): string {
@@ -95,4 +98,25 @@ export function pageHunks(hunks: DiffHunk[], offset: number, limit: number): Dif
     if (start >= offset + limit) break;
   }
   return page;
+}
+
+/**
+ * New-file lines to mark in an editor gutter. A block that replaces removed
+ * lines reads as modified, so a rewritten block is one color like in VS Code.
+ */
+export function changedLines(files: readonly DiffFile[]): ChangedLine[] {
+  const marks: ChangedLine[] = [];
+  for (const file of files) {
+    for (const hunk of file.hunks) {
+      let replacing = false;
+      for (const line of hunk.lines) {
+        if (line.kind === "context") replacing = false;
+        else if (line.kind === "del") replacing = true;
+        else if (line.kind === "add" && line.newLine !== null) {
+          marks.push({ line: line.newLine, kind: replacing ? "modified" : "added" });
+        }
+      }
+    }
+  }
+  return marks;
 }

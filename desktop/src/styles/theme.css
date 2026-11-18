@@ -36,6 +36,8 @@
   --find-match-active: #ffc247;
   --diff-add-bg: var(--palette-soft);
   --diff-del-bg: var(--danger-bg);
+  --diff-line-added: var(--palette-secondary);
+  --diff-line-modified: #0c7d9d;
   --success-bg: color-mix(in srgb, var(--green) 9%, var(--panel));
   --danger-bg: color-mix(in srgb, var(--red) 8%, var(--panel));
   --hover-overlay: color-mix(in srgb, var(--text) 8%, transparent);
@@ -99,6 +101,8 @@
   --find-match-active: #8a6a1f;
   --diff-add-bg: #213d28;
   --diff-del-bg: #42242a;
+  --diff-line-added: var(--palette-secondary);
+  --diff-line-modified: #3fa4c2;
   --success-bg: color-mix(in srgb, var(--green) 10%, var(--panel));
   --danger-bg: color-mix(in srgb, var(--red) 12%, var(--panel));
   --hover-overlay: color-mix(in srgb, var(--text) 9%, transparent);

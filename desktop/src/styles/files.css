@@ -30,7 +30,12 @@ button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { 
 .files-editor .cm-editor.cm-focused { outline: none; }
 .files-editor .cm-editor .cm-gutters { background: var(--bg); color: var(--muted); }
 .files-editor .cm-editor .cm-gutters.cm-gutters-before { border-right: 0; }
-.files-editor .cm-lineNumbers .cm-gutterElement { min-width: 40px; padding: 0 18px 0 12px; }
+.files-editor .cm-lineNumbers .cm-gutterElement { position: relative; min-width: 40px; padding: 0 18px 0 12px; }
+.files-editor .cm-lineNumbers .cm-gutterElement:is(.cm-line-added, .cm-line-modified)::before {
+  content: ""; position: absolute; inset: 0 8px 0 auto; width: 4px;
+}
+.files-editor .cm-lineNumbers .cm-gutterElement.cm-line-added::before { background: var(--diff-line-added); }
+.files-editor .cm-lineNumbers .cm-gutterElement.cm-line-modified::before { background: var(--diff-line-modified); }
 .files-editor .cm-line { padding: 0 24px 0 4px; }
 .files-editor .cm-editor .cm-activeLine { background: var(--subtle-overlay); }
 .files-editor .cm-editor .cm-activeLineGutter { background: var(--subtle-overlay); color: var(--accent); }

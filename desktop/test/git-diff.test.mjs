@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
+import { changedLines, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -58,4 +58,23 @@ test("diff pages preserve line numbers across hunk boundaries without dropping l
   assert.deepEqual(pageHunks(hunks, 99, 3), []);
   assert.equal(pageHunks(hunks, 3, 3).length, 2);
   assert.equal(pageHunks(hunks, 3, 3)[1].header, hunks[1].header);
+});
+
+test("gutter marks read a replaced block as modified and an insertion as added", () => {
+  assert.deepEqual(changedLines(parseDiff(PATCH)), [
+    { line: 2, kind: "modified" },
+    { line: 3, kind: "modified" },
+    { line: 1, kind: "added" },
+    { line: 2, kind: "added" },
+  ]);
+
+  const insertion = `diff --git a/x.txt b/x.txt
+--- a/x.txt
++++ b/x.txt
+@@ -1,2 +1,3 @@
+ one
++two
+ three
+`;
+  assert.deepEqual(changedLines(parseDiff(insertion)), [{ line: 2, kind: "added" }]);
 });

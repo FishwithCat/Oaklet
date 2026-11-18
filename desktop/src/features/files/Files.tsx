@@ -15,6 +15,7 @@ import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
 import { previewFontShortcut } from "../../app/shortcuts";
+import { changedLines, parseDiff, type ChangedLine } from "../source-control/git-diff";
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
@@ -25,6 +26,7 @@ const FileEditor = lazy(() => import("./FileEditor"));
 const PREVIEW_FONT_SIZE_DEFAULT = 12;
 const PREVIEW_FONT_SIZE_MIN = 10;
 const PREVIEW_FONT_SIZE_MAX = 20;
+const NO_CHANGES: readonly ChangedLine[] = [];
 
 export type FilesHandle = {
   canLeave: () => Promise<boolean>;
@@ -63,6 +65,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [preview, setPreview] = useState(false);
   const [previewFontSize, setPreviewFontSize] = useState(PREVIEW_FONT_SIZE_DEFAULT);
   const [syntax, setSyntax] = useState<Extension>([]);
+  const [lineMarks, setLineMarks] = useState<{ path: string; marks: readonly ChangedLine[] } | null>(null);
   const [browserWidth, setBrowserWidth] = useState(300);
   const busyRef = useRef(false);
   const dirty = document !== null && document.content !== editorText(document.original);
@@ -120,6 +123,22 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [active, preview]);
+
+  // Gutter marks come from the file on disk. While the buffer is dirty it
+  // keeps its mapped marks, and saving refetches the diff.
+  useEffect(() => {
+    if (!document || dirty) return;
+    let cancelled = false;
+    const path = document.path;
+    invoke<string>("git_diff", { path })
+      .then((patch) => {
+        if (!cancelled) setLineMarks({ path, marks: changedLines(parseDiff(patch)) });
+      })
+      .catch(() => {
+        if (!cancelled) setLineMarks({ path, marks: NO_CHANGES });
+      });
+    return () => { cancelled = true; };
+  }, [document?.path, dirty, changes]);
 
   async function openFile(path: string, previewMarkdown = false) {
     if (!await canLeave()) return;
@@ -212,6 +231,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
             {preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
               <Suspense fallback={<div className="files-editor" />}>
                 <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                  marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
                   onChange={(content) => {
                     dirtyRef.current = content !== editorText(document.original);
                     setDocument({ ...document, content });
