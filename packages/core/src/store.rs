@@ -41,6 +41,8 @@ pub enum EventPayload {
     /// Exact model projection; original message bodies remain in the log.
     Context {
         surface: Vec<projection::SurfaceEntry>,
+        /// Durable record of this replacement's archived originals; the recall
+        /// index in archived_messages is written in the same transaction.
         archived: Vec<i64>,
         before: usize,
         after: usize,
