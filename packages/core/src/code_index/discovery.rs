@@ -38,7 +38,7 @@ pub struct Project {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Discovery {
     pub workspace: PathBuf,

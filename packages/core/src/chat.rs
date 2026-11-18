@@ -245,8 +245,12 @@ impl ChatState {
         }
     }
 
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
-        let store = Store::open(path)?;
+        Self::from_store(Store::open(path)?)
+    }
+
+    pub(crate) fn from_store(store: Store) -> Result<Self, String> {
         let recovered = store.interrupt_stale_runs(
             store::now_ms(),
             &json!({ "role": "notice", "tone": Tone::Error, "text": INTERRUPTED_NOTICE }),
@@ -2578,6 +2582,32 @@ mod tests {
         };
         drop(slot);
         assert!(state.live().compacting.is_empty());
+    }
+
+    #[test]
+    fn injected_store_recovers_stale_runs_and_shares_subsequent_writes() {
+        let store = store::Store::in_memory().unwrap();
+        store.create_session("shared", "/workspace", 1).unwrap();
+        store
+            .begin_run(
+                "shared",
+                "stale",
+                &store::NewUserTurn {
+                    message: json!({"role":"user","content":"hello"}),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let chat = ChatState::from_store(store.clone()).unwrap();
+        let session = store.get_session("shared").unwrap().unwrap();
+        assert!(session.events.iter().any(
+            |e| matches!(&e.payload,EventPayload::Notice {text,..} if text == super::INTERRUPTED_NOTICE)
+        ));
+        store.create_session("later", "/workspace", 3).unwrap();
+        assert!(chat.store.get_session("later").unwrap().is_some());
+        assert_eq!(store.interrupt_stale_runs(4, &json!({})).unwrap(), 0);
     }
 
     #[tokio::test]

@@ -15,7 +15,13 @@ use super::{
 };
 use crate::tools::{Cancel, CancelHandle, Workspace};
 
+#[path = "persistence.rs"]
+mod persistence;
+
 struct WorkspaceEntry {
+    index_worker: Option<tauri::async_runtime::JoinHandle<()>>,
+    persistence: Option<super::PersistenceStatus>,
+    index_dirty: Option<std::collections::BTreeSet<PathBuf>>,
     generation: u64,
     owner: CancelHandle,
     cancel: Cancel,
@@ -30,6 +36,7 @@ struct WorkspaceEntry {
 
 /// Shared Rust service; no protocol or model-specific types cross this boundary.
 pub struct CodeIndexManager {
+    store: Option<crate::store::Store>,
     workspaces: Mutex<BTreeMap<PathBuf, WorkspaceEntry>>,
     servers: Arc<LanguageServerManager>,
     next: AtomicU64,
@@ -44,14 +51,23 @@ impl Default for CodeIndexManager {
     }
 }
 impl CodeIndexManager {
+    /// Volatile service for protocol probes; desktop setup injects the shared Store.
     pub fn new() -> Self {
         Self {
+            store: None,
             workspaces: Mutex::new(BTreeMap::new()),
             servers: LanguageServerManager::new(),
             next: AtomicU64::new(1),
             shutting_down: AtomicBool::new(false),
             closing: Mutex::new(Vec::new()),
             draining: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn with_store(store: crate::store::Store) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::new()
         }
     }
 
@@ -80,6 +96,12 @@ impl CodeIndexManager {
             entries.insert(
                 workspace.clone(),
                 WorkspaceEntry {
+                    index_worker: None,
+                    index_dirty: None,
+                    persistence: self.store.as_ref().map(|_| super::PersistenceStatus {
+                        verifying: true,
+                        ..Default::default()
+                    }),
                     generation,
                     owner,
                     cancel: cancel.clone(),
@@ -163,6 +185,14 @@ impl CodeIndexManager {
             .filter(|entry| entry.generation == generation)
         {
             entry.worker = Some(worker);
+            if let Some(store) = self.store.clone() {
+                let manager = self.clone();
+                let root = registered_workspace.clone();
+                let cancel = entry.cancel.clone();
+                entry.index_worker = Some(tauri::async_runtime::spawn(async move {
+                    persistence::run(manager, store, root, generation, cancel).await;
+                }));
+            }
         } else {
             worker.abort();
         }
@@ -178,6 +208,10 @@ impl CodeIndexManager {
             .filter(|entry| entry.generation == generation)
         {
             entry.stale = true;
+            entry.index_dirty = None;
+            if let Some(index) = &mut entry.persistence {
+                index.verifying = true;
+            }
             if entry.discovery.is_none() {
                 entry.discovery = Some(Discovery::failed(workspace.to_path_buf(), error.clone()));
             }
@@ -213,7 +247,7 @@ impl CodeIndexManager {
                             return false;
                         }
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let language_matches = if name.starts_with("Cargo.") {
+                        let language_matches = if super::watch::rust_configuration(path) {
                             project.language == super::Language::Rust
                         } else if name == ".gitignore" || name == ".ignore" {
                             true
@@ -312,6 +346,14 @@ impl CodeIndexManager {
                 .ok_or(IndexError::Closed)?;
             entry.stale = true;
             entry.revision += 1;
+            if batch.reconcile || batch.error.is_some() {
+                entry.index_dirty = None;
+            } else if let Some(dirty) = &mut entry.index_dirty {
+                dirty.extend(batch.paths.iter().cloned());
+            }
+            if let Some(index) = &mut entry.persistence {
+                index.verifying = true;
+            }
             if let Some(error) = &batch.error {
                 entry.watch_error = Some(error.clone());
             }
@@ -390,6 +432,7 @@ impl CodeIndexManager {
         let workspaces = self.workspaces.lock().unwrap();
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
         Ok(WorkspaceStatus {
+            persistence: entry.persistence.clone(),
             discovering: entry.discovery.is_none(),
             revision: entry.revision,
             stale: entry.stale,
@@ -539,6 +582,10 @@ impl CodeIndexManager {
                     self.servers
                         .register(workspace, &project.root, project.language, command);
                 *key = Some(registered.clone());
+                entry.revision += 1;
+                if let Some(index) = &mut entry.persistence {
+                    index.verifying = true;
+                }
                 registered
             };
             self.servers.restart(&key, cancel).await?;
@@ -550,6 +597,9 @@ impl CodeIndexManager {
         let mut workspaces = self.workspaces.lock().unwrap();
         if let Some(entry) = workspaces.remove(workspace) {
             entry.owner.cancel();
+            if let Some(worker) = entry.index_worker {
+                self.closing.lock().unwrap().push(worker);
+            }
             if let Some(worker) = entry.worker {
                 self.closing.lock().unwrap().push(worker);
             }

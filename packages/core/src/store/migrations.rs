@@ -156,6 +156,15 @@ mod tests {
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
         assert!(crate::store::has_table(&conn, "session_events").unwrap());
+        for table in [
+            "code_index_projects",
+            "code_index_files",
+            "code_index_symbols",
+            "code_index_evidence",
+            "code_index_queries",
+        ] {
+            assert!(crate::store::has_table(&conn, table).unwrap());
+        }
         assert!(crate::store::has_table(&conn, "archived_messages").unwrap());
         let archive_index: bool = conn
             .query_row(
@@ -169,6 +178,39 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, latest_version());
+    }
+
+    #[test]
+    fn upgrades_v0_and_preserves_chat_with_both_checksums_verified() {
+        let root = crate::tools::test_support::temp_root("store-upgrade-index");
+        let path = root.join("oaklet.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+        conn.execute_batch(include_str!("migration_history_fixture.sql"))
+            .unwrap();
+        super::record(&conn, &MIGRATIONS[0], 1).unwrap();
+        conn.execute(
+            "INSERT INTO sessions(id,workspace,created_at,updated_at) VALUES('kept','/a',1,1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        assert!(store.get_session("kept").unwrap().is_some());
+        assert!(
+            crate::store::has_table(&store.connection().unwrap(), "code_index_queries").unwrap()
+        );
+        store
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE schema_migrations SET checksum='bad' WHERE version=1",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        assert!(Store::open(&path).err().unwrap().contains("modified"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

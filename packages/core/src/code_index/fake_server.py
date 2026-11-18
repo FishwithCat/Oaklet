@@ -64,7 +64,7 @@ while (message := read()) is not None:
         settings = message["result"][0]
         assert settings["cargo"]["buildScripts"]["enable"] is False
         assert settings["procMacro"]["enable"] is False
-        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": False, "textDocumentSync": {"openClose": True, "change": sync_kind}, "positionEncoding": encoding}}})
+        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": False, "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
     elif method == "initialized":
         record("ready")
         send({"id": "watch-registration", "method": "client/registerCapability", "params": {"registrations": [{"id": "sources", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.rs"}, *([{"globPattern": "**/*.oaklet-data"}] if options.get("watchData") else [])]}}]}})
@@ -91,6 +91,10 @@ while (message := read()) is not None:
             assert "range" not in change
         documents[document["uri"]] = {**document, "text": change["text"]}
         record("change", document=documents[document["uri"]])
+    elif method == "textDocument/didSave":
+        document = documents[params["textDocument"]["uri"]]
+        assert params["text"] == document["text"]
+        record("save", uri=document["uri"])
     elif method == "textDocument/didClose":
         document = params["textDocument"]
         documents.pop(document["uri"], None)
@@ -112,6 +116,9 @@ while (message := read()) is not None:
     elif method == "$/cancelRequest":
         record("cancel", id=params["id"])
     elif method == "textDocument/documentSymbol":
+        record("symbols", uri=params["textDocument"]["uri"])
+        if (root / "hang-symbols").exists():
+            continue
         if (root / "method-missing").exists():
             send({"id": message["id"], "error": {"code": -32601, "message": "not implemented"}})
             continue

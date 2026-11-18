@@ -117,18 +117,29 @@ pub(super) fn configuration(path: &Path) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
+    rust_configuration(path)
+        || matches!(
+            name,
+            "package.json"
+                | "package-lock.json"
+                | "pnpm-lock.yaml"
+                | "yarn.lock"
+                | ".gitignore"
+                | ".ignore"
+                | ".gitmodules"
+        )
+        || (name.starts_with("tsconfig") || name.starts_with("jsconfig")) && name.ends_with(".json")
+}
+pub(super) fn rust_configuration(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     matches!(
         name,
-        "Cargo.toml"
-            | "Cargo.lock"
-            | "package.json"
-            | "package-lock.json"
-            | "pnpm-lock.yaml"
-            | "yarn.lock"
-            | ".gitignore"
-            | ".ignore"
-            | ".gitmodules"
-    ) || (name.starts_with("tsconfig") || name.starts_with("jsconfig")) && name.ends_with(".json")
+        "Cargo.toml" | "Cargo.lock" | "rust-toolchain" | "rust-toolchain.toml"
+    ) || matches!(name, "config" | "config.toml")
+        && path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == ".cargo")
 }
 pub(super) fn temporary(path: &Path) -> bool {
     path.file_name()
@@ -288,5 +299,23 @@ mod tests {
         assert!(batch.reconcile && batch.error.unwrap().contains("fixture watch failure"));
         drop(watcher);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+    #[test]
+    fn toolchain_and_cargo_settings_participate_in_snapshot_invalidation() {
+        for path in [
+            "/project/rust-toolchain",
+            "/project/rust-toolchain.toml",
+            "/project/.cargo/config",
+            "/project/.cargo/config.toml",
+        ] {
+            assert!(configuration(Path::new(path)) && rust_configuration(Path::new(path)));
+        }
+        assert!(!rust_configuration(Path::new("/project/config.toml")));
+        assert!(!configuration(Path::new("/project/config.toml")));
     }
 }

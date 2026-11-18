@@ -15,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub(crate) mod code_index;
 mod migrations;
 mod projection;
 use projection::{save_surface, surface_messages_with};

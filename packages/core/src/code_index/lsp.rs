@@ -312,6 +312,32 @@ impl LanguageServerSession {
         }
     }
 
+    pub async fn background_symbols(
+        &mut self,
+        path: &Path,
+        cancel: &Cancel,
+    ) -> Result<(QueryResult, String)> {
+        let already_open = self.documents.contains_key(path);
+        let query = Query::Symbols {
+            file: path.to_string_lossy().into_owned(),
+        };
+        let result =
+            match tokio::time::timeout(Duration::from_secs(3), self.query(path, &query, cancel))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(IndexError::Timeout),
+            };
+        let result = result.and_then(|result| {
+            let text = &self.documents.get(path).ok_or(IndexError::NotReady)?.1;
+            Ok((result, blake3::hash(text.as_bytes()).to_hex().to_string()))
+        });
+        if !already_open {
+            self.close_document(path)?;
+        }
+        result
+    }
+
     pub async fn query(
         &mut self,
         path: &Path,
@@ -514,6 +540,7 @@ impl LanguageServerSession {
             self.close_document(&evicted)?;
         }
         let existing = self.documents.get(path);
+        let changed = existing.is_some();
         if existing.is_some_and(|(_, old)| old == &text) {
             return Ok(());
         }
@@ -578,7 +605,7 @@ impl LanguageServerSession {
             self.documents.insert(path.to_path_buf(), (1, text.clone()));
         }
         let save = &self.capabilities["textDocumentSync"]["save"];
-        if save == &Value::Bool(true) || save.is_object() {
+        if changed && (save == &Value::Bool(true) || save.is_object()) {
             self.socket
                 .notify::<notification::DidSaveTextDocument>(lsp_types::DidSaveTextDocumentParams {
                     text_document: lsp_types::TextDocumentIdentifier { uri },

@@ -14,8 +14,8 @@ mod watch;
 pub use crate::tools::{Cancel, CancelHandle};
 pub use manager::CodeIndexManager;
 pub use types::{
-    Call, IndexError, Location, ProjectStatus, Query, QueryData, QueryResult, ServerCapabilities,
-    ServerState, Symbol, WorkspaceStatus,
+    Call, IndexError, Location, PersistenceStatus, PersistentProjectStatus, ProjectStatus, Query,
+    QueryData, QueryResult, ServerCapabilities, ServerState, Symbol, WorkspaceStatus,
 };
 
 pub use config::{CodeIndexConfig, ServerConfig};

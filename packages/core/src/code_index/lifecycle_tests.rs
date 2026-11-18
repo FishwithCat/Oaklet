@@ -533,7 +533,7 @@ async fn saved_changes_atomic_rename_delete_and_new_files_update_without_queries
             .any(|event| event["event"] == "change" && event["document"]["text"] == saved)
     })
     .await;
-    until(|| fixture.count("files") >= 1).await;
+    until(|| fixture.count("files") >= 1 && fixture.count("save") == 1).await;
     until(|| manager.status(&fixture.0).is_ok_and(|s| !s.stale)).await;
     assert_eq!(fixture.count("spawn"), 1);
     let opened = fixture.count("open");
@@ -789,4 +789,333 @@ async fn registered_non_source_files_preserve_create_change_delete_kinds() {
         .await;
     }
     manager.shutdown().await;
+}
+
+async fn persisted(manager: &CodeIndexManager, root: &Path, expected: usize) {
+    until(|| {
+        manager
+            .status(root)
+            .ok()
+            .and_then(|s| s.persistence)
+            .is_some_and(|s| {
+                !s.verifying && !s.extracting && s.files == expected && s.error.is_none()
+            })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sqlite_reopen_reuses_hashes_rebuilds_only_changes_and_prunes_deleted_files() {
+    let fixture = Fixture::new("index-persistence");
+    let database = temp_root("index-persistence-db");
+    let path = database.join("oaklet.db");
+    std::fs::write(fixture.0.join("src/other.rs"), "pub fn other() {}\n").unwrap();
+    let store = crate::store::Store::open(&path).unwrap();
+    store
+        .create_session("preserved", &fixture.0.to_string_lossy(), 1)
+        .unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 2).await;
+    let first = manager.status(&fixture.0).unwrap().persistence.unwrap();
+    assert_eq!(first.extracted_files, 2);
+    assert!(!first.ipc_covered);
+    assert_eq!(fixture.count("symbols"), 2);
+    assert_eq!(fixture.count("save"), 0, "initial didOpen is not a save");
+    assert_eq!(fixture.count("open"), fixture.count("close"));
+    let original = store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0]
+        .snapshot
+        .clone();
+    manager.shutdown().await;
+    drop(manager);
+    drop(store);
+
+    let store = crate::store::Store::open(&path).unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 2).await;
+    let restored = manager.status(&fixture.0).unwrap().persistence.unwrap();
+    assert_eq!(restored.restored_projects, 1);
+    assert_eq!(restored.reused_files, 2);
+    assert_eq!(
+        fixture.count("symbols"),
+        2,
+        "unchanged files must not reach the server"
+    );
+    assert_eq!(restored.projects[0].snapshot, original);
+
+    std::fs::write(fixture.0.join("src/lib.rs"), "pub fn changed() {}\n").unwrap();
+    until(|| fixture.count("symbols") == 3).await;
+    persisted(&manager, &fixture.0, 2).await;
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .persistence
+            .unwrap()
+            .reused_files,
+        1
+    );
+    assert_ne!(
+        store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0].snapshot,
+        original
+    );
+    std::fs::remove_file(fixture.0.join("src/other.rs")).unwrap();
+    until(|| manager.status(&fixture.0).unwrap().revision >= 2).await;
+    persisted(&manager, &fixture.0, 1).await;
+    let id = store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0].id;
+    assert_eq!(
+        store
+            .index_files(id)
+            .unwrap()
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/lib.rs"]
+    );
+    assert_eq!(fixture.count("symbols"), 3);
+    assert!(store.get_session("preserved").unwrap().is_some());
+    manager.shutdown().await;
+    fixture.assert_reaped();
+    drop(manager);
+    drop(store);
+    let source = fixture.0.join("src/lib.rs");
+    let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+    let size = std::fs::metadata(&source).unwrap().len();
+    std::fs::write(&source, "pub fn renamed() {}\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(std::fs::metadata(&source).unwrap().len(), size);
+    assert_eq!(
+        std::fs::metadata(&source).unwrap().modified().unwrap(),
+        modified
+    );
+    let store = crate::store::Store::open(&path).unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    assert_eq!(
+        fixture.count("symbols"),
+        4,
+        "equal mtime/size must not hide changed contents"
+    );
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .persistence
+            .unwrap()
+            .reused_files,
+        0
+    );
+    manager.shutdown().await;
+    std::fs::remove_dir_all(database).unwrap();
+}
+
+#[tokio::test]
+async fn background_index_yields_to_queries_and_does_not_hold_the_database_lock() {
+    let fixture = Fixture::new("index-background-priority");
+    std::fs::write(fixture.0.join("hang-symbols"), "").unwrap();
+    let store = crate::store::Store::in_memory().unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    until(|| fixture.count("symbols") > 0).await;
+    let database = store.clone();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || database.create_session("unblocked", "/chat", 1)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    std::fs::remove_file(fixture.0.join("hang-symbols")).unwrap();
+    let (_owner, cancel) = CancelHandle::new();
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        manager.query(&fixture.0, symbols(), &cancel),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(result.data,QueryData::Symbols(items) if items.len()==1));
+    until(|| fixture.count("cancel") > 0).await;
+    persisted(&manager, &fixture.0, 1).await;
+    assert!(store.get_session("unblocked").unwrap().is_some());
+    manager.shutdown().await;
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn persistent_index_recovers_from_project_reconfiguration_and_marks_unsupported_coverage() {
+    let fixture = Fixture::new("index-persistence-reconfigure");
+    std::fs::create_dir_all(fixture.0.join(".cargo")).unwrap();
+    std::fs::write(fixture.0.join("hang-symbols"), "").unwrap();
+    let store = crate::store::Store::in_memory().unwrap();
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    until(|| fixture.count("symbols") > 0).await;
+    std::fs::remove_file(fixture.0.join("hang-symbols")).unwrap();
+    // Retires a server with background work in flight; it must not stop the workspace index worker.
+    std::fs::write(
+        fixture.0.join(".cargo/config.toml"),
+        "[net]\noffline=true\n",
+    )
+    .unwrap();
+    until(|| manager.status(&fixture.0).unwrap().revision > 0).await;
+    persisted(&manager, &fixture.0, 1).await;
+    assert!(fixture.count("spawn") >= 2);
+    assert_eq!(
+        manager
+            .status(&fixture.0)
+            .unwrap()
+            .persistence
+            .unwrap()
+            .extracted_files,
+        1
+    );
+    manager.shutdown().await;
+
+    let mut config = fixture.config();
+    config.servers.get_mut(&Language::Rust).unwrap().enabled = false;
+    let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+    manager.open_workspace(&fixture.0, config).unwrap();
+    persisted(&manager, &fixture.0, 1).await;
+    let coverage = manager.status(&fixture.0).unwrap().persistence.unwrap();
+    assert_eq!(coverage.skipped_files, 1);
+    let id = store.index_projects(&fixture.0.to_string_lossy()).unwrap()[0].id;
+    let records = store.index_files(id).unwrap();
+    assert!(
+        records[0].symbols.is_empty()
+            && records[0]
+                .symbols_state
+                .contains("No available language server")
+    );
+    assert!(records[0].evidence_state.starts_with("unsupported:"));
+    manager.shutdown().await;
+}
+
+/// Run explicitly against a disposable external project; never uses Oaklet as the sample.
+#[tokio::test]
+#[ignore = "requires OAKLET_INDEX_PROJECT pointing to a disposable Rust/TS project and real LSP tools"]
+async fn real_project_sqlite_restore_probe() {
+    let root =
+        PathBuf::from(std::env::var_os("OAKLET_INDEX_PROJECT").expect("OAKLET_INDEX_PROJECT"))
+            .canonicalize()
+            .unwrap();
+    let temporary = std::env::temp_dir().canonicalize().unwrap();
+    assert!(root.starts_with(&temporary) || root.starts_with("/private/tmp"));
+    let database = temp_root("index-real-project-db");
+    let path = database.join("oaklet.db");
+    let mut files = 0;
+    let mut extracted = 0;
+    let mut snapshots = Vec::new();
+    for pass in 0..2 {
+        let started = Instant::now();
+        let store = crate::store::Store::open(&path).unwrap();
+        let manager = Arc::new(CodeIndexManager::with_store(store.clone()));
+        manager
+            .open_workspace(&root, CodeIndexConfig::default())
+            .unwrap();
+        let coverage = tokio::time::timeout(Duration::from_secs(300), async {
+            loop {
+                let state = manager.status(&root).unwrap();
+                let coverage = state.persistence.unwrap();
+                if let Some(error) = &coverage.error {
+                    panic!("{error}");
+                }
+                if !state.discovering
+                    && !state.stale
+                    && !coverage.verifying
+                    && !coverage.extracting
+                    && !coverage.projects.is_empty()
+                {
+                    break coverage;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        eprintln!(
+            "server_states={:?}",
+            manager
+                .status(&root)
+                .unwrap()
+                .projects
+                .iter()
+                .map(|p| (&p.language, &p.state))
+                .collect::<Vec<_>>()
+        );
+        manager.shutdown().await;
+        let coverage = coverage.expect("real project verification timed out");
+        assert!(coverage.files > 0 && coverage.extracted_files > 0);
+        for project in store.index_projects(&root.to_string_lossy()).unwrap() {
+            let records = store.index_files(project.id).unwrap();
+            let count = records
+                .iter()
+                .filter(|f| f.extracted_hash.is_some())
+                .count();
+            let mut skipped = BTreeMap::new();
+            for file in records.iter().filter(|f| f.extracted_hash.is_none()) {
+                *skipped.entry(file.symbols_state.clone()).or_insert(0) += 1;
+            }
+            eprintln!(
+                "language={:?} extracted={count} skipped={skipped:?}",
+                project.language
+            );
+            assert!(
+                count > 0,
+                "real backend must extract symbols for each project language"
+            );
+        }
+        assert!(!coverage.ipc_covered);
+        if pass == 0 {
+            files = coverage.files;
+            extracted = coverage.extracted_files;
+            snapshots = coverage
+                .projects
+                .iter()
+                .map(|p| p.snapshot.clone())
+                .collect();
+        } else {
+            assert_eq!(coverage.files, files);
+            assert!(coverage.extracted_files >= extracted);
+            assert_eq!(
+                coverage.reused_files, extracted,
+                "all previously extracted files must be reused without another request"
+            );
+            assert_eq!(
+                coverage
+                    .projects
+                    .iter()
+                    .map(|p| p.snapshot.clone())
+                    .collect::<Vec<_>>(),
+                snapshots
+            );
+        }
+        eprintln!(
+            "pass={pass} elapsed_ms={} files={} extracted={} reused={} skipped={} restored_projects={}",
+            started.elapsed().as_millis(),
+            coverage.files,
+            coverage.extracted_files,
+            coverage.reused_files,
+            coverage.skipped_files,
+            coverage.restored_projects
+        );
+    }
+    std::fs::remove_dir_all(database).unwrap();
 }

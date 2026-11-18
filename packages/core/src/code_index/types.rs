@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub enum Query {
@@ -37,7 +37,7 @@ impl Query {
 }
 
 /// Positions use zero-based lines and UTF-16 columns; the LSP adapter converts negotiated encodings.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Location {
     pub path: PathBuf,
     pub line: u32,
@@ -46,7 +46,7 @@ pub struct Location {
     pub end_column: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Symbol {
     pub name: String,
     pub kind: u32,
@@ -97,7 +97,7 @@ impl std::fmt::Display for IndexError {
 }
 impl std::error::Error for IndexError {}
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServerState {
     Idle,
     Queued,
@@ -129,10 +129,35 @@ pub struct ProjectStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatus {
+    pub persistence: Option<PersistenceStatus>,
     pub revision: u64,
     pub stale: bool,
     pub discovering: bool,
     pub incomplete: bool,
     pub warnings: Vec<String>,
     pub projects: Vec<ProjectStatus>,
+}
+
+/// Verification is about disk metadata; it does not establish LSP semantic completeness.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PersistenceStatus {
+    pub verifying: bool,
+    pub extracting: bool,
+    pub restored_projects: usize,
+    pub total_files: usize,
+    pub files: usize,
+    pub extracted_files: usize,
+    pub reused_files: usize,
+    pub skipped_files: usize,
+    pub ipc_covered: bool,
+    pub error: Option<String>,
+    pub projects: Vec<PersistentProjectStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PersistentProjectStatus {
+    pub root: PathBuf,
+    pub language: super::Language,
+    pub snapshot: String,
+    pub verified: bool,
 }

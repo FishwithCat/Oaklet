@@ -22,7 +22,7 @@ pub(super) struct ProjectKey {
     pub workspace: PathBuf,
     pub root: PathBuf,
     pub language: Language,
-    fingerprint: String,
+    pub fingerprint: String,
 }
 
 struct Running {
@@ -342,6 +342,44 @@ impl LanguageServerManager {
             self.changed.notify_waiters();
             return Err(error);
         }
+        result
+    }
+
+    /// Never queue background work ahead of an interactive user or start/evict a server for it.
+    pub async fn background_symbols(
+        &self,
+        key: &ProjectKey,
+        path: &Path,
+        cancel: &Cancel,
+    ) -> Result<(QueryResult, String), IndexError> {
+        let entry = self.entry(key)?;
+        if entry.users.load(Ordering::Acquire) != 0 {
+            return Err(IndexError::Busy);
+        }
+        let mut running = entry.running.try_lock().map_err(|_| IndexError::Busy)?;
+        let instance = running.as_mut().ok_or(IndexError::NotReady)?;
+        if !instance.session.alive() {
+            return Err(instance.session.failure());
+        }
+        let (owner, background) = CancelHandle::new();
+        let result = {
+            let query = instance.session.background_symbols(path, &background);
+            tokio::pin!(query);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => { owner.cancel(); query.await },
+                _ = entry.cancel.cancelled() => { owner.cancel(); query.await },
+                _ = async { loop {
+                    let changed = self.changed.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    if entry.users.load(Ordering::Acquire) != 0 { break; }
+                    changed.await;
+                }} => { owner.cancel(); let _ = query.await; Err(IndexError::Busy) },
+                result = &mut query => result,
+            }
+        };
+        *entry.last_used.lock().unwrap() = Instant::now();
         result
     }
 

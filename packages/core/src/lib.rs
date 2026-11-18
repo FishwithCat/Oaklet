@@ -1230,8 +1230,9 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let spill_root = data_dir.join("spill");
             spill::cleanup(&spill_root, spill::RETENTION);
-            let chat = chat::ChatState::open(&data_dir.join("oaklet.db"))
-                .map_err(std::io::Error::other)?;
+            let store =
+                store::Store::open(&data_dir.join("oaklet.db")).map_err(std::io::Error::other)?;
+            let chat = chat::ChatState::from_store(store.clone()).map_err(std::io::Error::other)?;
             let command_allow_all = if config.allow_all_commands {
                 HashSet::from([PathBuf::from(&config.workspace)])
             } else {
@@ -1242,7 +1243,7 @@ pub fn run() {
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
             let state = Arc::new(AppState {
-                code_index: Arc::new(code_index::CodeIndexManager::new()),
+                code_index: Arc::new(code_index::CodeIndexManager::with_store(store)),
                 exit: Mutex::new(shutdown::ExitState::Running),
                 config: Mutex::new(config),
                 config_path,
