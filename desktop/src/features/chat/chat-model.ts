@@ -21,10 +21,16 @@ export function mergeDraft(current: string, prompt: string): string {
   return `${draft}\n\n${addition}`;
 }
 
-export function settleStreaming(items: Item[]): Item[] {
+export function settleStreaming(items: Item[], now = Date.now()): Item[] {
   return items.map((item) =>
     (item.kind === "assistant" || item.kind === "reasoning") && item.streaming
-      ? { ...item, streaming: false }
+      ? {
+          ...item,
+          streaming: false,
+          ...(item.kind === "reasoning" && item.startedAt !== undefined
+            ? { durationMs: Math.max(0, now - item.startedAt), startedAt: undefined }
+            : {}),
+        }
       : item,
   );
 }

@@ -156,6 +156,7 @@ export function applyDeltas(
   tab: SessionView,
   runId: string,
   deltas: readonly StreamDelta[],
+  now = Date.now(),
 ): SessionView {
   let items = tab.items;
   for (const delta of deltas) {
@@ -173,12 +174,13 @@ export function applyDeltas(
       ];
     } else {
       items = [
-        ...settleStreaming(items),
+        ...settleStreaming(items, now),
         {
           kind: delta.kind,
           runId: delta.runId,
           text: delta.text,
           streaming: true,
+          ...(delta.kind === "reasoning" ? { startedAt: now } : {}),
         },
       ];
     }
@@ -198,7 +200,7 @@ export function applyToolStart(
   startedAt: number,
 ): SessionView {
   const items = [
-    ...settleStreaming(tab.items),
+    ...settleStreaming(tab.items, startedAt),
     {
       kind: "tool" as const,
       runId: event.runId,

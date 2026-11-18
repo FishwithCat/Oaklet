@@ -461,13 +461,21 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                             .and_then(Value::as_str)
                             .unwrap_or("");
                         if !reasoning.is_empty() {
-                            items.push(json!({
+                            let mut item = json!({
                                 "kind": "reasoning",
                                 "seq": event.seq,
                                 "runId": run_id,
                                 "text": reasoning,
                                 "streaming": false,
-                            }));
+                            });
+                            if let Some(duration) = display
+                                .as_ref()
+                                .and_then(|display| display.get("reasoningDurationMs"))
+                                .and_then(Value::as_u64)
+                            {
+                                item["durationMs"] = json!(duration);
+                            }
+                            items.push(item);
                         }
                         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
                             for call in calls {
@@ -517,6 +525,13 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                             "summary": summary,
                             "output": message.get("content").and_then(Value::as_str).unwrap_or(""),
                         });
+                        if let Some(duration) = display
+                            .as_ref()
+                            .and_then(|display| display.get("durationMs"))
+                            .and_then(Value::as_u64)
+                        {
+                            item["durationMs"] = json!(duration);
+                        }
                         if let Some(diffs) = display
                             .as_ref()
                             .and_then(|display| display.get("diffs"))
@@ -1244,15 +1259,27 @@ fn merge_stream(items: &mut Vec<Value>, run_id: &str, kind: &str, text: &str) {
         "text": text,
         "streaming": true,
     }));
+    if kind == "reasoning" {
+        items.last_mut().expect("just pushed")["startedAt"] = json!(store::now_ms() as u64);
+    }
 }
 
 fn settle_streaming(items: &mut [Value]) {
     for item in items.iter_mut() {
         let kind = item.get("kind").and_then(Value::as_str);
+        let reasoning = kind == Some("reasoning");
         if (kind == Some("assistant") || kind == Some("reasoning"))
             && item.get("streaming").and_then(Value::as_bool) == Some(true)
         {
             item["streaming"] = json!(false);
+            if reasoning {
+                if let Some(started_at) = item.get("startedAt").and_then(Value::as_u64) {
+                    item["durationMs"] = json!((store::now_ms() as u64).saturating_sub(started_at));
+                }
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("startedAt");
+                }
+            }
         }
     }
 }
@@ -1603,6 +1630,17 @@ pub struct RunContext {
 struct PartialReply {
     content: String,
     reasoning: String,
+    reasoning_started_at: Option<u64>,
+    reasoning_duration_ms: Option<u64>,
+}
+
+impl PartialReply {
+    fn settle_reasoning(&mut self, now: u64) {
+        if let Some(started_at) = self.reasoning_started_at.take() {
+            self.reasoning_duration_ms =
+                Some(self.reasoning_duration_ms.unwrap_or(0) + now.saturating_sub(started_at));
+        }
+    }
 }
 
 impl RunContext {
@@ -1657,12 +1695,15 @@ impl RunContext {
     }
 
     /// Record a model-visible message plus its optional UI metadata.
-    pub fn record_message(&self, message: Value, display: Option<Value>) -> Value {
+    pub fn record_message(&self, message: Value, mut display: Option<Value>) -> Value {
         if message.get("role").and_then(Value::as_str) == Some("assistant") {
-            *self
-                .partial
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = PartialReply::default();
+            let mut partial =
+                std::mem::take(&mut *self.partial.lock().unwrap_or_else(|p| p.into_inner()));
+            partial.settle_reasoning(store::now_ms() as u64);
+            if let Some(duration) = partial.reasoning_duration_ms {
+                display.get_or_insert_with(|| json!({}))["reasoningDurationMs"] = json!(duration);
+            }
+            self.update_view(|view| settle_streaming(&mut view.items));
         }
         let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
         let message = context::identify(message, context::MessageId::Pending(pending.len()));
@@ -1768,11 +1809,11 @@ impl RunContext {
     }
 
     pub fn delta(&self, text: &str) {
-        self.partial
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .content
-            .push_str(text);
+        {
+            let mut partial = self.partial.lock().unwrap_or_else(|p| p.into_inner());
+            partial.settle_reasoning(store::now_ms() as u64);
+            partial.content.push_str(text);
+        }
         self.update_view(|view| {
             merge_stream(&mut view.items, &self.run_id, "assistant", text);
             view.active_run_id = Some(self.run_id.clone());
@@ -1788,11 +1829,13 @@ impl RunContext {
     }
 
     pub fn reasoning(&self, text: &str) {
-        self.partial
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .reasoning
-            .push_str(text);
+        {
+            let mut partial = self.partial.lock().unwrap_or_else(|p| p.into_inner());
+            partial
+                .reasoning_started_at
+                .get_or_insert_with(|| store::now_ms() as u64);
+            partial.reasoning.push_str(text);
+        }
         self.update_view(|view| {
             merge_stream(&mut view.items, &self.run_id, "reasoning", text);
             view.active_run_id = Some(self.run_id.clone());
@@ -1860,6 +1903,33 @@ impl RunContext {
 
     pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) -> Value {
         let finished_at = store::now_ms() as u64;
+        let mut duration_ms = None;
+        self.update_view(|view| {
+            if let Some(item) = find_tool_item(&mut view.items, id) {
+                let status = if ok {
+                    ToolStatus::Ok
+                } else {
+                    ToolStatus::Error
+                };
+                item["status"] = json!(status);
+                item["output"] = json!(output);
+                if diffs.is_empty() {
+                    if let Some(object) = item.as_object_mut() {
+                        object.remove("diffs");
+                    }
+                } else {
+                    item["diffs"] = json!(diffs);
+                }
+                if let Some(started_at) = item.get("startedAt").and_then(Value::as_u64) {
+                    duration_ms = Some(finished_at.saturating_sub(started_at));
+                    item["durationMs"] = json!(duration_ms);
+                }
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("startedAt");
+                }
+            }
+            refresh_blocked(view);
+        });
         {
             let mut pending = self
                 .pending
@@ -1882,6 +1952,9 @@ impl RunContext {
                 message["content"] = json!(output);
                 if let Some(meta) = display.as_mut().and_then(Value::as_object_mut) {
                     meta["ok"] = json!(ok);
+                    if let Some(duration) = duration_ms {
+                        meta.insert("durationMs".into(), json!(duration));
+                    }
                     meta.remove("pending");
                     if diffs.is_empty() {
                         meta.remove("diffs");
@@ -1904,31 +1977,6 @@ impl RunContext {
                 });
             }
         }
-        self.update_view(|view| {
-            if let Some(item) = find_tool_item(&mut view.items, id) {
-                let status = if ok {
-                    ToolStatus::Ok
-                } else {
-                    ToolStatus::Error
-                };
-                item["status"] = json!(status);
-                item["output"] = json!(output);
-                if diffs.is_empty() {
-                    if let Some(object) = item.as_object_mut() {
-                        object.remove("diffs");
-                    }
-                } else {
-                    item["diffs"] = json!(diffs);
-                }
-                if let Some(started_at) = item.get("startedAt").and_then(Value::as_u64) {
-                    item["durationMs"] = json!(finished_at.saturating_sub(started_at));
-                }
-                if let Some(object) = item.as_object_mut() {
-                    object.remove("startedAt");
-                }
-            }
-            refresh_blocked(view);
-        });
         self.emit(
             "agent:tool_result",
             ToolResultEvent {
@@ -2054,21 +2102,23 @@ impl RunContext {
         // A stopped or failed stream never reaches the assistant-message
         // handoff. Persist what the user already saw instead of letting the
         // database-backed final view erase the partial answer.
-        let partial = std::mem::take(
+        let mut partial = std::mem::take(
             &mut *self
                 .partial
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
         if status != "done" && (!partial.content.is_empty() || !partial.reasoning.is_empty()) {
+            partial.settle_reasoning(store::now_ms() as u64);
+            let mut display = json!({ "runId": self.run_id, "interrupted": true });
+            if let Some(duration) = partial.reasoning_duration_ms {
+                display["reasoningDurationMs"] = json!(duration);
+            }
             let mut message = json!({ "role": "assistant", "content": partial.content });
             if !partial.reasoning.is_empty() {
                 message["reasoning_content"] = json!(partial.reasoning);
             }
-            messages.push(self.record_message(
-                message,
-                Some(json!({ "runId": self.run_id, "interrupted": true })),
-            ));
+            messages.push(self.record_message(message, Some(display)));
         }
 
         let messages = trim_incomplete_tool_block(messages);
@@ -2701,7 +2751,9 @@ mod tests {
     fn merges_streams_and_settles_on_a_kind_boundary() {
         let mut items = Vec::new();
         merge_stream(&mut items, "r1", "reasoning", "think");
+        let started_at = items[0]["startedAt"].clone();
         merge_stream(&mut items, "r1", "reasoning", "ing");
+        assert_eq!(items[0]["startedAt"], started_at);
         merge_stream(&mut items, "r1", "assistant", "hello");
         merge_stream(&mut items, "r1", "assistant", " world");
         merge_stream(&mut items, "r1", "reasoning", "again");
@@ -2709,9 +2761,30 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["text"], "thinking");
         assert_eq!(items[0]["streaming"], false);
+        assert!(items[0]["durationMs"].as_u64().is_some());
+        assert!(items[0].get("startedAt").is_none());
         assert_eq!(items[1]["text"], "hello world");
         assert_eq!(items[1]["streaming"], false);
         assert_eq!(items[2]["streaming"], true);
+        assert!(items[2]["startedAt"].as_u64().is_some());
+    }
+
+    #[test]
+    fn reasoning_time_excludes_content_and_accumulates_across_segments() {
+        let mut partial = super::PartialReply {
+            reasoning_started_at: Some(1000),
+            ..Default::default()
+        };
+        partial.settle_reasoning(2500);
+        assert_eq!(partial.reasoning_duration_ms, Some(1500));
+        partial.settle_reasoning(5000);
+        assert_eq!(partial.reasoning_duration_ms, Some(1500));
+        partial.reasoning_started_at = Some(6000);
+        partial.settle_reasoning(7000);
+        assert_eq!(partial.reasoning_duration_ms, Some(2500));
+        partial.reasoning_started_at = Some(8000);
+        partial.settle_reasoning(7999);
+        assert_eq!(partial.reasoning_duration_ms, Some(2500));
     }
 
     #[test]
@@ -2777,7 +2850,7 @@ mod tests {
                             "function": { "name": "read_file", "arguments": "{}" },
                         }],
                     }),
-                    display: Some(json!({ "runId": "r1" })),
+                    display: Some(json!({ "runId": "r1", "reasoningDurationMs": 1250 })),
                 },
             },
             Event {
@@ -2818,6 +2891,7 @@ mod tests {
         assert_eq!(items[0]["text"], "look");
         assert_eq!(items[0]["attachments"][0]["thumbnail"], "data:thumb");
         assert_eq!(items[1]["kind"], "reasoning");
+        assert_eq!(items[1]["durationMs"], 1250);
         assert_eq!(items[2]["kind"], "assistant");
         assert_eq!(items[2]["runId"], "r1");
         assert_eq!(items[3]["kind"], "tool");
@@ -2895,6 +2969,7 @@ mod tests {
                             "name": "run_command",
                             "summary": "ls",
                             "ok": true,
+                            "durationMs": 1250,
                         })),
                     },
                 ],
@@ -2914,6 +2989,12 @@ mod tests {
         assert_eq!(items[2]["kind"], "tool");
         assert_eq!(items[2]["status"], "ok");
         assert_eq!(items[2]["output"], "output");
+        assert_eq!(items[2]["durationMs"], 1250);
+        assert!(
+            surface_messages(&saved.events)[2]
+                .get("durationMs")
+                .is_none()
+        );
     }
 
     #[test]

@@ -186,6 +186,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_time_is_saved_for_completed_and_interrupted_replies() {
+        for status in ["done", "stopped", "error"] {
+            let (state, store, root) = state(AppConfig::default());
+            store.create_session("s", "/tmp", 1).unwrap();
+            let request = user("hi");
+            let started = store
+                .begin_run(
+                    "s",
+                    "r",
+                    &NewUserTurn {
+                        message: request.clone(),
+                        display: None,
+                        title: None,
+                    },
+                    2,
+                )
+                .unwrap();
+            let ctx = RunContext::without_window(state, "s", "r", started);
+            ctx.reasoning("thinking");
+            ctx.reasoning(" more");
+            let mut messages = vec![request];
+            if status == "done" {
+                ctx.delta("answer");
+                messages.push(ctx.record_message(json!({
+                    "role": "assistant", "content": "answer", "reasoning_content": "thinking more",
+                }), None));
+                ctx.finish_done(messages).await;
+            } else if status == "stopped" {
+                ctx.finish_stopped(messages).await;
+            } else {
+                ctx.finish_error(messages, "failed").await;
+            }
+            let saved = store.get_session("s").unwrap().unwrap();
+            let display = saved
+                .events
+                .iter()
+                .find_map(|event| match &event.payload {
+                    crate::store::EventPayload::Message { message, display }
+                        if message["reasoning_content"] == "thinking more" =>
+                    {
+                        display.as_ref()
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                display["reasoningDurationMs"].as_u64().is_some(),
+                "{status}"
+            );
+            let (model, _) = store.context_snapshot("s").unwrap();
+            assert!(model.last().unwrap().get("reasoningDurationMs").is_none());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn a_failed_summary_saves_prior_trims_and_the_partial_reply_without_losing_originals() {
         let (url, _, server) = summary_server_with(vec![(500, "unavailable")]);
         let config = AppConfig {

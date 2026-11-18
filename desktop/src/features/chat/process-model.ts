@@ -15,6 +15,8 @@ export type ReasoningItem = {
   runId: string;
   text: string;
   streaming: boolean;
+  startedAt?: number;
+  durationMs?: number;
 };
 
 export type ToolItem = {
@@ -111,17 +113,17 @@ export function formatDuration(ms: number): string {
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 }
 
-/** Row summary with the command's execution time appended once known. */
-export function toolSummary(item: ToolItem): string {
-  const summary = item.summary ?? "";
+/** Elapsed time, kept separate from the truncated summary. */
+export function processDuration(item: ProcessItem, now: number): string | undefined {
   if (
-    !summary ||
-    item.name !== "run_command" ||
-    item.durationMs === undefined
-  ) {
-    return summary;
+    item.kind === "tool" &&
+    (item.name !== "run_command" || item.status === "awaiting")
+  ) return undefined;
+  if (item.durationMs !== undefined) return formatDuration(item.durationMs);
+  if (isActive(item) && item.startedAt !== undefined) {
+    return formatDuration(now - item.startedAt);
   }
-  return `${summary} (${formatDuration(item.durationMs)})`;
+  return undefined;
 }
 
 export function categoryLabel(category: ToolCategory, live: boolean): string {

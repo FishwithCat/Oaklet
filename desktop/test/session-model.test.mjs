@@ -136,6 +136,27 @@ test("applyToolStart settles the current stream before appending the tool", () =
   assert.equal(next.activeRunId, "run-1");
 });
 
+test("thinking starts once and stops before the reply or tool runs", () => {
+  const first = applyDeltas(session(), "run-1", [delta("reasoning", "first")], 1000);
+  const next = applyDeltas(first, "run-1", [delta("reasoning", " thought")], 1500);
+  assert.equal(next.items[0].startedAt, 1000);
+
+  const reply = applyDeltas(next, "run-1", [delta("assistant", "answer")], 2500);
+  assert.equal(reply.items[0].durationMs, 1500);
+  assert.equal(reply.items[0].startedAt, undefined);
+  const continued = applyDeltas(reply, "run-1", [delta("assistant", " more")], 5000);
+  assert.equal(continued.items[0].durationMs, 1500);
+
+  const tool = applyToolStart(next, {
+    runId: "run-1", id: "tool-1", name: "run_command", summary: "ls",
+  }, 3000);
+  assert.equal(tool.items[0].durationMs, 2000);
+  assert.equal(tool.items[0].streaming, false);
+  const stopped = settleRun(next);
+  assert.equal(stopped.items[0].streaming, false);
+  assert.equal(typeof stopped.items[0].durationMs, "number");
+});
+
 test("applyToolResult records success or failure and the elapsed time", () => {
   const started = applyToolStart(
     session(),

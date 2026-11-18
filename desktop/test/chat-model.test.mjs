@@ -89,6 +89,15 @@ test("settleStreaming clears only streaming assistant and reasoning items", () =
   assert.equal(next[5], pendingTool);
 });
 
+test("settling thinking freezes its duration and tolerates clock corrections", () => {
+  const item = { ...reasoning(), streaming: true, startedAt: 1000 };
+  const [settled] = settleStreaming([item], 2500);
+  assert.equal(settled.durationMs, 1500);
+  assert.equal(settled.startedAt, undefined);
+  assert.deepEqual(settleStreaming([settled], 9000), [settled]);
+  assert.equal(settleStreaming([item], 900)[0].durationMs, 0);
+});
+
 test("isBlankTab only accepts an idle, unused tab", () => {
   const blank = { running: false, items: [] };
 

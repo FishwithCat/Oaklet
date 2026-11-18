@@ -4,7 +4,7 @@ import {
   formatDuration,
   processTitle,
   reasoningSummary,
-  toolSummary,
+  processDuration,
   toolTitle,
 } from "../src/features/chat/process-model.ts";
 
@@ -26,7 +26,7 @@ test("labels MCP tools with their server and tool names", () => {
   assert.equal(toolTitle("skill"), "Load skill");
 });
 
-test("formats command execution time after the summary", () => {
+test("formats command execution time independently of the summary", () => {
   assert.equal(formatDuration(400), "0.4s");
   assert.equal(formatDuration(12_000), "12s");
   assert.equal(formatDuration(65_000), "1m 5s");
@@ -41,12 +41,29 @@ test("formats command execution time after the summary", () => {
     summary: "pnpm test",
     durationMs: 12_000,
   };
-  assert.equal(toolSummary(command), "pnpm test (12s)");
-  assert.equal(toolSummary({ ...command, durationMs: undefined }), "pnpm test");
+  assert.equal(processDuration(command, 99_000), "12s");
+  assert.equal(processDuration({ ...command, status: "error" }, 99_000), "12s");
+  assert.equal(processDuration({ ...command, summary: "" }, 99_000), "12s");
+  assert.equal(processDuration({ ...command, durationMs: 0 }, 99_000), "0.0s");
+  assert.equal(processDuration({ ...command, durationMs: undefined }, 99_000), undefined);
   assert.equal(
-    toolSummary({ ...command, name: "read_file" }),
-    "pnpm test",
+    processDuration({ ...command, name: "read_file" }, 99_000),
+    undefined,
   );
+});
+
+test("updates running commands without counting approval waits or inventing old timings", () => {
+  const command = {
+    kind: "tool", runId: "run", id: "1", name: "run_command",
+    status: "pending", startedAt: 1000,
+  };
+  assert.equal(processDuration(command, 1400), "0.4s");
+  assert.equal(processDuration(command, 13_000), "12s");
+  assert.equal(processDuration({ ...command, status: "running" }, 13_000), "12s");
+  assert.equal(processDuration({ ...command, status: "awaiting" }, 13_000), undefined);
+  assert.equal(processDuration({ ...command, status: "error" }, 13_000), undefined);
+  assert.equal(processDuration({ ...command, startedAt: undefined }, 13_000), undefined);
+  assert.equal(processDuration(command, 900), "0.0s");
 });
 
 test("process title ranks tool categories after settlement", () => {
@@ -70,4 +87,15 @@ test("process title ranks tool categories after settlement", () => {
     ),
     "Analysis completed",
   );
+});
+
+test("shows live and settled thinking time without inventing historical timings", () => {
+  const thinking = {
+    kind: "reasoning", runId: "run", text: "thinking", streaming: true, startedAt: 1000,
+  };
+  assert.equal(processDuration(thinking, 1400), "0.4s");
+  assert.equal(processDuration(thinking, 66_000), "1m 5s");
+  assert.equal(processDuration({ ...thinking, streaming: false, durationMs: 2500 }, 99_000), "2.5s");
+  assert.equal(processDuration({ ...thinking, streaming: false }, 99_000), undefined);
+  assert.equal(processDuration({ ...thinking, startedAt: undefined }, 99_000), undefined);
 });

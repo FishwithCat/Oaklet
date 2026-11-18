@@ -150,6 +150,20 @@
   font-size: 12.5px;
 }
 
+.row-duration {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row-duration ~ .row-chevron {
+  margin-left: 0;
+}
+
 .process-row[data-status="error"] .row-title,
 .process-row[data-status="error"] .row-summary {
   color: var(--red);

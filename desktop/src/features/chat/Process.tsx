@@ -20,9 +20,9 @@ import {
   isActive,
   primaryCategory,
   processTitle,
+  processDuration,
   reasoningSummary,
   toolCategory,
-  toolSummary,
   toolTitle,
   type ApprovalChoice,
   type ProcessItem,
@@ -104,6 +104,25 @@ function DisclosureHead({
   );
 }
 
+function ExecutionTime({ item }: { item: ProcessItem }) {
+  const [now, setNow] = useState(Date.now);
+  const live = isActive(item) && (item.kind === "reasoning" || item.status !== "awaiting");
+  const duration = processDuration(item, now);
+
+  useEffect(() => {
+    if (!live || item.startedAt === undefined) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [item.startedAt, live]);
+
+  return duration === undefined ? null : (
+    <span className="row-duration" title={`Execution time: ${duration}`}>
+      {duration}
+    </span>
+  );
+}
+
 function ReasoningRow({ item }: { item: ReasoningItem }) {
   const [open, setOpen] = useState(false);
   const summary = reasoningSummary(item.text, item.streaming);
@@ -116,7 +135,12 @@ function ReasoningRow({ item }: { item: ReasoningItem }) {
         live={item.streaming}
         open={open}
         expandable={item.text.trim() !== ""}
-        trailing={item.streaming ? <LoadingRegular size={12} className="spin" /> : undefined}
+        trailing={
+          <>
+            <ExecutionTime item={item} />
+            {item.streaming && <LoadingRegular size={12} className="spin" />}
+          </>
+        }
         onToggle={() => setOpen((value) => !value)}
       />
       {open && (
@@ -211,11 +235,16 @@ function ToolRow({
       <DisclosureHead
         icon={TOOL_ICONS[item.name] ?? categoryIcon(category)}
         title={toolTitle(item.name)}
-        summary={toolSummary(item)}
+        summary={item.summary}
         live={running}
         open={open}
         expandable={hasOutput || hasDiff}
-        trailing={trailing}
+        trailing={
+          <>
+            {item.name === "run_command" && <ExecutionTime item={item} />}
+            {trailing}
+          </>
+        }
         totals={totals}
         onToggle={() => setOpen((value) => !value)}
       />
