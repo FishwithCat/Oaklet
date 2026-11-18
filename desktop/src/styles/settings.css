@@ -346,8 +346,7 @@
   background: var(--panel-muted);
 }
 
-.index-metrics dt,
-.index-metadata dt {
+.index-metrics dt {
   color: var(--muted);
   font-size: 11px;
 }
@@ -359,44 +358,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-.index-projects,
 .index-server-list {
   display: grid;
   gap: 10px;
   margin: 12px 0;
-}
-
-.index-project,
-fieldset.index-server {
-  min-width: 0;
-  margin: 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.index-heading button {
-  flex: none;
-  padding: 4px 10px;
-  font-size: 11px;
-}
-
-.index-metadata {
-  display: grid;
-  gap: 6px;
-  margin: 0 0 8px;
-  font-size: 11.5px;
-}
-
-.index-metadata > div {
-  display: grid;
-  grid-template-columns: 80px minmax(0, 1fr);
-  gap: 10px;
-}
-
-.index-metadata dd {
-  min-width: 0;
-  margin: 0;
 }
 
 .index-rebuild {
@@ -422,21 +387,6 @@ fieldset.index-server {
   border-top: 1px solid var(--border);
 }
 
-.index-enable {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.index-enable input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.index-server-options summary,
 .index-requirements summary {
   width: fit-content;
   color: var(--muted);
@@ -444,13 +394,8 @@ fieldset.index-server {
   cursor: pointer;
 }
 
-.index-server-options[open] summary,
 .index-requirements[open] summary {
   margin-bottom: 12px;
-}
-
-.index-server-options .field:last-child {
-  margin-bottom: 0;
 }
 
 @media (max-width: 680px) {

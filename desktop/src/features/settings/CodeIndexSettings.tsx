@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { errorText } from "../../shared/error-text";
 import type { CodeIndexConfig } from "./config";
-import { parseIndexArgs, stateText, subscribeIndex, updateIndexServer, type IndexLanguage, type IndexProject, type IndexStatus } from "./code-index-model";
+import { parseIndexArgs, stateText, subscribeIndex, updateIndexServer, type IndexInstall, type IndexLanguage, type IndexProject, type IndexStatus } from "./code-index-model";
 
 const LANGUAGES: { id: IndexLanguage; name: string; command: string }[] = [
   { id: "rust", name: "Rust", command: "rust-analyzer" },
@@ -13,11 +13,46 @@ const LANGUAGES: { id: IndexLanguage; name: string; command: string }[] = [
   { id: "java", name: "Java", command: "jdtls" },
 ];
 
-function ServerFields({ language, config, disabled, onChange, onValidity }: {
+const cardStyle: CSSProperties = { minWidth: 0, margin: 0, padding: 12, border: "1px solid var(--border)", borderRadius: 8 };
+const srOnlyStyle: CSSProperties = {
+  position: "absolute", width: 1, height: 1, padding: 0, margin: -1,
+  overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0,
+};
+const headingStyle: CSSProperties = {
+  display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "6px 12px", marginBottom: 8,
+};
+const titleStyle: CSSProperties = { margin: 0, fontSize: 12, fontWeight: 600 };
+const toggleStyle: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, color: "var(--muted)", fontSize: 11, cursor: "pointer" };
+const summaryStyle: CSSProperties = { width: "fit-content", color: "var(--muted)", fontSize: 11, cursor: "pointer" };
+const fieldStyle: CSSProperties = {
+  display: "grid", gridTemplateColumns: "minmax(96px, 140px) minmax(0, 1fr)", alignItems: "center", columnGap: 12, rowGap: 4,
+};
+const labelStyle: CSSProperties = { fontSize: 11.5, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.2px" };
+const inputStyle: CSSProperties = {
+  width: "100%", minWidth: 0, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 7,
+  padding: "7px 9px", fontSize: 12, fontFamily: "var(--mono)",
+};
+const hintStyle: CSSProperties = { margin: 0, color: "var(--muted)", fontSize: 11, lineHeight: 1.5, gridColumn: 2 };
+const errorStyle: CSSProperties = { margin: 0, color: "var(--red)", fontSize: 11.5, whiteSpace: "pre-wrap" };
+const buttonStyle: CSSProperties = { padding: "5px 10px", fontSize: 12 };
+
+export function ServerFields({ language, config, disabled, busy, projects, installation, onChange, onValidity, onRetry, onInstall, onCancelInstall }: {
   language: typeof LANGUAGES[number]; config: CodeIndexConfig; disabled: boolean;
+  busy: boolean; projects: IndexProject[]; installation?: IndexInstall;
   onChange: (config: CodeIndexConfig) => void; onValidity: (language: IndexLanguage, error: string) => void;
+  onRetry: (projects: IndexProject[]) => void; onInstall: (project: IndexProject) => void;
+  onCancelInstall: () => void;
 }) {
   const server = config.servers[language.id] ?? {};
+  const retryable = projects.filter((project) => project.state !== "Disabled");
+  const failures = projects.filter((project) => typeof project.state === "object");
+  // shortcut: use the detection message until the backend reports a structured missing-server status.
+  const missingServer = retryable.length > 0 && retryable.every(({ state }) =>
+    typeof state === "object" && state.Failed.startsWith("Code index executable not found: "));
+  const [installRoot, setInstallRoot] = useState("");
+  const installProject = failures.find((project) => project.root === installRoot) ?? failures[0];
+  const canCancel = projects.length > 0 && (installation === "Installing" || installation === "Verifying");
+  const canInstall = installProject && !canCancel && installation !== "Activating" && !server.command && server.enabled !== false;
   const [args, setArgs] = useState(() => JSON.stringify(server.args ?? []));
   const [error, setError] = useState("");
   function editArgs(text: string) {
@@ -34,34 +69,64 @@ function ServerFields({ language, config, disabled, onChange, onValidity }: {
     }
   }
   return (
-    <fieldset className="index-server" disabled={disabled}>
-      <legend className="sr-only">{language.name}</legend>
-      <div className="index-heading">
-        <h4>{language.name}</h4>
-        <label className="index-enable">
-          <input type="checkbox" checked={server.enabled !== false}
+    <fieldset disabled={disabled} style={cardStyle}>
+      <legend style={srOnlyStyle}>{language.name}</legend>
+      <div style={headingStyle}>
+        <h4 style={titleStyle}>{language.name}</h4>
+        <label style={toggleStyle}>
+          <input type="checkbox" checked={!missingServer && server.enabled !== false} disabled={missingServer}
+            style={{ margin: 0, accentColor: "var(--accent)" }}
             onChange={(event) => onChange(updateIndexServer(config, language.id, { enabled: event.target.checked }))} />
           Enable indexing
         </label>
       </div>
-      <details className="index-server-options" open={!!error || !!server.command || !!server.args?.length || undefined}>
-        <summary>Server configuration</summary>
-        <div className="field">
-          <label htmlFor={`index-command-${language.id}`}>Server executable</label>
+      {Array.from(new Set(failures.map((project) => stateText(project.state))), (message) =>
+        <p style={errorStyle} key={message}>{message}</p>)}
+      {installation && <p role="status" style={typeof installation === "object" ? errorStyle : hintStyle}>
+        {typeof installation === "object" ? installation.Failed : {
+          Installing: "Installing server…",
+          Verifying: "Checking server version and initialization…",
+          Activating: "Starting server in open workspaces…",
+          Installed: "Server installation verified.",
+          Cancelled: "Installation cancelled.",
+        }[installation]}
+      </p>}
+      <details open={!!error || !!server.command || !!server.args?.length || undefined}>
+        <summary style={summaryStyle}>Server configuration</summary>
+        <div style={{ ...fieldStyle, marginTop: 12, marginBottom: 14 }}>
+          <label htmlFor={`index-command-${language.id}`} style={labelStyle}>Server executable</label>
           <input id={`index-command-${language.id}`} placeholder={`${language.command} (PATH)`} value={server.command ?? ""}
+            style={inputStyle}
             onChange={(event) => onChange(updateIndexServer(config, language.id, { command: event.target.value || null }))} />
-          <p className="field-hint">Leave empty to use an Oaklet managed server or detect one from PATH.</p>
+          <p style={hintStyle}>Leave empty to use an Oaklet managed server or detect one from PATH.</p>
         </div>
-        <div className="field">
-          <label htmlFor={`index-args-${language.id}`}>Arguments (JSON array)</label>
-          <input id={`index-args-${language.id}`} value={args} aria-invalid={!!error} aria-describedby={`index-args-hint-${language.id}`} onChange={(event) => editArgs(event.target.value)} />
-          <p id={`index-args-hint-${language.id}`} className={error ? "error-text" : "field-hint"}>
+        <div style={fieldStyle}>
+          <label htmlFor={`index-args-${language.id}`} style={labelStyle}>Arguments</label>
+          <input id={`index-args-${language.id}`} value={args} style={inputStyle} aria-invalid={!!error} aria-describedby={`index-args-hint-${language.id}`} onChange={(event) => editArgs(event.target.value)} />
+          <p id={`index-args-hint-${language.id}`} style={error ? { ...errorStyle, gridColumn: 2 } : hintStyle}>
             {error || (language.id === "typescript" || language.id === "python"
               ? 'Custom arguments require an executable. Default: ["--stdio"].'
               : 'Custom arguments require an executable. Default: [].')}
           </p>
         </div>
       </details>
+      {canInstall && language.id === "rust" && <>
+        <p style={hintStyle}>Adds rust-analyzer to this project’s active Rust toolchain using rustup.</p>
+        {failures.length > 1 && <div style={{ ...fieldStyle, marginTop: 8 }}>
+          <label htmlFor="index-rust-install-project" style={labelStyle}>Project toolchain</label>
+          <select id="index-rust-install-project" value={installProject.root} disabled={busy} style={{ ...inputStyle, fontFamily: "var(--sans)" }}
+            onChange={(event) => setInstallRoot(event.target.value)}>
+            {failures.map((project) => <option key={project.root} value={project.root}>{project.root}</option>)}
+          </select>
+        </div>}
+      </>}
+      {projects.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+        <button type="button" style={buttonStyle} disabled={busy || retryable.length === 0} onClick={() => onRetry(retryable)} title="Retry this language in the current workspace">Retry</button>
+        {canInstall && <button className="primary" type="button" style={buttonStyle} disabled={busy} onClick={() => onInstall(installProject)}>
+          {installation && installation !== "Installed" ? "Retry installation" : "Install server"}
+        </button>}
+        {canCancel && <button type="button" style={buttonStyle} disabled={busy} onClick={onCancelInstall}>Cancel installation</button>}
+      </div>}
     </fieldset>
   );
 }
@@ -80,16 +145,20 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
     (next) => { setStatus(next); setStreamError(""); },
     (reason) => setStreamError(errorText(reason)),
   ), []);
-  async function act(command: "code_index_retry" | "code_index_rebuild" | "code_index_install" | "code_index_cancel_install", project?: IndexProject) {
+  async function act(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
     try {
-      await invoke(command, project && (command === "code_index_cancel_install"
-        ? { language: project.language }
-        : { projectRoot: project.root, language: project.language }));
+      await action();
     }
     catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
+  }
+  async function retry(projects: IndexProject[]) {
+    const results = await Promise.allSettled(projects.map((project) =>
+      invoke("code_index_retry", { projectRoot: project.root, language: project.language })));
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
   return (
     <div className="code-index-settings">
@@ -97,16 +166,17 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
       {!status && !error && !streamError && <p className="field-hint" role="status">Loading index status…</p>}
       {(error || streamError) && <p className="error-text" role="alert">{error || streamError}</p>}
       {status && <WorkspaceIndexStatus status={status} disabled={disabled || busy} busy={busy}
-        onRetry={(project) => void act("code_index_retry", project)}
-        onInstall={(project) => void act("code_index_install", project)}
-        onCancelInstall={(project) => void act("code_index_cancel_install", project)}
-        config={config}
-        onRebuild={() => void act("code_index_rebuild")} />}
+        onRebuild={() => void act(() => invoke("code_index_rebuild"))} />}
       <section className="index-servers" aria-labelledby="index-servers-title">
         <div className="index-heading"><h3 id="index-servers-title">Language servers</h3><span className="field-hint">Global settings</span></div>
-        <p className="field-hint">Install a missing server from its project above. Save applies server settings to every open workspace.</p>
+        <p className="field-hint">Save applies server settings to every open workspace.</p>
         <div className="index-server-list">
-          {LANGUAGES.map((language) => <ServerFields key={language.id} language={language} config={config} disabled={disabled} onChange={onChange} onValidity={onValidity} />)}
+          {LANGUAGES.map((language) => <ServerFields key={language.id} language={language} config={config} disabled={disabled}
+            busy={busy} projects={status?.projects.filter((project) => project.language === language.id) ?? []}
+            installation={status?.installs?.[language.id]} onChange={onChange} onValidity={onValidity}
+            onRetry={(projects) => void act(() => retry(projects))}
+            onInstall={(project) => void act(() => invoke("code_index_install", { projectRoot: project.root, language: project.language }))}
+            onCancelInstall={() => void act(() => invoke("code_index_cancel_install", { language: language.id }))} />)}
         </div>
         <details className="index-requirements">
           <summary>Required runtimes</summary>
@@ -118,11 +188,9 @@ export function CodeIndexSettings({ config, disabled, onChange, onValidity }: {
   );
 }
 
-export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuild, onInstall, onCancelInstall, config }: {
+export function WorkspaceIndexStatus({ status, disabled, busy, onRebuild }: {
   status: IndexStatus; disabled: boolean; busy: boolean;
-  onRetry: (project: IndexProject) => void; onRebuild: () => void;
-  onInstall: (project: IndexProject) => void; onCancelInstall: (project: IndexProject) => void;
-  config: CodeIndexConfig;
+  onRebuild: () => void;
 }) {
   const disk = status.persistence;
   return (
@@ -150,49 +218,8 @@ export function WorkspaceIndexStatus({ status, disabled, busy, onRetry, onRebuil
       </> : <p className="field-hint">Persistent index unavailable. Memory cache: {status.cache.entries} entries ({status.cache.bytes} bytes).</p>}
       {status.cache.error && <p className="error-text">{status.cache.error}</p>}
       {status.projects.length === 0 && !status.discovering && <p className="field-hint">No supported code projects found.</p>}
-      <div className="index-projects">
-        {status.projects.map((project) => {
-          const installation = status.installs?.[project.language];
-          const applying = installation === "Installing" || installation === "Verifying" || installation === "Activating";
-          const configured = config?.servers[project.language];
-          const canInstall = !applying && typeof project.state === "object" && !configured?.command && configured?.enabled !== false;
-          return <article className="index-project" key={`${project.language}:${project.root}`}>
-            <div className="index-heading">
-              <h4>{LANGUAGES.find((language) => language.id === project.language)?.name ?? project.language}</h4>
-              <button type="button" disabled={disabled || project.state === "Disabled"} onClick={() => onRetry(project)} title="Retry this project's saved configuration">Retry</button>
-            </div>
-            <p className="index-path">{project.root}</p>
-            <p className={typeof project.state === "object" ? "error-text" : "index-summary"}>{stateText(project.state)}</p>
-            {installation && <p role="status" className={typeof installation === "object" ? "error-text" : "field-hint"}>
-              {typeof installation === "object" ? installation.Failed : {
-                Installing: "Installing server…",
-                Verifying: "Checking server version and initialization…",
-                Activating: "Starting server in open workspaces…",
-                Installed: "Server installation verified.",
-                Cancelled: "Installation cancelled.",
-              }[installation]}
-            </p>}
-            {canInstall && <>
-              {project.language === "rust" && <p className="field-hint">Adds rust-analyzer to this project’s active Rust toolchain using rustup.</p>}
-              <button type="button" disabled={disabled} onClick={() => onInstall(project)}>
-                {installation && installation !== "Installed" ? "Retry installation" : "Install server"}
-              </button>
-            </>}
-            {(installation === "Installing" || installation === "Verifying") &&
-              <button type="button" disabled={disabled} onClick={() => onCancelInstall(project)}>Cancel installation</button>}
-            <dl className="index-metadata">
-              {disk && <div><dt>Disk snapshot</dt><dd>{disk.projects.some((item) => item.root === project.root && item.language === project.language && item.verified) ? "File bytes verified" : "Unverified"}</dd></div>}
-              {project.version && <div><dt>Server</dt><dd>{project.version}</dd></div>}
-              {project.capabilities && <div><dt>Capabilities</dt><dd>{Object.entries(project.capabilities).filter(([, supported]) => supported).map(([name]) => name.replace(/_/g, " ")).join(", ") || "None"}</dd></div>}
-            </dl>
-            {project.progress.map((progress, index) => <p className="field-hint" key={index}>{progress}</p>)}
-          </article>;
-        })}
-      </div>
-      <p className="field-hint">Verified file symbols may be reused from SQLite or memory. Definitions, references and calls use live queries. Semantic completeness remains unknown.</p>
       <div className="index-rebuild">
         <button type="button" disabled={disabled} onClick={onRebuild}>{busy ? "Working…" : "Clear and rebuild index"}</button>
-        <p className="field-hint">Clears this workspace's index and query cache. Source files and chat history are preserved.</p>
       </div>
     </div>
   );
