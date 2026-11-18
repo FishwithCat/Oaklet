@@ -498,4 +498,36 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[tokio::test]
+    async fn a_panicking_agent_settles_the_run_as_an_error() {
+        let (state, store, root) = state(AppConfig::default());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let request = user("hi");
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &NewUserTurn {
+                    message: request.clone(),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
+
+        crate::chat::settle_on_panic(async { panic!("boom") }, ctx, vec![request]).await;
+
+        let saved = store.get_session("s").unwrap().unwrap();
+        assert!(saved.events.iter().any(|event| matches!(
+            &event.payload,
+            crate::store::EventPayload::Notice { tone, text }
+                if tone == "error" && text.contains("boom")
+        )));
+        // The run is terminal, so there is no stale running row to interrupt.
+        assert_eq!(store.interrupt_stale_runs(10, &json!({})).unwrap(), 0);
+        std::fs::remove_dir_all(root).ok();
+    }
 }

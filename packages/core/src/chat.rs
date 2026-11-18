@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -812,10 +813,45 @@ fn start_run(
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_sizes: Arc::new(Mutex::new(None)),
     };
+    let recovery_ctx = ctx.clone();
+    let recovery_messages = messages.clone();
     tauri::async_runtime::spawn(async move {
-        crate::agent::run(config, messages, cancel, ctx).await;
+        settle_on_panic(
+            crate::agent::run(config, messages, cancel, ctx),
+            recovery_ctx,
+            recovery_messages,
+        )
+        .await;
     });
     Ok((run_id, view))
+}
+
+/// Keep a panicking agent task from leaving its run stuck as `running`.
+///
+/// The task has no error channel of its own, so a panic would otherwise leave
+/// the transcript open and the UI waiting forever. Turn it into the same
+/// terminal error a failed request produces.
+///
+/// This requires unwinding; the release profile's `panic = "abort"` still
+/// aborts the process instead.
+pub(crate) async fn settle_on_panic<F>(run: F, ctx: RunContext, messages: Vec<Value>)
+where
+    F: std::future::Future<Output = ()>,
+{
+    if let Err(payload) = std::panic::AssertUnwindSafe(run).catch_unwind().await {
+        let detail = panic_detail(payload.as_ref());
+        crate::log::key(format_args!("[oaklet] agent task panicked: {detail}"));
+        ctx.finish_error(messages, format!("The agent stopped unexpectedly: {detail}"))
+            .await;
+    }
+}
+
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
 }
 
 #[tauri::command]
