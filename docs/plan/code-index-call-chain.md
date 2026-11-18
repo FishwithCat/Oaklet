@@ -1,7 +1,7 @@
 # Oaklet 代码索引与调用链感知计划
 
 日期：2026-11-18  
-状态：步骤 1 的 [LSP 穿刺](code-index-spike.md) 与步骤 2 的 [项目发现及配置](code-index-projects.md) 已完成，步骤 3–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
+状态：步骤 1 的 [LSP 穿刺](code-index-spike.md)、步骤 2 的 [项目发现及配置](code-index-projects.md) 与步骤 3 的 [工作区服务及服务器生命周期](code-index-lifecycle.md) 已完成，步骤 4–12 待实施。先交付 Rust/TS 用户工作区闭环并验证收益，再扩展语言和安装入口。
 
 ## 目标与成功标准
 
@@ -55,7 +55,7 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 | 持久化索引与缓存 | 现有 rusqlite 0.42 + bundled SQLite，复用 oaklet.db 的 WAL、迁移和 Store | 文件清单、符号、IPC 候选、查询结果及覆盖率；普通 B-tree 索引，不新增存储框架 |
 | 内容与缓存指纹 | 新增 blake3 1.x；内存复用标准 HashMap | 内容寻址、项目快照与缓存键；内存缓存有界，不引入 Redis 或缓存服务 |
 
-上述版本为实现起点，实际解析版本通过 Cargo.lock 锁定并执行兼容性测试；现在只修改计划，不修改 Cargo.toml。语言服务器的发行版本单独通过集成用例验证后固定，不使用运行时 latest。
+上述依赖已在步骤 1 加入，并通过 Cargo.lock 锁定实际版本。步骤 3 为 async-lsp 0.2.4 增加随仓维护的取消修补，见 [实现与验证记录](code-index-lifecycle.md)。语言服务器的发行版本单独通过集成用例验证后固定，不使用运行时 latest。
 
 选择 async-lsp 是因为它支持客户端角色，能复用双向请求、响应与通知基础设施。Oaklet 仍需实现项目配置、初始化顺序、能力协商和文档同步。tower-lsp 面向语言服务器开发，不用于本方案的客户端；不自行重写通用 JSON-RPC 框架。
 
@@ -67,7 +67,7 @@ Service 使用明确的 Rust 查询参数、结果和错误类型，不接收 To
 
 | 模块 | 职责 |
 | --- | --- |
-| mod.rs | CodeIndexManager、项目状态、工作区打开关闭、查询路由与业务结果 |
+| mod.rs / manager.rs / types.rs | 公共导出；CodeIndexManager、工作区打开关闭与查询路由；业务查询、状态和错误类型 |
 | discovery.rs | 项目清单发现、项目与语言归属、排除规则及扫描上限 |
 | language_servers.rs | LanguageServerManager、服务器实例注册、启动去重、资源调度、重试与回收 |
 | lsp.rs | 单实例 LanguageServerSession：async-lsp 客户端、子进程、初始化、能力、文档与位置编码转换 |
@@ -256,17 +256,19 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 
 ### 3. 工作区索引管理与服务器生命周期
 
-- [ ] 新增 CodeIndexManager 并由 AppState 持有 Arc，内部持有 LanguageServerManager；更新生产初始化及 architecture、agent 等测试中手工构造 AppState 的位置。
-- [ ] 将 Service 查询参数、结果与错误定义为 Rust 类型；LSP 结果在 lsp.rs 转换，模型输出在 tools/code.rs 转换。直接测试 Service，不要求运行 Tauri 界面、模型服务或 MCP。
-- [ ] 在 setup 的主窗口注册之后，以及 open_workspace_window 成功创建新窗口后调用幂等的 open_workspace；扫描放入 spawn_blocking，服务器初始化放入异步任务。
-- [ ] 实现 language_servers.rs 中 LanguageServerManager 的实例表、ensure_started 启动去重与调度；按工作区、项目根和后端配置复用实例，generation 防止旧实例和已关闭任务的结果重新进入状态。
-- [ ] LanguageServerManager 实现全局最多 8 个实例与空闲回收；等待项目排队，查询到等待实例时优先安排它，不终止正在查询的实例，不在 CodeIndexManager 重复持有进程池。
-- [ ] 在 lsp.rs 实现单实例 LanguageServerSession，用 async-lsp 接入子进程，完成 initialize/initialized、能力记录、配置与进度处理；初始化超时 60 秒，普通请求超时 30 秒，持续有界读取 stderr。
-- [ ] 解决步骤 1 暴露的出站请求 ID、$/cancelRequest 和未响应记录回收问题，验证取消单个请求不关闭服务器、不影响其他调用。不能直接把示例的 tokio timeout 当作生产取消实现；这一项未通过不得进入 Agent 工具集成。
-- [ ] rust-analyzer 默认禁用 build scripts 与 proc-macro 执行；不自动修改工程配置、安装项目依赖或接受 workspace/applyEdit。
-- [ ] cleanup_window 和真正的应用退出调用 CodeIndexManager 清理工作区任务，再委托 LanguageServerManager 完成 shutdown/exit、超时终止与进程回收；不要接到聊天取消也会使用的 tools::shutdown_workspace。
-- [ ] LanguageServerManager 实现崩溃、重试与状态来源，CodeIndexManager 聚合为项目状态；崩溃使当前查询失败，下一次查询或手动重试可重新启动，禁止无限自动重启循环。
-- [ ] 用假服务器验证同项目并发启动只产生一个进程、查询等待时仍能响应服务器请求、不同工作区隔离、重启丢弃旧响应、资源耗尽排队与退出释放。
+- [x] 新增 CodeIndexManager 并由 AppState 持有 Arc，内部持有 LanguageServerManager；更新生产初始化及 architecture、agent 等测试中手工构造 AppState 的位置。
+- [x] 将 Service 查询参数、结果与错误定义为 Rust 类型；LSP 结果在 lsp.rs 转换；tools/code.rs 的模型输出转换留在步骤 7。直接测试 Service，不要求运行 Tauri 界面、模型服务或 MCP。
+- [x] 在 setup 的主窗口注册之后，以及 open_workspace_window 成功创建新窗口后调用幂等的 open_workspace；扫描放入 spawn_blocking，服务器初始化放入异步任务。
+- [x] 实现 language_servers.rs 中 LanguageServerManager 的实例表、ensure_started 启动去重与调度；按工作区、项目根和后端配置复用实例，generation 防止旧实例和已关闭任务的结果重新进入状态。
+- [x] LanguageServerManager 实现全局最多 8 个实例与空闲回收；等待项目排队，查询到等待实例时优先安排它，不终止正在查询的实例，不在 CodeIndexManager 重复持有进程池。
+- [x] 在 lsp.rs 实现单实例 LanguageServerSession，用 async-lsp 接入子进程，完成 initialize/initialized、能力记录、配置与进度处理；初始化超时 60 秒，普通请求超时 30 秒，持续有界读取 stderr。
+- [x] 解决步骤 1 暴露的出站请求 ID、$/cancelRequest 和未响应记录回收问题，验证取消单个请求不关闭服务器、不影响其他调用。不能直接把示例的 tokio timeout 当作生产取消实现；这一项未通过不得进入 Agent 工具集成。
+- [x] rust-analyzer 默认禁用 build scripts 与 proc-macro 执行；不自动修改工程配置、安装项目依赖或接受 workspace/applyEdit。
+- [x] cleanup_window 和真正的应用退出调用 CodeIndexManager 清理工作区任务，再委托 LanguageServerManager 完成 shutdown/exit、超时终止与进程回收；不要接到聊天取消也会使用的 tools::shutdown_workspace。
+- [x] LanguageServerManager 实现崩溃、重试与状态来源，CodeIndexManager 聚合为项目状态；崩溃使当前查询失败，下一次查询或手动重试可重新启动，禁止无限自动重启循环。
+- [x] 用假服务器验证同项目并发启动只产生一个进程、查询等待时仍能响应服务器请求、不同工作区隔离、重启丢弃旧响应、资源耗尽排队与退出释放。
+
+实现与验证：[工作区服务及服务器生命周期](code-index-lifecycle.md)。此阶段尚不进行 didOpen/didChange 或 Agent 工具接入，文件同步在步骤 4 实施。
 
 完成标准：打开外部工程自动启动后台任务；重复打开不重复创建实例；关闭期间迟到任务无法复活；停止聊天后服务器仍存活；关闭工作区或退出后无遗留服务器进程。
 
@@ -391,4 +393,4 @@ setup 中统一 Store::open 一次，向 ChatState 和 CodeIndexManager 注入 S
 - 当前不支持外部 Agent 接入，不建设索引 MCP 服务；后续通过同一 Rust Service 的薄适配层提供，避免协议进入业务逻辑。
 - 客户端框架、文件监听与模块接口按本文选型实施；语言服务器能力、发行版本、安装平台兼容性、同步兼容行为与真实修改任务，仍需阶段一验证，不能视为已经完成的保证。
 - 动态分派、反射、宏生成代码及框架封装可能漏检；候选关系和空结果必须保持可核对、可解释。
-- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。正式工作区服务及步骤 3–12 待实施。
+- 步骤 1 代码与文档已分别提交为 7f4a5d6、2eafa99；步骤 2 的项目发现、配置与运行环境检测代码已提交为 5fe1fef，文档另行提交。步骤 3 的工作区服务、LanguageServerManager 与请求取消修补已提交为 dd3de0d；步骤 4–12 待实施。
