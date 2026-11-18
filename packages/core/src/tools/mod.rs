@@ -597,17 +597,21 @@ fn prune_tool_output(text: String, marker: &str) -> String {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{CancelHandle, ToolContext, Workspace, jobs};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     pub fn temp_root(tag: &str) -> PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let root =
-            std::env::temp_dir().join(format!("oaklet-{tag}-{}-{stamp}", std::process::id()));
+            std::env::temp_dir().join(format!("oaklet-{tag}-{}-{stamp}-{id}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         root.canonicalize().unwrap()
     }
@@ -632,6 +636,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -646,6 +651,34 @@ mod tests {
         TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError,
         ToolOutput, ToolRegistry, cap, prune_tool_output, spill_pointer,
     };
+
+    #[test]
+    fn concurrent_temp_roots_with_the_same_tag_are_isolated() {
+        let barrier = std::sync::Barrier::new(3);
+        let roots = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..128)
+                            .map(|_| {
+                                barrier.wait();
+                                super::test_support::temp_root("parallel-temp-root")
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let unique: HashSet<_> = roots.iter().collect();
+        for root in &unique {
+            std::fs::remove_dir(root).unwrap();
+        }
+        assert_eq!(unique.len(), roots.len());
+    }
 
     struct Allow;
 
