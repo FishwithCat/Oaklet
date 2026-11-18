@@ -80,6 +80,10 @@
     animation: none;
   }
 
+  .tab-status.working {
+    animation: none;
+  }
+
   .process-chevron,
   .row-chevron {
     transition: none;

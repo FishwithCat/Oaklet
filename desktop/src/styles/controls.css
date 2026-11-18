@@ -176,6 +176,13 @@ textarea:focus-visible {
 
 .tab-status.working {
   background: var(--green);
+  animation: tab-status-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes tab-status-blink {
+  50% {
+    opacity: 0.3;
+  }
 }
 
 .tab-status.block {
