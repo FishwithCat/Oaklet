@@ -2,7 +2,7 @@
 
 mod config;
 mod discovery;
-mod documents;
+pub(crate) mod documents;
 mod framing;
 mod language_servers;
 mod lsp;

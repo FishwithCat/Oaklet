@@ -164,7 +164,14 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let mut tools = ToolRegistry::new();
+        crate::tools::code::register(
+            &mut tools,
+            std::sync::Arc::new(crate::code_index::CodeIndexManager::new()),
+        );
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert!(prompt.contains("code_calls returns one hop"));
+        assert!(prompt.contains("columns count Unicode characters"));
         assert!(prompt.contains("Commands may need approval"));
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));

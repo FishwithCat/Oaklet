@@ -7,6 +7,10 @@ pub enum Query {
     Symbols {
         file: String,
     },
+    WorkspaceSymbols {
+        file: String,
+        query: String,
+    },
     Definition {
         file: String,
         line: u32,
@@ -29,6 +33,7 @@ impl Query {
     pub(super) fn file(&self) -> &str {
         match self {
             Self::Symbols { file }
+            | Self::WorkspaceSymbols { file, .. }
             | Self::Definition { file, .. }
             | Self::References { file, .. }
             | Self::Calls { file, .. } => file,
@@ -56,6 +61,7 @@ pub struct Symbol {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
+    pub subject: Location,
     pub name: String,
     pub target: Location,
     pub sites: Vec<Location>,
@@ -141,6 +147,7 @@ pub enum ServerState {
 #[derive(Clone, Debug, Serialize)]
 pub struct ServerCapabilities {
     pub symbols: bool,
+    pub workspace_symbols: bool,
     pub definition: bool,
     pub references: bool,
     pub calls: bool,

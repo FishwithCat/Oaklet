@@ -47,6 +47,7 @@ pub(super) struct LanguageServerSession {
     stderr: Arc<Mutex<Vec<u8>>>,
     capabilities: Value,
     workspace: PathBuf,
+    project_root: PathBuf,
     language: Language,
     documents: BTreeMap<PathBuf, (i32, String)>,
     client: Arc<ClientState>,
@@ -210,6 +211,7 @@ impl LanguageServerSession {
             stderr,
             capabilities: Value::Null,
             workspace: workspace.to_path_buf(),
+            project_root: root.to_path_buf(),
             language,
             documents: BTreeMap::new(),
             client,
@@ -274,6 +276,7 @@ impl LanguageServerSession {
         };
         ServerCapabilities {
             symbols: supported("documentSymbolProvider"),
+            workspace_symbols: supported("workspaceSymbolProvider"),
             definition: supported("definitionProvider"),
             references: supported("referencesProvider"),
             calls: supported("callHierarchyProvider"),
@@ -352,6 +355,7 @@ impl LanguageServerSession {
         }
         let capability = match query {
             Query::Symbols { .. } => "documentSymbolProvider",
+            Query::WorkspaceSymbols { .. } => "workspaceSymbolProvider",
             Query::Definition { .. } => "definitionProvider",
             Query::References { .. } => "referencesProvider",
             Query::Calls { .. } => "callHierarchyProvider",
@@ -363,10 +367,12 @@ impl LanguageServerSession {
         {
             return Err(IndexError::Unsupported(capability.into()));
         }
-        self.sync_document(path).await?;
+        if !matches!(query, Query::WorkspaceSymbols { .. }) {
+            self.sync_document(path).await?;
+        }
         let uri = lsp_types::Url::from_file_path(path).map_err(|_| backend("Invalid file URI"))?;
         let position = match query {
-            Query::Symbols { .. } => Value::Null,
+            Query::Symbols { .. } | Query::WorkspaceSymbols { .. } => Value::Null,
             Query::Definition { line, column, .. }
             | Query::References { line, column, .. }
             | Query::Calls { line, column, .. } => {
@@ -382,6 +388,26 @@ impl LanguageServerSession {
         let params = json!({"textDocument": {"uri": uri}, "position": position});
         let deadline = Duration::from_secs(30);
         let mut data = match query {
+            Query::WorkspaceSymbols { query, .. } => {
+                let value = self
+                    .request::<request::WorkspaceSymbolRequest>(
+                        json!({"query": query}),
+                        deadline,
+                        cancel,
+                    )
+                    .await?;
+                QueryData::Symbols(
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|item| symbol(item, &uri))
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .filter(|item| item.location.path.starts_with(&self.project_root))
+                        .collect(),
+                )
+            }
             Query::Symbols { .. } => {
                 let value = self
                     .request::<request::DocumentSymbolRequest>(params, deadline, cancel)
@@ -421,7 +447,7 @@ impl LanguageServerSession {
             }
             Query::References { .. } => {
                 let mut params = params;
-                params["context"] = json!({"includeDeclaration": true});
+                params["context"] = json!({"includeDeclaration": false});
                 let value = self
                     .request::<request::References>(params, deadline, cancel)
                     .await?;
@@ -460,6 +486,7 @@ impl LanguageServerSession {
                             &item["uri"]
                         };
                         calls.push(Call {
+                            subject: location(&item["uri"], &item["selectionRange"])?,
                             name: target["name"].as_str().unwrap_or_default().into(),
                             target: location(&target["uri"], &target["selectionRange"])?,
                             sites: call["fromRanges"]
@@ -474,7 +501,10 @@ impl LanguageServerSession {
                 let mut data = QueryData::Calls(calls);
                 super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
                 return Ok(QueryResult {
-                    content_hash: None,
+                    content_hash: self
+                        .documents
+                        .get(path)
+                        .map(|(_, text)| blake3::hash(text.as_bytes()).to_hex().to_string()),
                     source: super::QuerySource::Live,
                     coverage: Default::default(),
                     data,
@@ -486,7 +516,7 @@ impl LanguageServerSession {
         };
         super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
         Ok(QueryResult {
-            content_hash: if matches!(query, Query::Symbols { .. }) {
+            content_hash: if !matches!(query, Query::WorkspaceSymbols { .. }) {
                 self.documents
                     .get(path)
                     .map(|(_, text)| blake3::hash(text.as_bytes()).to_hex().to_string())

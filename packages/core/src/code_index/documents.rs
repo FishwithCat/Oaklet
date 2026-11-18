@@ -10,7 +10,7 @@ pub(super) const MAX_DOCUMENT: u64 = 8 * 1024 * 1024;
 pub(super) type Result<T> = std::result::Result<T, IndexError>;
 
 /// Only saved, bounded UTF-8 files inside this workspace may become LSP overlays.
-pub(super) async fn read(workspace: &Path, path: &Path) -> Result<String> {
+pub(crate) async fn read(workspace: &Path, path: &Path) -> Result<String> {
     use tokio::io::AsyncReadExt;
     let checked = Workspace::new(&workspace.to_string_lossy())
         .and_then(|scope| scope.resolve(&path.to_string_lossy()))
@@ -46,7 +46,7 @@ fn width(c: char, encoding: &str) -> u32 {
     }
 }
 
-pub(super) fn convert(text: &str, position: Position, from: &str, to: &str) -> Result<Position> {
+pub(crate) fn convert(text: &str, position: Position, from: &str, to: &str) -> Result<Position> {
     // split preserves the final empty line; CRLF counts as one line terminator.
     let line = text
         .split('\n')
@@ -87,6 +87,7 @@ pub(super) async fn normalize(
         QueryData::Locations(items) => locations.extend(items.iter_mut()),
         QueryData::Calls(items) => {
             for item in items {
+                locations.push(&mut item.subject);
                 locations.push(&mut item.target);
                 locations.extend(item.sites.iter_mut());
             }

@@ -509,7 +509,7 @@ impl CodeIndexManager {
         cancel: &Cancel,
     ) -> Result<QueryResult, IndexError> {
         let (key, path, generation, revision, lifetime) = self.route(workspace, &query)?;
-        let result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }?;
+        let mut result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }?;
         {
             let entries = self.workspaces.lock().unwrap();
             let entry = entries
@@ -518,6 +518,19 @@ impl CodeIndexManager {
                 .ok_or(IndexError::Closed)?;
             if entry.stale || entry.revision != revision {
                 return Err(IndexError::NotReady);
+            }
+            if matches!(query, Query::WorkspaceSymbols { .. })
+                && let super::QueryData::Symbols(items) = &mut result.data
+            {
+                let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
+                let project = discovery.route(query.file()).map_err(IndexError::Invalid)?;
+                items.retain(|item| {
+                    discovery
+                        .route(&item.location.path.to_string_lossy())
+                        .is_ok_and(|candidate| {
+                            candidate.root == project.root && candidate.language == project.language
+                        })
+                });
             }
         }
         if matches!(&result.data, super::QueryData::Symbols(items) if items.is_empty())

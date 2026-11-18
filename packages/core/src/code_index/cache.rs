@@ -435,6 +435,7 @@ fn query_key(
     let mut query = query.clone();
     match &mut query {
         Query::Symbols { file }
+        | Query::WorkspaceSymbols { file, .. }
         | Query::Definition { file, .. }
         | Query::References { file, .. }
         | Query::Calls { file, .. } => {

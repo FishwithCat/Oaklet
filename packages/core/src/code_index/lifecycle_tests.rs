@@ -1508,3 +1508,334 @@ async fn rebuild_finishes_after_caller_drops_and_rejects_the_previous_generation
     manager.shutdown().await;
     fixture.assert_reaped();
 }
+
+struct CodeToolAllow;
+impl crate::tools::Approver for CodeToolAllow {
+    fn approve<'a>(
+        &'a self,
+        _: crate::tools::ApprovalRequest,
+    ) -> futures_util::future::BoxFuture<'a, crate::tools::ApprovalDecision> {
+        Box::pin(async { crate::tools::ApprovalDecision::Allow })
+    }
+}
+fn code_tools(manager: Arc<CodeIndexManager>) -> crate::tools::ToolRegistry {
+    let mut registry = crate::tools::ToolRegistry::new();
+    crate::tools::code::register(&mut registry, manager);
+    registry
+}
+#[tokio::test]
+async fn agent_code_tools_candidates_recursive_calls_and_spill_pages() {
+    use serde_json::json;
+    let fixture = Fixture::new("index-agent-tools");
+    std::fs::write(fixture.0.join("src/lib.rs"), "a😀x\n").unwrap();
+    std::fs::write(
+        fixture.0.join("sync-options.json"),
+        r#"{"semanticTools":true,"symbolCount":200}"#,
+    )
+    .unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let registry = code_tools(manager.clone());
+    let (mut ctx, root, _owner) = crate::tools::test_support::context("agent-code-context");
+    ctx.workspace = crate::tools::Workspace::new(fixture.0.to_str().unwrap()).unwrap();
+    let position = json!({"path":"src/lib.rs","line":1,"column":3});
+    for name in ["code_definition", "code_references"] {
+        let outcome = registry
+            .execute(&ctx, &CodeToolAllow, name, name, position.clone())
+            .await;
+        assert!(outcome.ok, "{}", outcome.output);
+        let value: Value = serde_json::from_str(&outcome.output).unwrap();
+        assert_eq!(value["entries"][0]["column"], 3);
+        assert_eq!(value["entries"][0]["path"], "src/lib.rs");
+        assert_eq!(value["completeness_known"], false);
+        if name == "code_definition" {
+            assert_eq!(value["entries"][1]["external"], true);
+            assert_eq!(value["entries"][1]["column_encoding"], "utf-16");
+        }
+    }
+    assert_eq!(
+        fixture
+            .events()
+            .iter()
+            .find(|e| e["event"] == "position")
+            .unwrap()["position"]["character"],
+        3
+    );
+    for direction in ["incoming", "outgoing"] {
+        let mut args = position.clone();
+        args["direction"] = json!(direction);
+        let outcome = registry
+            .execute(&ctx, &CodeToolAllow, "code_calls", direction, args.clone())
+            .await;
+        assert!(outcome.ok, "{}", outcome.output);
+        let value: Value = serde_json::from_str(&outcome.output).unwrap();
+        assert_eq!(value["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(value["entries"][0]["name"], "same");
+        assert_eq!(
+            value["entries"][0]["subject"],
+            value["entries"][0]["target"]
+        );
+        assert_eq!(value["truncated"], false);
+        args["limit"] = json!(2);
+        let limited = registry
+            .execute(&ctx, &CodeToolAllow, "code_calls", "limited", args)
+            .await;
+        let value: Value = serde_json::from_str(&limited.output).unwrap();
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["entries"].as_array().unwrap().len(), 1);
+    }
+    for (limit, count, truncated) in [(None, 50, true), (Some(200), 200, false)] {
+        let mut args = json!({"path":"src/lib.rs","query":"same"});
+        if let Some(limit) = limit {
+            args["limit"] = json!(limit);
+        }
+        let outcome = registry
+            .execute(&ctx, &CodeToolAllow, "code_symbols", "search", args)
+            .await;
+        assert!(outcome.ok, "{}", outcome.output);
+        let pointer = crate::tools::spill_pointer(&outcome.output).unwrap();
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(pointer).unwrap()).unwrap();
+        assert_eq!(value["entries"].as_array().unwrap().len(), count);
+        assert_eq!(value["truncated"], truncated);
+        let paged = registry
+            .execute(
+                &ctx,
+                &CodeToolAllow,
+                "read_file",
+                "page",
+                json!({"path":pointer,"offset":3,"limit":2}),
+            )
+            .await;
+        assert!(paged.ok, "{}", paged.output);
+        assert!(paged.output.contains("file_verified"));
+    }
+    let invalid = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_symbols",
+            "invalid",
+            json!({"path":"../escape.rs"}),
+        )
+        .await;
+    assert!(!invalid.ok);
+    assert!(registry.warnings().is_empty());
+    manager.shutdown().await;
+    fixture.assert_reaped();
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[tokio::test]
+async fn agent_cancellation_and_missing_capabilities_keep_other_sessions_usable() {
+    use serde_json::json;
+    let fixture = Fixture::new("index-agent-cancel");
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let registry = Arc::new(code_tools(manager.clone()));
+    let (mut ctx, root, owner) = crate::tools::test_support::context("agent-cancel-context");
+    ctx.workspace = crate::tools::Workspace::new(fixture.0.to_str().unwrap()).unwrap();
+    let ctx = Arc::new(ctx);
+    let pending = tokio::spawn({
+        let registry = registry.clone();
+        let ctx = ctx.clone();
+        async move {
+            registry
+                .execute(
+                    &ctx,
+                    &CodeToolAllow,
+                    "code_definition",
+                    "cancel",
+                    json!({"path":"src/lib.rs","line":1,"column":1}),
+                )
+                .await
+        }
+    });
+    until(|| fixture.count("query") == 1).await;
+    owner.cancel();
+    assert!(!pending.await.unwrap().ok);
+    until(|| fixture.count("cancel") == 1).await;
+    let (mut other, other_root, _other_owner) =
+        crate::tools::test_support::context("agent-other-context");
+    other.workspace = ctx.workspace.clone();
+    let outcome = registry
+        .execute(
+            &other,
+            &CodeToolAllow,
+            "code_calls",
+            "unsupported",
+            json!({"path":"src/lib.rs","line":1,"column":1,"direction":"incoming"}),
+        )
+        .await;
+    assert!(
+        !outcome.ok
+            && outcome.output.contains("unsupported")
+            && outcome.output.contains("grep/read_file")
+    );
+    let outcome = registry
+        .execute(
+            &other,
+            &CodeToolAllow,
+            "code_symbols",
+            "survives",
+            json!({"path":"src/lib.rs"}),
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.output);
+    let outcome = registry
+        .execute(
+            &other,
+            &CodeToolAllow,
+            "grep",
+            "fallback",
+            json!({"pattern":"alive"}),
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.output);
+    manager.close_workspace(&fixture.0);
+    let outcome = registry
+        .execute(
+            &other,
+            &CodeToolAllow,
+            "code_symbols",
+            "unavailable",
+            json!({"path":"src/lib.rs"}),
+        )
+        .await;
+    assert!(!outcome.ok && outcome.output.contains("unavailable"));
+    manager.shutdown().await;
+    fixture.assert_reaped();
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(other_root).unwrap();
+}
+
+#[tokio::test]
+async fn call_prepare_candidates_are_bounded_and_report_truncation() {
+    let fixture = Fixture::new("index-call-candidates");
+    std::fs::write(
+        fixture.0.join("sync-options.json"),
+        r#"{"semanticTools":true,"prepareCount":34}"#,
+    )
+    .unwrap();
+    let pool = LanguageServerManager::new();
+    let key = fixture.register(&pool);
+    let (_owner, cancel) = CancelHandle::new();
+    let result = pool
+        .query(
+            &key,
+            &fixture.0.join("src/lib.rs"),
+            &Query::Calls {
+                file: "src/lib.rs".into(),
+                line: 0,
+                column: 0,
+                incoming: true,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(result.truncated);
+    let QueryData::Calls(items) = result.data else {
+        panic!()
+    };
+    assert_eq!(items.len(), 32);
+    assert_eq!(fixture.count("calls"), 32);
+    for call in items {
+        assert_eq!(call.subject, call.target);
+    }
+    pool.close_workspace(&fixture.0).await.unwrap();
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+#[ignore = "requires OAKLET_INDEX_PROJECT pointing to a disposable Acorn snapshot and real Rust/TS LSP tools"]
+async fn real_project_agent_tools_probe() {
+    use serde_json::json;
+    let root =
+        PathBuf::from(std::env::var_os("OAKLET_INDEX_PROJECT").expect("OAKLET_INDEX_PROJECT"))
+            .canonicalize()
+            .unwrap();
+    assert!(
+        root.starts_with(std::env::temp_dir().canonicalize().unwrap())
+            || root.starts_with("/private/tmp")
+    );
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&root, CodeIndexConfig::default())
+        .unwrap();
+    let registry = code_tools(manager.clone());
+    let (mut ctx, context_root, _owner) = crate::tools::test_support::context("real-agent-tools");
+    ctx.workspace = crate::tools::Workspace::new(root.to_str().unwrap()).unwrap();
+    for (path, name) in [
+        ("crates/acorn-core/src/agent/cost.rs", "format_cny"),
+        ("frontend/src/lib/format.ts", "formatFieldValue"),
+    ] {
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        let (line, source) = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| {
+                line.contains(&format!("function {name}(")) || line.contains(&format!("fn {name}("))
+            })
+            .unwrap();
+        let column = source[..source.find(name).unwrap()].chars().count() + 1;
+        let position = json!({"path":path,"line":line+1,"column":column});
+        let mut queries = vec![
+            ("code_symbols", json!({"path":path})),
+            ("code_symbols", json!({"path":path,"query":name})),
+            ("code_definition", position.clone()),
+            ("code_references", position.clone()),
+            ("code_calls", {
+                let mut args = position.clone();
+                args["direction"] = json!("incoming");
+                args
+            }),
+        ];
+        if path.ends_with(".ts") {
+            let mut args = position.clone();
+            args["direction"] = json!("outgoing");
+            queries.push(("code_calls", args));
+        }
+        for (tool, args) in queries {
+            let deadline = Instant::now() + Duration::from_secs(90);
+            let value = loop {
+                let outcome = registry
+                    .execute(&ctx, &CodeToolAllow, tool, tool, args.clone())
+                    .await;
+                if outcome.ok {
+                    let full = crate::tools::spill_pointer(&outcome.output)
+                        .map(|path| std::fs::read_to_string(path).unwrap())
+                        .unwrap_or(outcome.output);
+                    break serde_json::from_str::<Value>(&full).unwrap();
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{tool} {path}: {}",
+                    outcome.output
+                );
+                assert!(
+                    outcome.output.contains("not_ready") || outcome.output.contains("unavailable"),
+                    "{}",
+                    outcome.output
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            assert_eq!(value["status"], "ok");
+            assert_eq!(value["completeness_known"], false);
+            assert!(!value["entries"].as_array().unwrap().is_empty());
+            eprintln!(
+                "tool={tool} path={path} entries={} source={} truncated={}",
+                value["entries"].as_array().unwrap().len(),
+                value["source"],
+                value["truncated"]
+            );
+        }
+    }
+    manager.shutdown().await;
+    std::fs::remove_dir_all(context_root).unwrap();
+}

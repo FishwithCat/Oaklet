@@ -46,6 +46,7 @@ if (root / "spawn-child").exists():
     record("descendant", pid=child.pid)
 documents = {}
 options = json.loads((root / "sync-options.json").read_text()) if (root / "sync-options.json").exists() else {}
+tool_range = {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}
 encoding = options.get("encoding", "utf-16")
 sync_kind = options.get("syncKind", 2)
 initializing = None
@@ -66,7 +67,7 @@ while (message := read()) is not None:
         settings = message["result"][0]
         assert settings["cargo"]["buildScripts"]["enable"] is False
         assert settings["procMacro"]["enable"] is False
-        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": False, "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
+        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": options.get("semanticTools", False), "workspaceSymbolProvider": options.get("semanticTools", False), "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
     elif method == "initialized":
         record("ready")
         send({"id": "watch-registration", "method": "client/registerCapability", "params": {"registrations": [{"id": "sources", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.rs"}, *([{"globPattern": "**/*.oaklet-data"}] if options.get("watchData") else [])]}}]}})
@@ -109,6 +110,11 @@ while (message := read()) is not None:
             os._exit(7)
         request_id = message["id"]
         record("query", id=request_id)
+        if options.get("semanticTools"):
+            record("position", position=params["position"])
+            uri = params["textDocument"]["uri"]
+            send({"id": request_id, "result": [{"uri": uri, "range": tool_range}, {"uri": "file:///outside/dependency.rs", "range": tool_range}]})
+            continue
         if (root / "ready-definition").exists():
             send({"id": request_id, "result": {"uri": params["textDocument"]["uri"], "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}}})
             continue
@@ -146,7 +152,23 @@ while (message := read()) is not None:
             send({"id": request_id, "result": [{"name": "alive", "kind": 12, "range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 9}}, "selectionRange": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 9}}}]})
             continue
         send({"id": request_id, "result": [{"name": "alive", "kind": 12, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}}]})
+    elif method == "workspace/symbol":
+        assert options.get("semanticTools"), message
+        record("workspace-symbols", query=params["query"])
+        send({"id": message["id"], "result": [{"name": "same", "kind": 12, "location": {"uri": (root / "src/lib.rs").as_uri(), "range": tool_range}} for _ in range(options.get("symbolCount", 2))] + [{"name": "ignored", "kind": 12, "location": {"uri": (root / "Cargo.toml").as_uri(), "range": tool_range}}, {"name": "missing", "kind": 12, "location": {"uri": (root / "missing.rs").as_uri(), "range": tool_range}}]})
+    elif method == "textDocument/prepareCallHierarchy":
+        record("prepare", position=params["position"])
+        send({"id": message["id"], "result": [{"name": "same", "kind": 12, "uri": params["textDocument"]["uri"], "range": tool_range, "selectionRange": tool_range, "data": i} for i in range(options.get("prepareCount", 2))]})
+    elif method in {"callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"}:
+        item = params["item"]
+        record("calls", direction=method, candidate=item["data"])
+        # Self target is an intentional recursive edge; retain each prepared candidate.
+        send({"id": message["id"], "result": [{("from" if method.endswith("incomingCalls") else "to"): item, "fromRanges": [tool_range]}]})
     elif method == "textDocument/references":
+        if options.get("semanticTools"):
+            assert params["context"]["includeDeclaration"] is False
+            send({"id": message["id"], "result": [{"uri": params["textDocument"]["uri"], "range": tool_range}]})
+            continue
         sys.stdout.buffer.write(b"Content-Length: 999999999\r\n\r\n")
         sys.stdout.buffer.flush()
     elif method == "shutdown":

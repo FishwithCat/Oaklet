@@ -16,6 +16,7 @@ use tokio::sync::watch;
 
 use crate::spill;
 
+pub(crate) mod code;
 mod diff;
 mod fs;
 pub(crate) mod history;
@@ -380,6 +381,10 @@ impl ToolRegistry {
         cancel: &Cancel,
     ) -> Self {
         let mut registry = Self::new();
+        code::register(
+            &mut registry,
+            app.state::<crate::AppState>().code_index.clone(),
+        );
 
         let workspace = PathBuf::from(&config.workspace);
         let home = app.path().home_dir().ok();
