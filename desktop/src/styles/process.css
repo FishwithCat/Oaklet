@@ -169,11 +169,6 @@
   color: var(--red);
 }
 
-.error-icon {
-  flex: none;
-  color: var(--red);
-}
-
 .awaiting-icon {
   flex: none;
   color: var(--yellow);

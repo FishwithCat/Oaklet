@@ -12,7 +12,7 @@ import {
   Task2Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
-import { CloseCircleFilled, WarningFilled } from "@mingcute/react/core-filled";
+import { WarningFilled } from "@mingcute/react/core-filled";
 import { MarkdownText } from "../../shared/Markdown";
 import { DiffCard } from "./DiffCard";
 import { diffTotals } from "./tool-diff";
@@ -225,8 +225,6 @@ function ToolRow({
     <LoadingRegular size={12} className="spin" />
   ) : item.status === "awaiting" ? (
     <SandglassRegular size={12} className="awaiting-icon" />
-  ) : item.status === "error" ? (
-    <CloseCircleFilled size={13} className="error-icon" />
   ) : undefined;
 
   return (
