@@ -116,6 +116,14 @@ async fn discovers_five_languages_nested_python_gradle_and_plain_sources() {
     plain.write("scripts/main.py", "def alive(): pass\n");
     plain.write("src/Main.java", "class Main {}\n");
     let discovery = discover(&plain.0).await.unwrap();
+    assert!(
+        discovery
+            .warnings
+            .iter()
+            .all(|warning| !warning.starts_with("Python resolution")),
+        "{:?}",
+        discovery.warnings
+    );
     assert_eq!(discovery.route("scripts/main.py").unwrap().root, plain.0);
     assert_eq!(discovery.route("src/Main.java").unwrap().root, plain.0);
 }

@@ -427,17 +427,12 @@ fn scan(
             language,
             error: None,
         }));
-    for language in [Language::Python, Language::Java] {
-        if result
-            .projects
-            .iter()
-            .any(|project| project.language == language)
-        {
-            result.warnings.push(match language {
-                Language::Python => "Python resolution uses Pyright project settings and its selected interpreter; missing dependencies, virtual environments and dynamic imports can limit results.",
-                _ => "Java resolution depends on the installed JDK and local build dependencies; automatic build configuration updates and Gradle import are disabled to avoid executing project build scripts.",
-            }.into());
-        }
+    if result
+        .projects
+        .iter()
+        .any(|project| project.language == Language::Java)
+    {
+        result.warnings.push("Java resolution depends on the installed JDK and local build dependencies; automatic build configuration updates and Gradle import are disabled to avoid executing project build scripts.".into());
     }
     // Multiple tsconfig files within a package belong to the same server instance.
     let package_roots: BTreeSet<_> = ts_roots
