@@ -101,6 +101,7 @@ pub(super) fn system_prompt(
     let mut rules: Vec<String> = vec![
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
         "Paths are relative to the workspace; absolute paths inside it also work. Shell commands start in the workspace root, so never prefix them with cd <workspace>.".into(),
+        "In your reply, name files by their full workspace-relative path, such as `crates/acorn-core/src/ontology/view.rs`. Chat file links resolve from the workspace root, so a module-relative shorthand like `ontology/view.rs` will not open.".into(),
     ];
     rules.extend(tools.guidance().into_iter().map(str::to_string));
     rules.extend(
@@ -176,6 +177,13 @@ mod tests {
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
+    }
+
+    #[test]
+    fn system_prompt_asks_for_full_workspace_paths_in_replies() {
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        assert!(prompt.contains("full workspace-relative path"));
+        assert!(prompt.contains("module-relative shorthand"));
     }
 
     #[test]
