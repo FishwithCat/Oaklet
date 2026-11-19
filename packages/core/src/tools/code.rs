@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const GUIDANCE: &str = "When you know a symbol's name and need its definition, every reference, or its callers/callees, use code_symbols then code_references/code_calls before grep. Before renaming or changing a variant, field, method or type, get the declaration from code_symbols/code_definition, call code_references on that position, and across all pages edit only the locations it returns: a same-named bare token in another file may belong to another type, crate or import, and grep cannot attribute it. Keep grep for strings, macros, configuration, generated code and framework conventions. code_symbols with query searches every ready project and needs no path; without query it lists one file with exact positions, which code_definition, code_references and code_calls need (1-based line, 1-based Unicode character column). code_calls returns one hop and keeps prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation, and protocol readiness does not prove semantic completeness. A truncated location result is not the full set: check file_counts and page with offset (limit max 200) until truncated is false before editing; never treat one page as an allowlist. On unavailable, unsupported, not_ready or timeout, fall back to grep/read_file and label text matches as candidates. External targets are metadata only (UTF-16 columns). Oversized output is spilled to a file readable with read_file offset/limit.";
+const GUIDANCE: &str = "Use code_definition, code_references, and code_calls for exact semantic locations after identifying the symbol. For edits that affect a symbol's uses, call code_references on the declaration to distinguish same-named symbols. Verify additional text candidates against their imports and types. Keep grep for strings, macros, configuration, generated code and framework conventions. code_symbols with query searches every ready project and needs no path; without query it lists one file with exact positions, which code_definition, code_references and code_calls need (1-based line, 1-based Unicode character column). code_calls returns one hop and keeps prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation, and protocol readiness does not prove semantic completeness. Check file_counts and page with offset when you need all returned locations (limit max 200). On unavailable, unsupported, not_ready or timeout, fall back to grep/read_file and label text matches as candidates. External targets are metadata only (UTF-16 columns). Oversized output is spilled to a file readable with read_file offset/limit.";
 
 pub(crate) fn register(registry: &mut ToolRegistry, manager: Arc<CodeIndexManager>) {
     for name in [
@@ -65,7 +65,7 @@ impl Tool for CodeTool {
                 "Use when a bare name may bind elsewhere (imports, re-exports, traits, shadowing) and text search cannot tell which declaration applies. Preserves multiple candidates; external targets are reported without reading them. When truncated, page with offset."
             }
             "code_references" => {
-                "Call before renaming or editing a name that may also exist in another type, crate or import. Returns only locations bound to this declaration, excluding the declaration itself, so text hits outside the result belong to another symbol. Partial results do not establish absence. If truncated, read file_counts and page through every entry with offset before editing."
+                "Call before renaming or editing a name that may also exist in another type, crate or import. Returns only locations bound to this declaration, excluding the declaration itself, but may omit other locations bound to it. Partial results do not establish absence. If truncated, read file_counts and page through every entry with offset before editing."
             }
             _ => {
                 "Use for callers or callees of one function when grep would confuse same-name functions. Server call hierarchy only: one hop, preserving recursive calls, prepared subjects and distinct candidates; unsupported is not an empty call graph."
@@ -449,7 +449,7 @@ fn add_duplicate_hint(value: &mut Value) {
     }
     value["hint"] = json!(format!(
         "Several returned symbols share a name ({}). Before renaming or editing one, call \
-         code_references on its declaration and edit only the returned locations; a same-named \
+         code_references on its declaration to confirm usages; a same-named \
          token may bind to another type, crate or import.",
         duplicates.join(", ")
     ));
@@ -654,6 +654,7 @@ mod tests {
             name: "same".into(),
             kind: 12,
             location: location.clone(),
+            body_lines: None,
             children: vec![],
         };
         let result = QueryResult {

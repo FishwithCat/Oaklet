@@ -613,6 +613,7 @@ mod tests {
                     end_line: 0,
                     end_column: 1,
                 },
+                body_lines: None,
                 children: vec![],
             }]),
         }

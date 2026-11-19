@@ -66,7 +66,7 @@ fn matches(glob: &GlobMatcher, relative: &Path) -> bool {
             .is_some_and(|name| glob.is_match(Path::new(name)))
 }
 
-fn display_path(path: &Path) -> String {
+pub(super) fn display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
@@ -286,56 +286,28 @@ fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
     let root = workspace.resolve(args.path.as_deref().unwrap_or("."))?;
 
     let mut found: Vec<(String, usize, String)> = Vec::new();
-    let mut limit_hit = false;
-    let deadline = Instant::now() + SEARCH_TIMEOUT;
-    'walk: for result in walker(&root, false).build() {
-        if cancel.is_cancelled() {
-            return Err(ToolError::Cancelled);
-        }
-        if Instant::now() >= deadline {
-            return Err(ToolError::Timeout(SEARCH_TIMEOUT));
-        }
-        let Ok(entry) = result else {
-            continue;
-        };
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-            continue;
-        }
-        let relative = relative_path(workspace, entry.path());
-        if include
-            .as_ref()
-            .is_some_and(|glob| !matches(glob, relative))
-        {
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() > MAX_GREP_FILE_BYTES {
-            continue;
-        }
-        let Ok(bytes) = fs::read(entry.path()) else {
-            continue;
-        };
-        if bytes.iter().take(8_192).any(|byte| *byte == 0) {
-            continue;
-        }
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
-        };
-        for (index, line) in text.lines().enumerate() {
-            if !pattern.is_match(line) {
-                continue;
+    let limit_hit = scan_text_files(
+        workspace,
+        cancel,
+        &root,
+        include.as_ref(),
+        |relative, text| {
+            for (index, line) in text.lines().enumerate() {
+                if !pattern.is_match(line) {
+                    continue;
+                }
+                if found.len() >= MAX_GREP_MATCHES {
+                    return false;
+                }
+                found.push((
+                    display_path(relative),
+                    index + 1,
+                    line.chars().take(MAX_LINE_CHARS).collect(),
+                ));
             }
-            if found.len() >= MAX_GREP_MATCHES {
-                limit_hit = true;
-                break 'walk;
-            }
-            let line = line.trim_end_matches('\r');
-            let line: String = line.chars().take(MAX_LINE_CHARS).collect();
-            found.push((display_path(relative), index + 1, line));
-        }
-    }
+            true
+        },
+    )?;
 
     if found.is_empty() {
         return Ok(format!("No matches for {}.", args.pattern));
@@ -359,6 +331,54 @@ fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
         lines.push(format!("  {line}: {text}"));
     }
     Ok(lines.join("\n"))
+}
+
+/// Visits searchable UTF-8 files until the visitor returns false.
+pub(super) fn scan_text_files(
+    workspace: &Workspace,
+    cancel: &super::Cancel,
+    root: &Path,
+    include: Option<&GlobMatcher>,
+    mut visit: impl FnMut(&Path, &str) -> bool,
+) -> Result<bool, ToolError> {
+    let deadline = Instant::now() + SEARCH_TIMEOUT;
+    for result in walker(root, false).build() {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(ToolError::Timeout(SEARCH_TIMEOUT));
+        }
+        let Ok(entry) = result else {
+            continue;
+        };
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let relative = relative_path(workspace, entry.path());
+        if include.is_some_and(|glob| !matches(glob, relative)) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.len() > MAX_GREP_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        if bytes.iter().take(8_192).any(|byte| *byte == 0) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        if !visit(relative, &text) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

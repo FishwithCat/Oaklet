@@ -76,7 +76,7 @@ while (message := read()) is not None:
         else:
             assert settings in ({}, None)
         record("configuration", section=options.get("section", "rust-analyzer"), settings=settings)
-        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": options.get("calls", options.get("semanticTools", False)), "workspaceSymbolProvider": options.get("semanticTools", False), "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
+        send({"id": initializing, "result": {"capabilities": {"documentSymbolProvider": True, "definitionProvider": True, "referencesProvider": True, "callHierarchyProvider": options.get("calls", options.get("semanticTools", False)), "workspaceSymbolProvider": bool(options.get("semanticTools") or options.get("contextTools")), "textDocumentSync": {"openClose": True, "change": sync_kind, "save": {"includeText": True}}, "positionEncoding": encoding}}})
     elif method == "initialized":
         record("ready")
         send({"id": "watch-registration", "method": "client/registerCapability", "params": {"registrations": [{"id": "sources", "method": "workspace/didChangeWatchedFiles", "registerOptions": {"watchers": [{"globPattern": "**/*.rs"}, *([{"globPattern": "**/*.oaklet-data"}] if options.get("watchData") else [])]}}]}})
@@ -119,6 +119,10 @@ while (message := read()) is not None:
             os._exit(7)
         request_id = message["id"]
         record("query", id=request_id)
+        if options.get("contextTools"):
+            record("position", position=params["position"])
+            send({"id": request_id, "result": {"uri": (root / "src/lib.rs").as_uri(), "range": tool_range}})
+            continue
         if options.get("semanticTools"):
             record("position", position=params["position"])
             uri = params["textDocument"]["uri"]
@@ -137,6 +141,9 @@ while (message := read()) is not None:
         record("cancel", id=params["id"])
     elif method == "textDocument/documentSymbol":
         record("symbols", uri=params["textDocument"]["uri"])
+        if options.get("contextTools"):
+            send({"id": message["id"], "result": [{"name": "alive", "kind": 12, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 0}}, "selectionRange": tool_range}]})
+            continue
         if (root / "slow-symbols").exists():
             time.sleep(0.5)
         if (root / "empty-symbols").exists():
@@ -162,6 +169,9 @@ while (message := read()) is not None:
             continue
         send({"id": request_id, "result": [{"name": "alive", "kind": 12, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}}]})
     elif method == "workspace/symbol":
+        if options.get("contextTools"):
+            send({"id": message["id"], "result": [{"name": "alive", "kind": 12, "location": {"uri": (root / "src/lib.rs").as_uri(), "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 0}}}}]})
+            continue
         assert options.get("semanticTools"), message
         record("workspace-symbols", query=params["query"])
         send({"id": message["id"], "result": [{"name": "same", "kind": 12, "location": {"uri": (root / "src/lib.rs").as_uri(), "range": tool_range}} for _ in range(options.get("symbolCount", 2))] + [{"name": "ignored", "kind": 12, "location": {"uri": (root / "Cargo.toml").as_uri(), "range": tool_range}}, {"name": "missing", "kind": 12, "location": {"uri": (root / "missing.rs").as_uri(), "range": tool_range}}]})
@@ -174,6 +184,10 @@ while (message := read()) is not None:
         # Self target is an intentional recursive edge; retain each prepared candidate.
         send({"id": message["id"], "result": [{("from" if method.endswith("incomingCalls") else "to"): item, "fromRanges": [tool_range]}]})
     elif method == "textDocument/references":
+        if options.get("contextTools"):
+            assert params["position"] == tool_range["start"], params
+            send({"id": message["id"], "result": [{"uri": (root / "tests/test_alive.rs").as_uri(), "range": tool_range}, {"uri": "file:///outside/dependency.rs", "range": tool_range}]})
+            continue
         if options.get("semanticTools"):
             assert params["context"]["includeDeclaration"] is False
             send({"id": message["id"], "result": [{"uri": params["textDocument"]["uri"], "range": tool_range}]})

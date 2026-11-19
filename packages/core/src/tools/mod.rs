@@ -17,6 +17,7 @@ use tokio::sync::watch;
 use crate::spill;
 
 pub(crate) mod code;
+pub(crate) mod code_context;
 mod diff;
 mod fs;
 pub(crate) mod history;
@@ -388,6 +389,7 @@ impl ToolRegistry {
         let workspace = PathBuf::from(&config.workspace);
         // Setup manages `Arc<AppState>` (SharedState), not `AppState` itself.
         let index = app.state::<crate::SharedState>().code_index.clone();
+        registry.push(Box::new(code_context::CodeContext(index.clone())));
         if code::available(&index, &workspace) {
             code::register(&mut registry, index);
         }

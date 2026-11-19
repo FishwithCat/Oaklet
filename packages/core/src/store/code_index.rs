@@ -235,6 +235,7 @@ impl Store {
                         name: symbol.name.clone(),
                         kind: symbol.kind,
                         location: symbol.location.clone(),
+                        body_lines: symbol.body_lines,
                         children: Vec::new(),
                     })
                     .map_err(error)?
@@ -446,6 +447,7 @@ mod tests {
                     end_line: 0,
                     end_column: 4,
                 },
+                body_lines: None,
                 children: vec![],
             }],
         }
@@ -627,6 +629,7 @@ mod hierarchy_tests {
                 end_line: 0,
                 end_column: 1,
             },
+            body_lines: None,
             children: vec![],
         };
         let parent = Symbol {

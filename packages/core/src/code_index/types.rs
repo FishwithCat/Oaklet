@@ -57,6 +57,9 @@ pub struct Symbol {
     pub name: String,
     pub kind: u32,
     pub location: Location,
+    /// Inclusive zero-based lines of the declaration and body, when supplied by document symbols.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) body_lines: Option<[u32; 2]>,
     pub children: Vec<Symbol>,
 }
 

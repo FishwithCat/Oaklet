@@ -824,6 +824,15 @@ fn symbol(item: &Value, uri: &lsp_types::Url) -> Result<Symbol> {
     } else {
         location(&json!(uri), &item["selectionRange"])?
     };
+    let body_lines = serde_json::from_value::<lsp_types::Range>(item["range"].clone())
+        .ok()
+        .map(|range| {
+            let end = range
+                .end
+                .line
+                .saturating_sub(u32::from(range.end.character == 0));
+            [range.start.line, end.max(range.start.line)]
+        });
     Ok(Symbol {
         name: item["name"]
             .as_str()
@@ -833,6 +842,7 @@ fn symbol(item: &Value, uri: &lsp_types::Url) -> Result<Symbol> {
             .as_u64()
             .ok_or_else(|| backend("Missing symbol kind"))? as u32,
         location,
+        body_lines,
         children: item["children"]
             .as_array()
             .into_iter()

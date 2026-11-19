@@ -1754,6 +1754,90 @@ fn code_tools(manager: Arc<CodeIndexManager>) -> crate::tools::ToolRegistry {
     crate::tools::code::register(&mut registry, manager);
     registry
 }
+
+#[tokio::test]
+async fn agent_code_context_reads_definition_and_groups_references() {
+    use serde_json::json;
+    let fixture = Fixture::new("index-agent-context");
+    std::fs::create_dir(fixture.0.join("tests")).unwrap();
+    std::fs::write(fixture.0.join("src/caller.rs"), "😀 alive()\n").unwrap();
+    std::fs::write(
+        fixture.0.join("src/lib.rs"),
+        "fn alive() {\n    let x = 1;\n    assert_eq!(x, 1);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.0.join("tests/test_alive.rs"),
+        "fn exercise() { alive(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.0.join("sync-options.json"),
+        r#"{"contextTools":true}"#,
+    )
+    .unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let mut registry = crate::tools::ToolRegistry::new();
+    registry.push(Box::new(crate::tools::code_context::CodeContext(
+        manager.clone(),
+    )));
+    let (mut ctx, root, _owner) = crate::tools::test_support::context("agent-context-tool");
+    ctx.workspace = crate::tools::Workspace::new(fixture.0.to_str().unwrap()).unwrap();
+    let outcome = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_context",
+            "context",
+            json!({
+                "path":"src/caller.rs", "line":1, "column":3, "include_references":true
+            }),
+        )
+        .await;
+    let named = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_context",
+            "named-context",
+            json!({"query":"alive", "include_references":true}),
+        )
+        .await;
+    manager.shutdown().await;
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(outcome.ok, "{}", outcome.output);
+    let response: Value = serde_json::from_str(&outcome.output).unwrap();
+    assert_eq!(response["files"][0]["path"], "src/lib.rs");
+    assert_eq!(response["files"][0]["symbol_lines"], json!([1, 4]));
+    assert!(
+        response["files"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("3:     assert_eq!(x, 1);")
+    );
+    assert_eq!(
+        response["references"]["file_counts"],
+        json!([["tests/test_alive.rs", 1]])
+    );
+    assert_eq!(response["references"]["completeness_known"], false);
+    assert_eq!(response["references"]["external_locations"], 1);
+    assert_eq!(response["files"][2]["test_candidate"], true);
+    assert!(named.ok, "{}", named.output);
+    let named: Value = serde_json::from_str(&named.output).unwrap();
+    assert_eq!(named["files"][0]["symbol_lines"], json!([1, 4]));
+    assert_eq!(named["references"]["status"], "answered");
+    let position = fixture
+        .events()
+        .into_iter()
+        .find(|event| event["event"] == "position")
+        .unwrap();
+    assert_eq!(position["position"], json!({"line":0,"character":3}));
+}
+
 #[tokio::test]
 async fn agent_code_tools_candidates_recursive_calls_and_spill_pages() {
     use serde_json::json;
