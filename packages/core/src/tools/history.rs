@@ -339,6 +339,7 @@ mod tests {
                     used: 1,
                     window: 10,
                 }),
+                usage: Default::default(),
                 error: None,
             })
             .unwrap();
@@ -406,6 +407,7 @@ mod tests {
                 ],
                 compaction: None,
                 context: None,
+                usage: Default::default(),
                 error: None,
             })
             .unwrap();

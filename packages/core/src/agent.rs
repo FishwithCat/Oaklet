@@ -22,6 +22,7 @@ use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace};
 
 pub(crate) use messages::initial_messages;
 use messages::{assistant_message, image_message, strip_system, system_prompt};
+pub(crate) use model::Usage;
 
 #[derive(Default)]
 struct ToolCall {
@@ -160,8 +161,9 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         .await
         {
             Ok(step::Next::Reply(reply)) => {
-                if let Some(prompt_tokens) = reply.prompt_tokens {
-                    meter.record_prompt_tokens(prompt_tokens);
+                ctx.record_usage(reply.usage);
+                if let Some(usage) = reply.usage {
+                    meter.record_prompt_tokens(usage.prompt_tokens);
                 }
                 reply
             }

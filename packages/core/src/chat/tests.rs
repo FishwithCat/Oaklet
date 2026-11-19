@@ -69,6 +69,7 @@ async fn a_failed_close_retains_the_reply_until_a_retry_can_save_it() {
         }],
         compaction: None,
         context: None,
+        usage: Default::default(),
         error: None,
     });
     state

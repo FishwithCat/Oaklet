@@ -1,5 +1,6 @@
 use super::*;
 use crate::AppConfig;
+use crate::agent::Usage;
 use crate::chat::{RunHandle, test_support::state};
 use crate::compaction::test_support::user;
 use crate::store::NewUserTurn;
@@ -140,6 +141,52 @@ async fn a_panicking_agent_settles_the_run_as_an_error() {
     )));
     // The run is terminal, so there is no stale running row to interrupt.
     assert_eq!(store.interrupt_stale_runs(10, &json!({})).unwrap(), 0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn a_finished_run_saves_the_usage_accumulated_across_steps() {
+    let (state, store, root) = state(AppConfig::default());
+    store.create_session("s", "/tmp", 1).unwrap();
+    let request = user("hi");
+    let started = store
+        .begin_run(
+            "s",
+            "r",
+            &NewUserTurn {
+                message: request.clone(),
+                display: None,
+                title: None,
+            },
+            2,
+        )
+        .unwrap();
+    let ctx = RunContext::without_window(state, "s", "r", started);
+    ctx.record_usage(Some(Usage {
+        prompt_tokens: 100,
+        completion_tokens: 5,
+        cache_hit_tokens: 60,
+        cache_miss_tokens: 40,
+    }));
+    ctx.record_usage(Some(Usage {
+        prompt_tokens: 200,
+        completion_tokens: 10,
+        cache_hit_tokens: 50,
+        cache_miss_tokens: 150,
+    }));
+    assert_eq!(
+        ctx.usage(),
+        store::RunUsage {
+            prompt_tokens: 300,
+            completion_tokens: 15,
+            cache_hit_tokens: 110,
+            cache_miss_tokens: 190,
+            steps: 2,
+        }
+    );
+    ctx.finish_done(vec![request]).await;
+
+    assert!(store.get_session("s").unwrap().is_some());
     std::fs::remove_dir_all(root).ok();
 }
 

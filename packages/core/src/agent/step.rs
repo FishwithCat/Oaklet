@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use super::ToolCall;
-use super::model::stream_step;
+use super::model::{Usage, stream_step};
 use crate::AppConfig;
 use crate::chat::RunContext;
 use crate::tools::{Cancel, ToolRegistry};
@@ -19,7 +19,7 @@ pub(super) struct Reply {
     pub content: String,
     pub reasoning: String,
     pub calls: Vec<ToolCall>,
-    pub prompt_tokens: Option<usize>,
+    pub usage: Option<Usage>,
 }
 
 pub(super) enum Next {
@@ -40,13 +40,13 @@ pub(super) async fn request(
     let mut attempt = 0;
     loop {
         match stream_step(ctx, client, config, tools, messages, cancel).await {
-            Ok((content, reasoning, calls, prompt_tokens)) => {
+            Ok((content, reasoning, calls, usage)) => {
                 *overflow_retried = false;
                 return Ok(Next::Reply(Reply {
                     content,
                     reasoning,
                     calls,
-                    prompt_tokens,
+                    usage,
                 }));
             }
             Err(err) if err.is_transient() && attempt + 1 < MAX_ATTEMPTS => {

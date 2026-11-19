@@ -79,6 +79,15 @@ struct ContextEvent {
     window: usize,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageEvent {
+    session_id: String,
+    run_id: String,
+    #[serde(flatten)]
+    usage: store::RunUsage,
+}
+
 impl RunContext {
     pub fn delta(&self, text: &str) {
         {
@@ -347,6 +356,17 @@ impl RunContext {
                 run_id: self.run_id.clone(),
                 used,
                 window,
+            },
+        );
+    }
+
+    pub(crate) fn emit_usage(&self, usage: store::RunUsage) {
+        self.emit(
+            "agent:usage",
+            UsageEvent {
+                session_id: self.session_id.clone(),
+                run_id: self.run_id.clone(),
+                usage,
             },
         );
     }

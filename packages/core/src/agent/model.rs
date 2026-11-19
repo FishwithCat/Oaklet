@@ -15,12 +15,25 @@ use crate::AppConfig;
 use crate::chat::RunContext;
 use crate::tools::{Cancel, ToolRegistry, cap};
 
+/// Token accounting reported by the provider for one model request.
+///
+/// Cache counters are kept exactly as reported. They are telemetry, not a
+/// pricing input: a provider may report hit + miss differently from the prompt
+/// total, and normalizing here would hide that.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Usage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub cache_hit_tokens: usize,
+    pub cache_miss_tokens: usize,
+}
+
 #[derive(Debug, Default)]
 struct StreamDelta {
     content: Option<String>,
     reasoning: Option<String>,
-    /// Provider-reported prompt size, when a chunk carries usage.
-    usage: Option<usize>,
+    /// Provider-reported token usage, when a chunk carries it.
+    usage: Option<Usage>,
     /// Terminal marker or provider finish reason, when this chunk carries one.
     done: bool,
     finish_reason: Option<String>,
@@ -258,7 +271,7 @@ pub(super) async fn stream_step(
     tools: &ToolRegistry,
     messages: &[Value],
     cancel: &Cancel,
-) -> Result<(String, String, Vec<ToolCall>, Option<usize>), RequestError> {
+) -> Result<(String, String, Vec<ToolCall>, Option<Usage>), RequestError> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let body = json!({
         "model": config.model,
@@ -302,7 +315,7 @@ pub(super) async fn stream_step(
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
-    let mut prompt_tokens: Option<usize> = None;
+    let mut usage: Option<Usage> = None;
     let mut saw_done = false;
     let mut finish_reason: Option<String> = None;
 
@@ -323,8 +336,8 @@ pub(super) async fn stream_step(
                     let line = String::from_utf8_lossy(&line);
                     let mut delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
                         .map_err(RequestError::stream)?;
-                    if let Some(tokens) = delta.usage {
-                        prompt_tokens = Some(tokens);
+                    if let Some(reported) = delta.usage {
+                        usage = Some(reported);
                     }
                     saw_done |= delta.done;
                     if let Some(reason) = delta.finish_reason.take() {
@@ -340,8 +353,8 @@ pub(super) async fn stream_step(
         let line = String::from_utf8_lossy(&buffer);
         let mut delta = apply_sse_line(&line, &mut content, &mut reasoning, &mut calls)
             .map_err(RequestError::stream)?;
-        if let Some(tokens) = delta.usage {
-            prompt_tokens = Some(tokens);
+        if let Some(reported) = delta.usage {
+            usage = Some(reported);
         }
         saw_done |= delta.done;
         if let Some(reason) = delta.finish_reason.take() {
@@ -356,7 +369,7 @@ pub(super) async fn stream_step(
 
     let mut calls: Vec<ToolCall> = calls.into_values().collect();
     assign_call_ids(&mut calls, &ctx.state().next_id());
-    Ok((content, reasoning, calls, prompt_tokens))
+    Ok((content, reasoning, calls, usage))
 }
 
 fn assign_call_ids(calls: &mut [ToolCall], response_id: &str) {
@@ -434,11 +447,8 @@ fn apply_sse_line(
     {
         emitted.finish_reason = Some(reason.to_string());
     }
-    if let Some(tokens) = value
-        .pointer("/usage/prompt_tokens")
-        .and_then(Value::as_u64)
-    {
-        emitted.usage = Some(tokens as usize);
+    if let Some(usage) = parse_usage(&value) {
+        emitted.usage = Some(usage);
     }
 
     let Some(delta) = value.pointer("/choices/0/delta") else {
@@ -482,6 +492,37 @@ fn apply_sse_line(
     }
 
     Ok(emitted)
+}
+
+/// Read the provider's usage object. OpenAI-compatible servers put it in the
+/// final chunk; DeepSeek adds cache counters, OpenAI nests the cached count,
+/// and Anthropic-style gateways use `cache_read_input_tokens`.
+fn parse_usage(value: &Value) -> Option<Usage> {
+    let usage = value.get("usage")?;
+    let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_u64)? as usize;
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let deepseek_hit = usage.get("prompt_cache_hit_tokens").and_then(Value::as_u64);
+    let deepseek_miss = usage
+        .get("prompt_cache_miss_tokens")
+        .and_then(Value::as_u64);
+    let openai_hit = usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64);
+    let anthropic_hit = usage.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let cache_hit_tokens = deepseek_hit.or(openai_hit).or(anthropic_hit).unwrap_or(0) as usize;
+    // With no explicit miss count, whatever the prompt did not hit was missed.
+    let cache_miss_tokens = deepseek_miss
+        .map(|tokens| tokens as usize)
+        .unwrap_or_else(|| prompt_tokens.saturating_sub(cache_hit_tokens));
+    Some(Usage {
+        prompt_tokens,
+        completion_tokens,
+        cache_hit_tokens,
+        cache_miss_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -729,19 +770,92 @@ mod tests {
     }
 
     #[test]
-    fn reads_prompt_tokens_from_a_usage_chunk() {
+    fn reads_deepseek_usage_with_cache_counters() {
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut calls = BTreeMap::new();
 
         let delta = apply_sse_line(
-            r#"data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":5}}"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":56,"prompt_cache_hit_tokens":1000,"prompt_cache_miss_tokens":234}}"#,
             &mut content,
             &mut reasoning,
             &mut calls,
         )
         .unwrap();
-        assert_eq!(delta.usage, Some(1234));
+        assert_eq!(
+            delta.usage,
+            Some(Usage {
+                prompt_tokens: 1234,
+                completion_tokens: 56,
+                cache_hit_tokens: 1000,
+                cache_miss_tokens: 234,
+            })
+        );
+    }
+
+    #[test]
+    fn reads_openai_cached_tokens_and_derives_the_miss() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut calls = BTreeMap::new();
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":56,"prompt_tokens_details":{"cached_tokens":1000}}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(
+            delta.usage,
+            Some(Usage {
+                prompt_tokens: 1234,
+                completion_tokens: 56,
+                cache_hit_tokens: 1000,
+                cache_miss_tokens: 234,
+            })
+        );
+    }
+
+    #[test]
+    fn reads_anthropic_cache_read_tokens() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut calls = BTreeMap::new();
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":12,"cache_read_input_tokens":512}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(delta.usage.map(|usage| usage.cache_hit_tokens), Some(512));
+        assert_eq!(delta.usage.map(|usage| usage.cache_miss_tokens), Some(388));
+    }
+
+    #[test]
+    fn prompt_tokens_alone_count_as_cache_misses() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut calls = BTreeMap::new();
+
+        let delta = apply_sse_line(
+            r#"data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":56}}"#,
+            &mut content,
+            &mut reasoning,
+            &mut calls,
+        )
+        .unwrap();
+        assert_eq!(
+            delta.usage,
+            Some(Usage {
+                prompt_tokens: 1234,
+                completion_tokens: 56,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 1234,
+            })
+        );
 
         let delta = apply_sse_line(
             r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#,

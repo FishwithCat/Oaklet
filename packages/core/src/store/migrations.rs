@@ -172,6 +172,28 @@ mod tests {
     }
 
     #[test]
+    fn v1_adds_run_usage_columns() {
+        let store = Store::in_memory().unwrap();
+        let conn = store.connection().unwrap();
+        for column in [
+            "prompt_tokens",
+            "completion_tokens",
+            "cache_hit_tokens",
+            "cache_miss_tokens",
+            "model_steps",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = ?1)",
+                    [column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing runs.{column}");
+        }
+    }
+
+    #[test]
     fn rejects_a_modified_migration() {
         let root = crate::tools::test_support::temp_root("store-migrate-checksum");
         let path = root.join("oaklet.db");

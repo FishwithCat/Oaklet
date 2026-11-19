@@ -297,6 +297,7 @@ fn a_finished_run_projects_back_to_the_same_rows() {
                 used: 10,
                 window: 100,
             }),
+            usage: Default::default(),
             error: None,
         })
         .unwrap();
@@ -348,6 +349,7 @@ fn a_second_turn_rebuilds_the_model_history_from_the_events() {
             }],
             compaction: None,
             context: None,
+            usage: Default::default(),
             error: None,
         })
         .unwrap();
@@ -451,6 +453,7 @@ fn a_compaction_shadows_history_but_keeps_the_rendered_transcript() {
             }],
             compaction: None,
             context: None,
+            usage: Default::default(),
             error: None,
         })
         .unwrap();

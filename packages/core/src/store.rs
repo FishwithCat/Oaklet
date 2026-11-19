@@ -15,6 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agent::Usage;
+
 mod migrations;
 mod projection;
 use projection::{save_surface, surface_messages_with};
@@ -70,6 +72,30 @@ pub struct Event {
 pub struct ContextUsage {
     pub used: usize,
     pub window: usize,
+}
+
+/// Provider-reported tokens accumulated over one run. Steps counts successful
+/// model requests, including those whose provider omitted usage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUsage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub cache_hit_tokens: usize,
+    pub cache_miss_tokens: usize,
+    pub steps: usize,
+}
+
+impl RunUsage {
+    pub fn add(&mut self, usage: Option<Usage>) {
+        self.steps += 1;
+        if let Some(usage) = usage {
+            self.prompt_tokens += usage.prompt_tokens;
+            self.completion_tokens += usage.completion_tokens;
+            self.cache_hit_tokens += usage.cache_hit_tokens;
+            self.cache_miss_tokens += usage.cache_miss_tokens;
+        }
+    }
 }
 
 /// A stored conversation: metadata plus its append-only event log.
@@ -151,6 +177,7 @@ pub struct RunEnd {
     /// Present when this run compacted its history.
     pub compaction: Option<CompactionEnd>,
     pub context: Option<ContextUsage>,
+    pub usage: RunUsage,
     pub error: Option<String>,
 }
 
@@ -860,8 +887,20 @@ impl Store {
                 return Err("This session no longer exists.".into());
             }
             tx.execute(
-                "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
-                params![end.run_id, end.status, end.finished_at, end.error],
+                "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4, \
+                 prompt_tokens = ?5, completion_tokens = ?6, cache_hit_tokens = ?7, \
+                 cache_miss_tokens = ?8, model_steps = ?9 WHERE id = ?1",
+                params![
+                    end.run_id,
+                    end.status,
+                    end.finished_at,
+                    end.error,
+                    end.usage.prompt_tokens as i64,
+                    end.usage.completion_tokens as i64,
+                    end.usage.cache_hit_tokens as i64,
+                    end.usage.cache_miss_tokens as i64,
+                    end.usage.steps as i64,
+                ],
             )
             .map_err(|error| format!("Could not update the run: {error}"))?;
         }
@@ -1050,7 +1089,10 @@ pub fn now_ms() -> i64 {
 mod tests {
     use serde_json::json;
 
-    use super::{ContextUsage, EventPayload, NewUserTurn, RunEnd, Store, has_table, is_checkpoint};
+    use super::{
+        ContextUsage, EventPayload, NewUserTurn, RunEnd, RunUsage, Store, has_table, is_checkpoint,
+    };
+    use crate::agent::Usage;
 
     fn store() -> Store {
         Store::in_memory().unwrap()
@@ -1172,6 +1214,13 @@ mod tests {
                     used: 12,
                     window: 100,
                 }),
+                usage: RunUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                    cache_hit_tokens: 60,
+                    cache_miss_tokens: 40,
+                    steps: 2,
+                },
                 error: None,
             })
             .unwrap();
@@ -1196,6 +1245,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, ("done".into(), Some(9)));
+        let usage: (i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT prompt_tokens, completion_tokens, cache_hit_tokens, \
+                 cache_miss_tokens, model_steps FROM runs WHERE id = 'r1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(usage, (100, 20, 60, 40, 2));
+    }
+
+    #[test]
+    fn run_usage_accumulates_steps_and_keeps_provider_counts_verbatim() {
+        let mut total = RunUsage::default();
+        total.add(Some(Usage {
+            prompt_tokens: 100,
+            completion_tokens: 5,
+            cache_hit_tokens: 60,
+            cache_miss_tokens: 40,
+        }));
+        total.add(None);
+        total.add(Some(Usage {
+            prompt_tokens: 200,
+            completion_tokens: 10,
+            cache_hit_tokens: 50,
+            cache_miss_tokens: 100,
+        }));
+
+        assert_eq!(
+            total,
+            RunUsage {
+                prompt_tokens: 300,
+                completion_tokens: 15,
+                cache_hit_tokens: 110,
+                cache_miss_tokens: 140,
+                steps: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn new_runs_start_with_zero_usage() {
+        let store = store();
+        store.create_session("s1", "/tmp/a", 1).unwrap();
+        store
+            .begin_run("s1", "r1", &turn("hello", None), 2)
+            .unwrap();
+        let conn = store.connection().unwrap();
+        let usage: (i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT prompt_tokens, completion_tokens, cache_hit_tokens, \
+                 cache_miss_tokens, model_steps FROM runs WHERE id = 'r1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(usage, (0, 0, 0, 0, 0));
     }
 
     #[test]
@@ -1217,6 +1339,7 @@ mod tests {
             }],
             compaction: None,
             context: None,
+            usage: Default::default(),
             error: None,
         };
         store.finish_run(&end).unwrap();
@@ -1297,6 +1420,7 @@ mod tests {
                     }],
                     compaction: None,
                     context: None,
+                    usage: Default::default(),
                     error: None,
                 })
                 .unwrap();
@@ -1364,6 +1488,7 @@ mod tests {
                 ],
                 compaction: None,
                 context: None,
+                usage: Default::default(),
                 error: None,
             })
             .unwrap();

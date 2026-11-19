@@ -365,6 +365,7 @@ mod tests {
                 after: 1000,
             }),
             context: None,
+            usage: Default::default(),
             error: None,
         }
     }

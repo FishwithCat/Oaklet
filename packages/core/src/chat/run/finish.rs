@@ -233,6 +233,7 @@ impl RunContext {
             ),
             compaction,
             context: final_view.context,
+            usage: self.usage(),
             error: error.clone(),
         });
         let store = self.state.chat.store.clone();

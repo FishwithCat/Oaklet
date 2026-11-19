@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::transcript::{settle_streaming, view_from_window};
 use super::{JobNotice, RunHandle, SessionView, Tone};
+use crate::agent::Usage;
 use crate::store::{self, EventPayload, NewUserTurn};
 use crate::tools::CancelHandle;
 use crate::{SharedState, context};
@@ -89,6 +90,7 @@ pub(super) fn start_run(
         partial: Arc::new(Mutex::new(PartialReply::default())),
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_sizes: Arc::new(Mutex::new(None)),
+        usage: Arc::new(Mutex::new(store::RunUsage::default())),
     };
     let recovery_ctx = ctx.clone();
     let recovery_messages = messages.clone();
@@ -258,6 +260,8 @@ pub struct RunContext {
     compacted: Arc<AtomicBool>,
     /// Local request sizes at the first and last compaction in this run.
     compaction_sizes: Arc<Mutex<Option<(usize, usize)>>>,
+    /// Provider-reported tokens accumulated across this run's model steps.
+    usage: Arc<Mutex<store::RunUsage>>,
 }
 
 #[derive(Default)]
@@ -324,6 +328,25 @@ impl RunContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let first = recorded.map(|(first, _)| first).unwrap_or(before);
         *recorded = Some((first, after));
+    }
+
+    /// Accumulate one successful model step and publish the new total.
+    pub fn record_usage(&self, usage: Option<Usage>) {
+        let mut total = self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        total.add(usage);
+        let snapshot = *total;
+        drop(total);
+        self.emit_usage(snapshot);
+    }
+
+    pub(crate) fn usage(&self) -> store::RunUsage {
+        *self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn record(&self, payload: EventPayload) {
@@ -424,6 +447,7 @@ impl RunContext {
             partial: Arc::new(Mutex::new(PartialReply::default())),
             compacted: Arc::new(AtomicBool::new(false)),
             compaction_sizes: Arc::new(Mutex::new(None)),
+            usage: Arc::new(Mutex::new(store::RunUsage::default())),
         }
     }
 
