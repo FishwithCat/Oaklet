@@ -154,7 +154,11 @@ test("usage label and tooltip report the provider cache share", () => {
   assert.equal(formatUsageTokens(1_218_000), "1.2M");
   assert.equal(formatUsageTokens(48_000), "48k");
   assert.equal(formatUsageTokens(999), "999");
-  assert.equal(formatUsageLabel(usage), "1.4M");
+  assert.equal(formatUsageLabel(usage), "1.4M (87% cached)");
+  assert.equal(
+    formatUsageLabel({ ...usage, cacheHitTokens: 0, cacheMissTokens: 0 }),
+    "1.4M",
+  );
   assert.equal(
     formatUsageTitle(usage),
     "cache 87% · 1.2M/1.4M prompt · 48k completion",

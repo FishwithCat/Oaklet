@@ -74,10 +74,12 @@ export function formatUsageTokens(tokens: number): string {
   return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
 }
 
-/** Composer label: the tab's cumulative prompt size, not just the cached part. */
+/** Composer label: cumulative prompt size plus the provider's cache share. */
 export function formatUsageLabel(usage: RunUsage): string {
   if (usage.promptTokens <= 0) return "";
-  return formatUsageTokens(usage.promptTokens);
+  const tokens = formatUsageTokens(usage.promptTokens);
+  if (usage.cacheHitTokens + usage.cacheMissTokens <= 0) return tokens;
+  return `${tokens} (${formatCacheHitRate(usage)} cached)`;
 }
 
 /** Tooltip with the cumulative cache rate and token breakdown. */
