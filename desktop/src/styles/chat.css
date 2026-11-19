@@ -197,7 +197,7 @@
   max-width: 78%;
   overflow-wrap: anywhere;
   line-height: 1.55;
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
 .bubble-text {
@@ -243,7 +243,7 @@
 .msg.assistant .bubble {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -309,7 +309,7 @@
 
 .markdown code {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 12px;
   background: color-mix(in srgb, var(--text) 4.5%, transparent);
   border: 1px solid color-mix(in srgb, var(--text) 6%, transparent);
   border-radius: 4px;
@@ -366,7 +366,7 @@
   overflow-x: auto;
   border-collapse: collapse;
   margin: 10px 0 14px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .markdown th,
@@ -387,7 +387,7 @@
 }
 
 .markdown.compact {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -418,7 +418,7 @@
 .markdown.compact pre {
   margin: 8px 0;
   padding: 10px 12px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .composer-wrap {
