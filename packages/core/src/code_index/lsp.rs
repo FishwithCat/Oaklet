@@ -97,7 +97,14 @@ impl LanguageServerSession {
     ) -> Result<Self> {
         let config = match language {
             Language::Rust => {
-                json!({"rust-analyzer": {"cargo": {"buildScripts": {"enable": false}}, "procMacro": {"enable": false}}})
+                json!({"rust-analyzer": {
+                    "cargo": {"buildScripts": {"enable": false}},
+                    "procMacro": {"enable": false},
+                    // The index never reads diagnostics; a background cargo check
+                    // would only create target trees and compete with the user's builds.
+                    "check": {"onSave": false},
+                    "checkOnSave": false
+                }})
             }
             Language::Python => json!({"python": {"pythonPath": command.python_interpreter}}),
             // shortcut: Gradle dependency import runs build scripts; enable when project trust is supported.
