@@ -20,7 +20,6 @@ pub use run::RunContext;
 pub(crate) use run::settle_on_panic;
 
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -147,7 +146,6 @@ impl ChatState {
         }
     }
 
-    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
         Self::from_store(Store::open(path)?)
     }

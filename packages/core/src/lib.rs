@@ -1,7 +1,6 @@
 mod agent;
 mod architecture;
 mod chat;
-pub mod code_index;
 mod compaction;
 mod connection;
 mod context;
@@ -32,7 +31,6 @@ pub type SharedState = Arc<AppState>;
 const MAX_WORKSPACE_WINDOWS: usize = 8;
 
 pub struct AppState {
-    pub code_index: Arc<code_index::CodeIndexManager>,
     pub exit: Mutex<shutdown::ExitState>,
     pub config: Mutex<AppConfig>,
     pub config_path: PathBuf,
@@ -319,18 +317,6 @@ fn open_workspace_window(
             "[oaklet] could not remember the default workspace: {error}"
         ));
     }
-    let index_config = state
-        .config
-        .lock()
-        .ok()
-        .map(|config| config.code_index.clone());
-    if let Some(config) = index_config
-        && let Ok(windows) = state.windows.lock()
-        && windows.workspace(&label) == Some(&workspace)
-        && let Err(error) = state.code_index.open_workspace(&workspace, config)
-    {
-        log::key(format_args!("[oaklet] could not start code index: {error}"));
-    }
     focus_window(app, &label);
     if let Ok(mut windows) = state.windows.lock() {
         windows.focus(&label);
@@ -367,7 +353,6 @@ fn cleanup_window(state: &AppState, label: &str) {
         return;
     };
 
-    state.code_index.close_workspace(&workspace);
     chat::stop_window(state, label);
     architecture::cancel_workspace(state, &workspace);
     if let Ok(mut terminals) = state.terminal.lock() {
@@ -417,8 +402,6 @@ pub struct AppConfig {
     pub allow_all_commands: bool,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
-    #[serde(default)]
-    pub code_index: code_index::CodeIndexConfig,
     /// Last opened workspace. Each window's active workspace lives in
     /// `WindowRegistry`; this value only chooses what the next launch opens.
     #[serde(default = "default_workspace")]
@@ -559,7 +542,6 @@ impl Default for AppConfig {
             search_api_key: String::new(),
             allow_all_commands: true,
             mcp_servers: BTreeMap::new(),
-            code_index: code_index::CodeIndexConfig::default(),
             workspace: default_workspace(),
         }
     }
@@ -792,7 +774,6 @@ fn save_config(
         return Err("Set the context window for the summary model.".into());
     }
     config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
-    config.code_index.validate()?;
     write_config(&state.config_path, &config)?;
     *state.config.lock().unwrap() = config.clone();
     if previous.allow_all_commands != config.allow_all_commands
@@ -807,10 +788,6 @@ fn save_config(
             granted.clear();
         }
     }
-    state
-        .code_index
-        .configure(config.code_index.clone())
-        .map_err(|e| e.to_string())?;
     drop(write_guard);
     let _ = app.emit("config://changed", &config);
     Ok(config)
@@ -1234,9 +1211,8 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let spill_root = data_dir.join("spill");
             spill::cleanup(&spill_root, spill::RETENTION);
-            let store =
-                store::Store::open(&data_dir.join("oaklet.db")).map_err(std::io::Error::other)?;
-            let chat = chat::ChatState::from_store(store.clone()).map_err(std::io::Error::other)?;
+            let chat = chat::ChatState::open(&data_dir.join("oaklet.db"))
+                .map_err(std::io::Error::other)?;
             let command_allow_all = if config.allow_all_commands {
                 HashSet::from([PathBuf::from(&config.workspace)])
             } else {
@@ -1247,10 +1223,6 @@ pub fn run() {
                 .register("main".into(), PathBuf::from(&config.workspace))
                 .map_err(std::io::Error::other)?;
             let state = Arc::new(AppState {
-                code_index: Arc::new(
-                    code_index::CodeIndexManager::with_store(store)
-                        .with_installation_root(data_dir.join("language-servers")),
-                ),
                 exit: Mutex::new(shutdown::ExitState::Running),
                 config: Mutex::new(config),
                 config_path,
@@ -1266,16 +1238,6 @@ pub fn run() {
                 ids: AtomicU64::new(0),
             });
             app.manage(state.clone());
-            code_index::commands::publish(app.handle().clone(), &state);
-            {
-                let config = state.config.lock().unwrap();
-                if let Err(error) = state
-                    .code_index
-                    .open_workspace(Path::new(&config.workspace), config.code_index.clone())
-                {
-                    log::key(format_args!("[oaklet] could not start code index: {error}"));
-                }
-            }
             // A settled background job reports to the session that started it;
             // the write and the possible new run must not block the job task.
             let notice_app = app.handle().clone();
@@ -1306,11 +1268,6 @@ pub fn run() {
             open_workspace,
             shutdown::close_workspace,
             save_config,
-            code_index::commands::code_index_status,
-            code_index::commands::code_index_retry,
-            code_index::commands::code_index_install,
-            code_index::commands::code_index_cancel_install,
-            code_index::commands::code_index_rebuild,
             connection::test_connection,
             chat::commands::session_create,
             chat::commands::session_list,

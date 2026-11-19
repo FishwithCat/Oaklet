@@ -149,29 +149,6 @@ For another OpenAI-compatible provider, set its base URL (for example
 [Ollama](https://ollama.com), use `http://localhost:11434/v1` and a model such
 as `qwen2.5-coder`.
 
-## Code Index
-
-Open your project, then go to **Settings → Code Index**. If Oaklet cannot
-start a project's language server, select **Install server** on its project
-card. The card shows verification, cancellation, and retry. After a successful
-installation, Oaklet starts the server for matching projects in open workspaces.
-
-| Project language | What to have ready | Server installed by Oaklet |
-| --- | --- | --- |
-| Rust | rustup and the Rust toolchain selected by the project | rust-analyzer component for that toolchain |
-| TypeScript / JavaScript | Node.js 22.22.2+ and npm | TypeScript language server 6.1.0 and TypeScript 5.9.3 |
-| Python | Node.js, npm, and a project Python interpreter | Pyright 1.1.407 |
-| Go | Go 1.23.1+ | gopls v0.17.1 |
-| Java | JDK 21+ (via `JAVA_HOME` or PATH) and Python 3 | Eclipse JDT LS 1.63.0 |
-
-Oaklet installs the four standalone servers in its app data directory.
-For Rust, rustup adds the component to the existing project toolchain.
-Project dependencies must already be available locally. To use your own
-server, save its executable in **Server configuration**. With no explicit
-executable, Oaklet prefers its managed server (or the project rustup
-component), then checks PATH. On Windows, npm installation uses the
-`npm-cli.js` included with the standard Node.js distribution.
-
 ## Skills
 
 Skills are reusable Markdown instructions the agent loads only when a task

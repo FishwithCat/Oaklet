@@ -35,14 +35,6 @@ globset = "0.4"
 regex = "1"
 base64 = "0.21"
 rusqlite = { version = "0.42", features = ["bundled"] }
-async-lsp = { version = "=0.2.4", default-features = false, features = ["tokio"] }
-lsp-types = "0.95"
-tokio-util = { version = "0.7", features = ["compat"] }
-notify = "8.2"
-blake3 = "1"
-flate2 = "1"
-sha2 = "0.10"
-tar = { version = "0.4", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -55,6 +47,3 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
-
-[patch.crates-io]
-async-lsp = { path = "vendor/async-lsp" }

@@ -122,8 +122,6 @@ pub(super) fn system_prompt(
         ));
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
-    let status = tools.prompt_status(std::path::Path::new(&config.workspace));
-
     let mut prompt = format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
          inspect and change the project in their workspace.\n\n\
@@ -133,10 +131,6 @@ pub(super) fn system_prompt(
         platform = std::env::consts::OS,
         rules = rules.join("\n- "),
     );
-    if !status.is_empty() {
-        prompt.push_str("\n\n");
-        prompt.push_str(&status.join("\n"));
-    }
     if let Some(instructions) = instructions {
         prompt.push_str("\n\nWorkspace instructions:\n\n");
         prompt.push_str(instructions);
@@ -170,51 +164,11 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
-        let mut tools = ToolRegistry::new();
-        crate::tools::code::register(
-            &mut tools,
-            std::sync::Arc::new(crate::code_index::CodeIndexManager::new()),
-        );
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
-        assert!(prompt.contains("code_calls returns one hop"));
-        assert!(prompt.contains("1-based Unicode character column"));
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("Commands may need approval"));
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
-    }
-
-    #[test]
-    fn system_prompt_reports_runtime_tool_status() {
-        struct IndexProbe;
-        impl crate::tools::Tool for IndexProbe {
-            fn name(&self) -> &str {
-                "index_probe"
-            }
-            fn description(&self) -> &str {
-                ""
-            }
-            fn parameters(&self) -> Value {
-                json!({"type": "object"})
-            }
-            fn prompt_status(&self, _workspace: &std::path::Path) -> Option<String> {
-                Some("Semantic index ready for Rust.".into())
-            }
-            fn execute<'a>(
-                &'a self,
-                _ctx: &'a crate::tools::ToolContext,
-                _args: Value,
-            ) -> futures_util::future::BoxFuture<
-                'a,
-                Result<crate::tools::ToolOutput, crate::tools::ToolError>,
-            > {
-                Box::pin(async { Ok(crate::tools::ToolOutput::text("")) })
-            }
-        }
-        let mut tools = ToolRegistry::new();
-        tools.push_for_test(Box::new(IndexProbe));
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
-        assert!(prompt.contains("Semantic index ready for Rust."));
     }
 
     #[test]

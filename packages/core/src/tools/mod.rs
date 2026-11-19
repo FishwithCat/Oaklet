@@ -5,7 +5,7 @@
 //! lookup, approval, deadlines, and result normalization. The agent loop never
 //! matches on a tool name.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -16,8 +16,6 @@ use tokio::sync::watch;
 
 use crate::spill;
 
-pub(crate) mod code;
-pub(crate) mod code_context;
 mod diff;
 mod fs;
 pub(crate) mod history;
@@ -32,9 +30,6 @@ pub(crate) mod skill;
 pub(crate) mod web;
 mod web_fetch;
 mod workspace;
-
-#[cfg(unix)]
-pub(crate) use shell::ProcessGroupGuard;
 
 pub use diff::FileDiff;
 pub use workspace::Workspace;
@@ -173,10 +168,6 @@ pub trait Tool: Send + Sync {
     /// One system-prompt rule; omitted when empty.
     fn guidance(&self) -> &str {
         ""
-    }
-    /// Per-request runtime status (for example code-index readiness).
-    fn prompt_status(&self, _workspace: &Path) -> Option<String> {
-        None
     }
     /// Short pending-call summary (usually the touched path or command).
     fn summary(&self, _args: &Value) -> String {
@@ -387,13 +378,6 @@ impl ToolRegistry {
     ) -> Self {
         let mut registry = Self::new();
         let workspace = PathBuf::from(&config.workspace);
-        // Setup manages `Arc<AppState>` (SharedState), not `AppState` itself.
-        let index = app.state::<crate::SharedState>().code_index.clone();
-        registry.push(Box::new(code_context::CodeContext(index.clone())));
-        if code::available(&index, &workspace) {
-            code::register(&mut registry, index);
-        }
-
         let home = app.path().home_dir().ok();
         let catalog = tauri::async_runtime::spawn_blocking(move || {
             skill::SkillCatalog::discover(&workspace, home.as_deref())
@@ -469,12 +453,6 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
-    /// Keep only tools whose name matches, for isolated probes.
-    #[cfg(test)]
-    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
-        self.tools.retain(|tool| keep(tool.name()));
-    }
-
     /// Model-facing `tools` payload for one chat request.
     pub fn schemas(&self) -> Value {
         Value::Array(
@@ -501,16 +479,6 @@ impl ToolRegistry {
             .iter()
             .map(|tool| tool.guidance())
             .filter(|text| !text.is_empty() && seen.insert(*text))
-            .collect()
-    }
-
-    /// Runtime status lines for the system prompt, without duplicates.
-    pub fn prompt_status(&self, workspace: &Path) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
-        self.tools
-            .iter()
-            .filter_map(|tool| tool.prompt_status(workspace))
-            .filter(|text| seen.insert(text.clone()))
             .collect()
     }
 

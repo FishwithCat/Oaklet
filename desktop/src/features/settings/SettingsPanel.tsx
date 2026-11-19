@@ -9,8 +9,6 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { CloseRegular } from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
-import { CodeIndexSettings } from "./CodeIndexSettings";
-import type { IndexLanguage } from "./code-index-model";
 import { McpSettings } from "./McpSettings";
 import {
   formatMcpConfig,
@@ -23,8 +21,7 @@ import {
 } from "./config";
 import { applyTheme, type Theme } from "./theme";
 
-type SettingsTab =
-  | "model" | "web" | "commands" | "mcp" | "code-index" | "appearance";
+type SettingsTab = "model" | "web" | "commands" | "mcp" | "appearance";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -45,7 +42,6 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "web", label: "Web Search" },
   { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
-  { id: "code-index", label: "Code Index" },
   { id: "appearance", label: "Appearance" },
 ];
 
@@ -75,7 +71,6 @@ export function SettingsPanel({
 }) {
   const [draft, setDraft] = useState(() => toDraft(config));
   const [tab, setTab] = useState<SettingsTab>("model");
-  const [indexErrors, setIndexErrors] = useState<Partial<Record<IndexLanguage, string>>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
@@ -90,7 +85,6 @@ export function SettingsPanel({
     web: null,
     commands: null,
     mcp: null,
-    "code-index": null,
     appearance: null,
   });
 
@@ -142,10 +136,6 @@ export function SettingsPanel({
     if ("error" in parsed) {
       setTab("mcp");
       setError("");
-      return;
-    }
-    if (Object.values(indexErrors).some(Boolean)) {
-      setTab("code-index");
       return;
     }
     setSaving(true);
@@ -229,9 +219,7 @@ export function SettingsPanel({
                   ? "Choose whether the agent asks before running commands."
                   : tab === "mcp"
                     ? "Connect MCP servers and choose which ones the agent can use."
-                    : tab === "code-index"
-                      ? "Configure language servers and inspect the current workspace index."
-                      : "Choose how Oaklet looks. Auto follows your system appearance."}
+                    : "Choose how Oaklet looks. Auto follows your system appearance."}
           </p>
         </div>
 
@@ -264,24 +252,6 @@ export function SettingsPanel({
           </div>
 
           <div className="settings-content">
-            <section
-              hidden={tab !== "code-index"}
-              id="settings-panel-code-index"
-              role="tabpanel"
-              aria-labelledby="settings-tab-code-index"
-              tabIndex={0}
-            >
-              <CodeIndexSettings
-                config={draft.codeIndex ?? { servers: {} }}
-                disabled={saving}
-                onChange={(codeIndex) =>
-                  setDraft((current) => ({ ...current, codeIndex }))
-                }
-                onValidity={(language, detail) =>
-                  setIndexErrors((current) => ({ ...current, [language]: detail }))
-                }
-              />
-            </section>
             {tab === "model" ? (
               <section
                 id="settings-panel-model"
@@ -524,7 +494,7 @@ export function SettingsPanel({
                   }
                 />
               </section>
-            ) : tab === "appearance" ? (
+            ) : (
               <section
                 id="settings-panel-appearance"
                 role="tabpanel"
@@ -558,7 +528,7 @@ export function SettingsPanel({
                   ))}
                 </div>
               </section>
-            ) : null}
+            )}
           </div>
         </div>
 

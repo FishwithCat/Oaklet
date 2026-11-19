@@ -9,7 +9,6 @@ pub(crate) fn state(
     let database = root.join("oaklet.db");
     let store = crate::store::Store::open(&database).unwrap();
     let state = Arc::new(crate::AppState {
-        code_index: Arc::new(crate::code_index::CodeIndexManager::new()),
         exit: Mutex::new(crate::shutdown::ExitState::Running),
         config: Mutex::new(config),
         config_path: Default::default(),
