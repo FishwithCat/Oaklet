@@ -689,6 +689,9 @@ impl CodeIndexManager {
         let workspaces = self.workspaces.lock().unwrap();
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
         if entry.stale {
+            if matches!(query, Query::References { .. }) {
+                return Err(IndexError::NotReadyReason("workspace_updating"));
+            }
             return Err(IndexError::NotReady);
         }
         let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
@@ -732,7 +735,14 @@ impl CodeIndexManager {
             return self.workspace_symbols(workspace, text, cancel).await;
         }
         let (key, path, generation, revision, lifetime) = self.route(workspace, &query)?;
-        let mut result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }?;
+        let references = matches!(query, Query::References { .. });
+        let mut result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }.map_err(|error| {
+            if references && error == IndexError::NotReady {
+                IndexError::NotReadyReason("server_not_ready")
+            } else {
+                error
+            }
+        })?;
         {
             let entries = self.workspaces.lock().unwrap();
             let entry = entries
@@ -740,6 +750,9 @@ impl CodeIndexManager {
                 .filter(|entry| entry.generation == generation)
                 .ok_or(IndexError::Closed)?;
             if entry.stale || entry.revision != revision {
+                if references {
+                    return Err(IndexError::NotReadyReason("workspace_changed"));
+                }
                 return Err(IndexError::NotReady);
             }
             if matches!(query, Query::WorkspaceSymbols { .. })
@@ -761,6 +774,9 @@ impl CodeIndexManager {
             || matches!(&result.data, super::QueryData::Locations(items) if items.is_empty())
             || matches!(&result.data, super::QueryData::Calls(items) if items.is_empty())
         {
+            if references {
+                return Err(IndexError::NoReferences);
+            }
             return Err(IndexError::NotReady);
         }
         Ok(result)

@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-const GUIDANCE: &str = "Use code_definition, code_references, and code_calls for exact semantic locations after identifying the symbol. For edits that affect a symbol's uses, call code_references on the declaration to distinguish same-named symbols. Verify additional text candidates against their imports and types. Keep grep for strings, macros, configuration, generated code and framework conventions. code_symbols with query searches every ready project and needs no path; without query it lists one file with exact positions, which code_definition, code_references and code_calls need (1-based line, 1-based Unicode character column). code_calls returns one hop and keeps prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation, and protocol readiness does not prove semantic completeness. Check file_counts and page with offset when you need all returned locations (limit max 200). On unavailable, unsupported, not_ready or timeout, fall back to grep/read_file and label text matches as candidates. External targets are metadata only (UTF-16 columns). Oversized output is spilled to a file readable with read_file offset/limit.";
+const GUIDANCE: &str = "Use code_definition, code_references, and code_calls for exact semantic locations after identifying the symbol. For edits that affect a symbol's uses, call code_references on the declaration to distinguish same-named symbols. Verify additional text candidates against their imports and types. Keep grep for strings, macros, configuration, generated code and framework conventions. code_symbols with query searches every ready project and needs no path; without query it lists one file with exact positions, which code_definition, code_references and code_calls need (1-based line, 1-based Unicode character column). code_calls returns one hop and keeps prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation, and protocol readiness does not prove semantic completeness. Inspect file_counts first; use reference_file to expand one file and next_offset to fetch more entries. Treat uncovered text matches as candidates and verify them against imports and types. External targets are metadata only (UTF-16 columns). Oversized output is spilled to a file readable with read_file offset/limit.";
 
 pub(crate) fn register(registry: &mut ToolRegistry, manager: Arc<CodeIndexManager>) {
     for name in [
@@ -44,6 +44,7 @@ struct Args {
     direction: Option<Direction>,
     limit: Option<usize>,
     offset: Option<usize>,
+    reference_file: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,7 +66,7 @@ impl Tool for CodeTool {
                 "Use when a bare name may bind elsewhere (imports, re-exports, traits, shadowing) and text search cannot tell which declaration applies. Preserves multiple candidates; external targets are reported without reading them. When truncated, page with offset."
             }
             "code_references" => {
-                "Call before renaming or editing a name that may also exist in another type, crate or import. Returns only locations bound to this declaration, excluding the declaration itself, but may omit other locations bound to it. Partial results do not establish absence. If truncated, read file_counts and page through every entry with offset before editing."
+                "Call before renaming or editing a name that may also exist in another type, crate or import. Returns only locations bound to this declaration, excluding the declaration itself, but may omit other locations bound to it. Start with file_counts, then use reference_file for details in a specific file. Use next_offset if more entries are needed. Partial results do not establish absence."
             }
             _ => {
                 "Use for callers or callees of one function when grep would confuse same-name functions. Server call hierarchy only: one hop, preserving recursive calls, prepared subjects and distinct candidates; unsupported is not an empty call graph."
@@ -95,6 +96,10 @@ impl Tool for CodeTool {
         }
         if matches!(self.name, "code_definition" | "code_references") {
             properties["offset"] = json!({"type":"integer","minimum":0,"maximum":1000000,"default":0,"description":"Number of location entries to skip; use with limit to page through truncated results."});
+        }
+        if self.name == "code_references" {
+            properties["limit"]["default"] = json!(12);
+            properties["reference_file"] = json!({"type":"string","minLength":1,"description":"Return references within this workspace file only. Keep path, line and column at the original symbol."});
         }
         json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
     }
@@ -140,9 +145,21 @@ impl Tool for CodeTool {
         Box::pin(async move {
             let args: Args = parse_args(value)?;
             validate(self.name, &args)?;
-            let limit = args.limit.unwrap_or(50);
+            let references = self.name == "code_references";
+            let limit = args.limit.unwrap_or(if references { 12 } else { 50 });
             let offset = args.offset.unwrap_or(0);
             let work = async {
+                let reference_file = args
+                    .reference_file
+                    .as_deref()
+                    .map(|path| ctx.workspace.resolve(path))
+                    .transpose()
+                    .map_err(IndexError::Invalid)?;
+                let format = if references {
+                    ResultFormat::References(reference_file.as_deref())
+                } else {
+                    ResultFormat::Standard
+                };
                 let resolved = args
                     .path
                     .as_deref()
@@ -199,8 +216,22 @@ impl Tool for CodeTool {
                 };
                 let result = self
                     .manager
-                    .query(ctx.workspace.root(), query, &ctx.cancel)
-                    .await?;
+                    .query(ctx.workspace.root(), query.clone(), &ctx.cancel)
+                    .await;
+                let result = if references
+                    && matches!(
+                        result,
+                        Err(IndexError::NotReady
+                            | IndexError::NotReadyReason(_)
+                            | IndexError::Busy)
+                    ) {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    self.manager
+                        .query(ctx.workspace.root(), query, &ctx.cancel)
+                        .await?
+                } else {
+                    result?
+                };
                 if let Some(hash) = input_hash {
                     let path = resolved
                         .as_ref()
@@ -209,10 +240,10 @@ impl Tool for CodeTool {
                     if result.content_hash.as_ref() != Some(&hash)
                         || blake3::hash(current.as_bytes()).to_hex().as_str() != hash
                     {
-                        return Err(IndexError::NotReady);
+                        return Err(IndexError::NotReadyReason("file_changed"));
                     }
                 }
-                let mut value = render(&ctx.workspace, result, limit, offset).await?;
+                let mut value = render(&ctx.workspace, result, limit, offset, format).await?;
                 if query_mode {
                     add_duplicate_hint(&mut value);
                 }
@@ -223,10 +254,12 @@ impl Tool for CodeTool {
                 result = work => result,
             };
             match result {
-                Ok(value) => Ok(ToolOutput::text(
+                Ok(value) => Ok(ToolOutput::text(if references {
+                    value.to_string()
+                } else {
                     serde_json::to_string_pretty(&value)
-                        .map_err(|e| ToolError::Failed(e.to_string()))?,
-                )),
+                        .map_err(|e| ToolError::Failed(e.to_string()))?
+                })),
                 Err(IndexError::Cancelled) => Err(ToolError::Cancelled),
                 Err(error) => Err(failure(error)),
             }
@@ -245,6 +278,12 @@ fn validate(name: &str, args: &Args) -> Result<(), ToolError> {
         Some("offset must be at most 1000000")
     } else if args.offset.is_some() && !matches!(name, "code_definition" | "code_references") {
         Some("offset is only supported by code_definition and code_references")
+    } else if args
+        .reference_file
+        .as_ref()
+        .is_some_and(|path| name != "code_references" || path.trim().is_empty())
+    {
+        Some("reference_file requires a nonempty path and code_references")
     } else if name == "code_symbols" {
         if args.line.is_some() || args.column.is_some() || args.direction.is_some() {
             Some("symbol queries do not accept positions or direction")
@@ -278,14 +317,21 @@ fn validate(name: &str, args: &Args) -> Result<(), ToolError> {
 }
 fn failure(error: IndexError) -> ToolError {
     let status = match &error {
-        IndexError::Busy | IndexError::NotReady => "not_ready",
+        IndexError::Busy | IndexError::NotReady | IndexError::NotReadyReason(_) => "not_ready",
+        IndexError::NoReferences => "no_results",
         IndexError::Closed | IndexError::Disabled | IndexError::Backend(_) => "unavailable",
         IndexError::Unsupported(_) => "unsupported",
         IndexError::Timeout => "timeout",
         IndexError::Invalid(_) => "invalid_arguments",
         IndexError::Cancelled => "cancelled",
     };
-    ToolError::Failed(json!({"status":status,"detail":error.to_string(),"completeness_known":false,"guidance":"Use grep/read_file as fallback; text matches are candidates, not confirmed calls. No result here proves absence."}).to_string())
+    let reason = match &error {
+        IndexError::NotReadyReason(reason) => Some(*reason),
+        IndexError::Busy => Some("server_busy"),
+        IndexError::NoReferences => Some("empty_backend_result"),
+        _ => None,
+    };
+    ToolError::Failed(json!({"status":status,"reason":reason,"detail":error.to_string(),"completeness_known":false,"guidance":"Use grep/read_file as fallback; text matches are candidates, not confirmed calls. No result here proves absence."}).to_string())
 }
 struct Locations<'a> {
     workspace: &'a Workspace,
@@ -327,11 +373,22 @@ impl Locations<'_> {
         )
     }
 }
+// Keep both metadata and the reference page below the registry's spill threshold.
+const REFERENCE_ENTRY_BYTES: usize = 6_000;
+const REFERENCE_SUMMARY_BYTES: usize = 3_000;
+
+#[derive(Clone, Copy)]
+enum ResultFormat<'a> {
+    Standard,
+    References(Option<&'a Path>),
+}
+
 async fn render(
     workspace: &Workspace,
     result: QueryResult,
     limit: usize,
     offset: usize,
+    format: ResultFormat<'_>,
 ) -> Result<Value, IndexError> {
     let mut locations = Locations {
         workspace,
@@ -339,7 +396,7 @@ async fn render(
     };
     let mut entries = Vec::new();
     let mut truncated = result.truncated;
-    let mut page = None;
+    let mut page = serde_json::Map::new();
     match result.data {
         QueryData::Symbols(items) => {
             let mut pending: Vec<_> = items
@@ -362,7 +419,11 @@ async fn render(
                 );
             }
         }
-        QueryData::Locations(items) => {
+        QueryData::Locations(mut items) => {
+            let bounded = matches!(format, ResultFormat::References(_));
+            if let ResultFormat::References(Some(file)) = format {
+                items.retain(|item| item.path == file);
+            }
             let total = items.len();
             let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
             for item in &items {
@@ -375,7 +436,6 @@ async fn render(
                     )
                     .or_default() += 1;
             }
-            let mut items = items;
             items.sort_by(|a, b| {
                 let a_local = workspace.relative(&a.path) != a.path;
                 let b_local = workspace.relative(&b.path) != b.path;
@@ -387,18 +447,39 @@ async fn render(
                     .then(a.end_line.cmp(&b.end_line))
                     .then(a.end_column.cmp(&b.end_column))
             });
-            truncated |= offset.saturating_add(limit) < total;
+            let mut bytes = 0;
             for item in items.into_iter().skip(offset).take(limit) {
-                entries.push(locations.render(&item).await?);
+                let entry = locations.render(&item).await?;
+                bytes += entry.to_string().len() + 1;
+                if bounded && bytes > REFERENCE_ENTRY_BYTES && !entries.is_empty() {
+                    break;
+                }
+                entries.push(entry);
             }
-            page = Some((
-                offset,
-                total,
-                file_counts
-                    .into_iter()
-                    .map(|(path, count)| json!({"path":path,"count":count}))
-                    .collect::<Vec<_>>(),
-            ));
+            let next = offset.saturating_add(entries.len());
+            truncated |= next < total;
+            let file_count = file_counts.len();
+            let mut summary = Vec::new();
+            let mut bytes = 0;
+            for (path, count) in file_counts {
+                let entry = json!({"path":path,"count":count});
+                bytes += entry.to_string().len() + 1;
+                if bounded && bytes > REFERENCE_SUMMARY_BYTES {
+                    break;
+                }
+                summary.push(entry);
+            }
+            page.insert("offset".into(), json!(offset));
+            page.insert("total".into(), json!(total));
+            page.insert("file_counts".into(), json!(summary));
+            if bounded {
+                page.insert("next_offset".into(), json!((next < total).then_some(next)));
+                page.insert("file_count".into(), json!(file_count));
+                page.insert(
+                    "file_counts_truncated".into(),
+                    json!(summary.len() < file_count),
+                );
+            }
         }
         QueryData::Calls(items) => {
             let mut budget = limit;
@@ -419,11 +500,7 @@ async fn render(
         }
     }
     let mut value = json!({"status":"ok","source":result.source,"coverage":result.coverage,"generation":result.generation,"completeness_known":result.completeness_known,"truncated":truncated,"limit":limit,"position_base":1,"entries":entries});
-    if let Some((offset, total, file_counts)) = page {
-        value["offset"] = json!(offset);
-        value["total"] = json!(total);
-        value["file_counts"] = json!(file_counts);
-    }
+    value.as_object_mut().unwrap().extend(page);
     Ok(value)
 }
 
@@ -628,6 +705,8 @@ mod tests {
         for (error, status) in [
             (IndexError::Timeout, "timeout"),
             (IndexError::NotReady, "not_ready"),
+            (IndexError::NotReadyReason("workspace_changed"), "not_ready"),
+            (IndexError::NoReferences, "no_results"),
             (IndexError::Unsupported("calls".into()), "unsupported"),
             (IndexError::Backend("missing".into()), "unavailable"),
         ] {
@@ -638,6 +717,72 @@ mod tests {
             assert_eq!(value["status"], status);
             assert_eq!(value["completeness_known"], false);
         }
+    }
+
+    #[tokio::test]
+    async fn reference_pages_keep_file_summary_without_spilling() {
+        let (ctx, root, _owner) = super::super::test_support::context("reference-page");
+        let source = root.join("a.rs");
+        let caller = root.join("b.rs");
+        std::fs::write(&source, "a\n".repeat(200)).unwrap();
+        std::fs::write(&caller, "b\n").unwrap();
+        let location = |path: PathBuf, line| Location {
+            path,
+            line,
+            column: 0,
+            end_line: line,
+            end_column: 1,
+        };
+        let result = QueryResult {
+            content_hash: None,
+            source: QuerySource::Live,
+            coverage: QueryCoverage::default(),
+            generation: 5,
+            truncated: false,
+            completeness_known: false,
+            data: QueryData::Locations(
+                (0..200)
+                    .map(|line| location(source.clone(), line))
+                    .chain([location(caller.clone(), 0)])
+                    .collect(),
+            ),
+        };
+        let first = render(
+            &ctx.workspace,
+            result.clone(),
+            200,
+            0,
+            ResultFormat::References(None),
+        )
+        .await
+        .unwrap();
+        assert!(first.to_string().chars().count() < super::super::TOOL_OUTPUT_THRESHOLD_CHARS);
+        assert_eq!(first["file_counts"][1], json!({"path":"b.rs","count":1}));
+        let next = first["next_offset"].as_u64().unwrap() as usize;
+        assert_eq!(next, first["entries"].as_array().unwrap().len());
+        let second = render(
+            &ctx.workspace,
+            result.clone(),
+            200,
+            next,
+            ResultFormat::References(None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["entries"][0]["line"], next + 1);
+        let focused = render(
+            &ctx.workspace,
+            result,
+            12,
+            0,
+            ResultFormat::References(Some(&caller)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(focused["total"], 1);
+        assert_eq!(focused["entries"][0]["path"], "b.rs");
+        assert!(focused["next_offset"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn unicode_nested_limits_and_external_metadata() {
@@ -669,10 +814,14 @@ mod tests {
                 ..child
             }]),
         };
-        let limited = render(&ctx.workspace, result.clone(), 1, 0).await.unwrap();
+        let limited = render(&ctx.workspace, result.clone(), 1, 0, ResultFormat::Standard)
+            .await
+            .unwrap();
         assert_eq!(limited["truncated"], true);
         assert_eq!(limited["entries"][0]["location"]["column"], 3);
-        let full = render(&ctx.workspace, result, 50, 0).await.unwrap();
+        let full = render(&ctx.workspace, result, 50, 0, ResultFormat::Standard)
+            .await
+            .unwrap();
         assert_eq!(full["entries"][1]["container"], "same");
         assert_eq!(full["source"], "sqlite");
         assert_eq!(full["truncated"], false);
@@ -728,7 +877,9 @@ mod tests {
             ]),
         };
 
-        let first = render(&ctx.workspace, result.clone(), 2, 0).await.unwrap();
+        let first = render(&ctx.workspace, result.clone(), 2, 0, ResultFormat::Standard)
+            .await
+            .unwrap();
         assert_eq!(first["offset"], 0);
         assert_eq!(first["total"], 4);
         assert_eq!(first["truncated"], true);
@@ -738,7 +889,9 @@ mod tests {
         assert_eq!(first["file_counts"][1]["path"], "b.rs");
         assert_eq!(first["file_counts"][1]["count"], 1);
 
-        let second = render(&ctx.workspace, result, 2, 2).await.unwrap();
+        let second = render(&ctx.workspace, result, 2, 2, ResultFormat::Standard)
+            .await
+            .unwrap();
         assert_eq!(second["offset"], 2);
         assert_eq!(second["total"], 4);
         assert_eq!(second["truncated"], false);

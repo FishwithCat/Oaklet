@@ -413,7 +413,13 @@ impl CodeContext {
         };
         let result = match self.query(ctx, query).await {
             Ok(result) => result,
-            Err(IndexError::NotReady) => return json!({"status":"not_ready"}),
+            Err(IndexError::NotReadyReason(reason)) => {
+                return json!({"status":"not_ready","reason":reason});
+            }
+            Err(IndexError::NoReferences) => {
+                return json!({"status":"no_results","completeness_known":false});
+            }
+            Err(IndexError::NotReady | IndexError::Busy) => return json!({"status":"not_ready"}),
             Err(IndexError::Timeout) => return json!({"status":"timed_out"}),
             Err(_) => return json!({"status":"unavailable"}),
         };

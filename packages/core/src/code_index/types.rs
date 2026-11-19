@@ -124,6 +124,8 @@ pub enum IndexError {
     Busy,
     Closed,
     NotReady,
+    NotReadyReason(&'static str),
+    NoReferences,
     Disabled,
     Cancelled,
     Timeout,
