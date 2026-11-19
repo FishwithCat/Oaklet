@@ -62,8 +62,9 @@ TASK = {
     "ready": {
         "path": "regex-syntax/src/hir/mod.rs",
         "line": 1613,
-        "column": 12,
+        "column": 10,
     },
+    "ready_reference_file": "regex-automata/src/nfa/thompson/compiler.rs",
     "definition_file": "regex-syntax/src/hir/mod.rs",
     "definition_marker": "pub enum LookKind",
     "packages": ["regex-syntax", "regex-automata", "regex", "regex-lite"],
@@ -281,6 +282,7 @@ def write_spec(path, args, tree, arm, result_path, config):
         "model": config["model"],
         "maxSteps": args.max_steps,
         "readyPosition": TASK["ready"],
+        "readyReferenceFile": TASK["ready_reference_file"],
     }
     if config.get("contextWindow"):
         spec["contextWindow"] = config["contextWindow"]
@@ -744,13 +746,13 @@ def main(argv=None):
 
     # Building the probe uses the checkout's own Cargo home (usually ~/.cargo).
     # The regex worktrees may need a different, pre-populated Cargo home, so
-    # only the compile-check phase applies --cargo-home.
+    # the probe (including rust-analyzer) and compile check share --cargo-home.
     env = os.environ.copy()
     build_env = env.copy()
     build_env["CARGO_NET_OFFLINE"] = "true"
     check_env = build_env.copy()
     if args.cargo_home:
-        check_env["CARGO_HOME"] = str(Path(args.cargo_home).expanduser())
+        check_env["CARGO_HOME"] = str(Path(args.cargo_home).expanduser().resolve())
     repo = prepare_repo(args, out_dir)
     binary = build_probe_binary(args, build_env)
     log(f"probe binary: {binary}")
@@ -796,7 +798,7 @@ def main(argv=None):
         if stop.is_set():
             return {**run, "skipped": True}
         log(f"start {run['id']}")
-        run_env = env.copy()
+        run_env = check_env.copy()
         run_env["OAKLET_BENCH"] = str(run["spec"])
         run_env["OAKLET_BENCH_API_KEY"] = config["apiKey"]
         attempts = 0

@@ -63,8 +63,10 @@ python3 scripts/bench/rename_pilot.py \
   --recheck --resume .data/bench/rename-pilot/20260101-120000
 ```
 
-如果 regex 的依赖不在默认 `~/.cargo`，用 `--cargo-home` 指定；该值只用于
-最后的 `cargo check`，不会影响 Oaklet 自身的构建。
+如果 regex 的依赖不在默认 `~/.cargo`，用 `--cargo-home` 指定。rust-analyzer 与
+`cargo check` 共用该缓存，Oaklet 探针仍用原有环境构建。`code` 组在模型运行前
+先确认 rust-analyzer 能找到 `regex-automata` 的跨 crate 引用。比较改动后的效果时
+使用新输出目录。
 
 ## 并行方式
 

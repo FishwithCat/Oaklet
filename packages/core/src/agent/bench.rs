@@ -115,31 +115,36 @@ async fn run(spec: &Value) -> Result<Value, String> {
     ctx.spill_root = root.join("spill");
 
     let ready_ms = if manager.is_some() {
-        let position = &spec["readyPosition"];
+        let mut args = spec["readyPosition"].clone();
+        let required_file = spec["readyReferenceFile"].as_str();
+        let tool = if let Some(file) = required_file {
+            args["reference_file"] = json!(file);
+            args["limit"] = json!(1);
+            "code_references"
+        } else {
+            "code_definition"
+        };
         let started = Instant::now();
         let deadline = started + Duration::from_secs(240);
         loop {
             let outcome = registry
-                .execute(
-                    &ctx,
-                    &Allow,
-                    "code_definition",
-                    "ready",
-                    json!({
-                        "path": position["path"],
-                        "line": position["line"],
-                        "column": position["column"],
-                    }),
-                )
+                .execute(&ctx, &Allow, tool, "ready", args.clone())
                 .await;
-            if outcome.ok {
+            let ready = required_file.is_none_or(|file| {
+                serde_json::from_str::<Value>(&outcome.output)
+                    .is_ok_and(|value| value["entries"][0]["path"].as_str() == Some(file))
+            });
+            if outcome.ok && ready {
                 break started.elapsed().as_millis() as u64;
             }
             if Instant::now() >= deadline {
                 if let Some(index) = &manager {
                     index.shutdown().await;
                 }
-                return Err(format!("index not ready: {}", outcome.output));
+                return Err(format!(
+                    "index not ready for {tool} {args}: {}",
+                    outcome.output
+                ));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -241,7 +246,7 @@ async fn run(spec: &Value) -> Result<Value, String> {
                 }
                 Err(message) => crate::tools::ToolOutcome::failure(message.clone()),
             };
-            steps.push(json!({
+            let mut trace = json!({
                 "step": step,
                 "tool": name,
                 "args": raw,
@@ -249,7 +254,13 @@ async fn run(spec: &Value) -> Result<Value, String> {
                 "ms": call_started.elapsed().as_millis() as u64,
                 "outputChars": output.output.chars().count(),
                 "outputHead": output.output.chars().take(600).collect::<String>(),
-            }));
+            });
+            if name == "code_references"
+                && let Ok(output) = serde_json::from_str::<Value>(&output.output)
+            {
+                trace["referenceOutput"] = output;
+            }
+            steps.push(trace);
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": id,
