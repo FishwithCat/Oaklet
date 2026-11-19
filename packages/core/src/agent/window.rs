@@ -5,10 +5,6 @@ use crate::tools::{Cancel, Tool, ToolRegistry};
 use crate::{AppConfig, compaction, context};
 use serde_json::Value;
 
-pub(super) fn report(ctx: &RunContext, config: &AppConfig, meter: &Meter, messages: &[Value]) {
-    ctx.context(meter.pressure(messages), config.context_window);
-}
-
 pub(super) async fn make_room(
     client: &reqwest::Client,
     config: &AppConfig,

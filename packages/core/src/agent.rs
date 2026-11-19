@@ -145,10 +145,6 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
         let _ = meter.prepare(&messages);
 
-        // Report the size the next request will be billed for, after any
-        // compaction and while the estimate is still fresh.
-        window::report(&ctx, &config, &meter, &messages);
-
         let reply = match step::request(
             &client,
             &config,
@@ -164,6 +160,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 ctx.record_usage(reply.usage);
                 if let Some(usage) = reply.usage {
                     meter.record_prompt_tokens(usage.prompt_tokens);
+                    // The gauge shows the provider's count, never a local guess.
+                    ctx.context(usage.prompt_tokens, config.context_window);
                 }
                 reply
             }
