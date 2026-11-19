@@ -21,6 +21,8 @@ use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 const MAX_GLOB_RESULTS: usize = 100;
 const MAX_GLOB_SCAN: usize = 20_000;
 const MAX_GREP_MATCHES: usize = 250;
+const MAX_GREP_PER_FILE: usize = 20;
+const MAX_GREP_FILES: usize = 100;
 const MAX_GREP_FILE_BYTES: u64 = 2_000_000;
 const MAX_LINE_CHARS: usize = 2_000;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -202,12 +204,23 @@ fn glob(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
 
 pub struct Grep;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum GrepMode {
+    #[default]
+    Content,
+    Files,
+    Count,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrepArgs {
     pattern: String,
     path: Option<String>,
     include: Option<String>,
+    #[serde(default)]
+    mode: GrepMode,
 }
 
 impl Tool for Grep {
@@ -216,7 +229,7 @@ impl Tool for Grep {
     }
 
     fn description(&self) -> &'static str {
-        "Search file contents with a Rust regular expression. Returns matching lines with file paths and line numbers, honoring .gitignore and .ignore. Returns up to 250 matches."
+        "Search file contents with a Rust regular expression, honoring .gitignore and .ignore. Modes: \"content\" returns matching lines (up to 250, at most 20 per file), \"files\" returns matching file paths (up to 100), and \"count\" returns the match count per file (up to 100 files)."
     }
 
     fn parameters(&self) -> Value {
@@ -225,7 +238,12 @@ impl Tool for Grep {
             "properties": {
                 "pattern": { "type": "string", "description": "Regular expression to search for." },
                 "path": { "type": "string", "description": "File or directory to search. Defaults to the workspace root." },
-                "include": { "type": "string", "description": "One glob filter for which files to search, such as \"*.rs\" or \"*.{ts,tsx}\"." }
+                "include": { "type": "string", "description": "One glob filter for which files to search, such as \"*.rs\" or \"*.{ts,tsx}\"." },
+                "mode": {
+                    "type": "string",
+                    "enum": ["content", "files", "count"],
+                    "description": "Output mode: \"content\" (matching lines, default), \"files\" (unique matching paths), or \"count\" (matching lines per file)."
+                }
             },
             "required": ["pattern"],
             "additionalProperties": false
@@ -233,7 +251,7 @@ impl Tool for Grep {
     }
 
     fn guidance(&self) -> &'static str {
-        "Use grep to locate symbols, call sites, and error text; it searches recursively and respects .gitignore. Prefer it over run_command with rg/grep."
+        "Use grep to locate symbols, call sites, and error text; it searches recursively and respects .gitignore. Prefer it over run_command with rg/grep. For a broad search where you only need to know which files are involved, pass mode: \"files\" (e.g. {\"pattern\": \"fn main\", \"mode\": \"files\"}); use mode: \"count\" to see where matches cluster, then narrow with include or path."
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -267,6 +285,12 @@ impl Tool for Grep {
     }
 }
 
+struct FileHits {
+    path: String,
+    lines: Vec<(usize, String)>,
+    total: usize,
+}
+
 fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<String, ToolError> {
     let args: GrepArgs = parse_args(args)?;
     if args.pattern.is_empty() {
@@ -284,53 +308,127 @@ fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
         .map(compile_glob)
         .transpose()?;
     let root = workspace.resolve(args.path.as_deref().unwrap_or("."))?;
+    let mode = args.mode;
 
-    let mut found: Vec<(String, usize, String)> = Vec::new();
-    let limit_hit = scan_text_files(
+    let mut files: Vec<FileHits> = Vec::new();
+    let mut shown = 0usize;
+    let mut truncated = false;
+    scan_text_files(
         workspace,
         cancel,
         &root,
         include.as_ref(),
         |relative, text| {
+            let budget = if mode == GrepMode::Content {
+                MAX_GREP_PER_FILE.min(MAX_GREP_MATCHES.saturating_sub(shown))
+            } else {
+                0
+            };
+            let mut hits = FileHits {
+                path: display_path(relative),
+                lines: Vec::new(),
+                total: 0,
+            };
             for (index, line) in text.lines().enumerate() {
                 if !pattern.is_match(line) {
                     continue;
                 }
-                if found.len() >= MAX_GREP_MATCHES {
-                    return false;
+                hits.total += 1;
+                if hits.lines.len() < budget {
+                    hits.lines
+                        .push((index + 1, line.chars().take(MAX_LINE_CHARS).collect()));
                 }
-                found.push((
-                    display_path(relative),
-                    index + 1,
-                    line.chars().take(MAX_LINE_CHARS).collect(),
-                ));
+            }
+            if hits.total == 0 {
+                return true;
+            }
+            match mode {
+                GrepMode::Content => {
+                    if shown >= MAX_GREP_MATCHES {
+                        truncated = true;
+                        return false;
+                    }
+                    shown += hits.lines.len();
+                    files.push(hits);
+                }
+                GrepMode::Files | GrepMode::Count => {
+                    if files.len() >= MAX_GREP_FILES {
+                        truncated = true;
+                        return false;
+                    }
+                    files.push(hits);
+                }
             }
             true
         },
     )?;
 
-    if found.is_empty() {
-        return Ok(format!("No matches for {}.", args.pattern));
+    if files.is_empty() {
+        return Ok(match mode {
+            GrepMode::Content => format!("No matches for {}.", args.pattern),
+            GrepMode::Files => format!("No files match {}.", args.pattern),
+            GrepMode::Count => format!("No matches in any file for {}.", args.pattern),
+        });
     }
 
-    let mut lines = vec![format!(
-        "{} match(es){}:",
-        found.len(),
-        if limit_hit {
-            "; stopped at the match limit, narrow the search"
-        } else {
-            ""
+    match mode {
+        GrepMode::Content => {
+            let mut lines = vec![format!(
+                "{} match(es){}:",
+                shown,
+                if truncated {
+                    "; stopped at the match limit, narrow the search"
+                } else {
+                    ""
+                }
+            )];
+            for file in &files {
+                lines.push(file.path.clone());
+                for (line, text) in &file.lines {
+                    lines.push(format!("  {line}: {text}"));
+                }
+                let hidden = file.total - file.lines.len();
+                if hidden > 0 {
+                    lines.push(format!(
+                        "[... {hidden} more matches in this file; narrow with include/path]"
+                    ));
+                }
+            }
+            Ok(lines.join("\n"))
         }
-    )];
-    let mut current = "";
-    for (path, line, text) in &found {
-        if path != current {
-            lines.push(path.clone());
-            current = path;
+        GrepMode::Files => {
+            let mut paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+            paths.sort_unstable();
+            paths.dedup();
+            let mut lines = vec![format!("{} file(s) match:", paths.len())];
+            lines.extend(paths.iter().map(|path| (*path).to_string()));
+            if truncated {
+                lines.push(format!(
+                    "[... more files omitted; showing at most {MAX_GREP_FILES}]"
+                ));
+            }
+            Ok(lines.join("\n"))
         }
-        lines.push(format!("  {line}: {text}"));
+        GrepMode::Count => {
+            let mut counts: Vec<(&str, usize)> = files
+                .iter()
+                .map(|file| (file.path.as_str(), file.total))
+                .collect();
+            counts.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            let mut lines = vec![format!("{} file(s) with matches:", counts.len())];
+            lines.extend(
+                counts
+                    .iter()
+                    .map(|(path, count)| format!("{path}: {count}")),
+            );
+            if truncated {
+                lines.push(format!(
+                    "[... more files omitted; showing at most {MAX_GREP_FILES}]"
+                ));
+            }
+            Ok(lines.join("\n"))
+        }
     }
-    Ok(lines.join("\n"))
 }
 
 /// Visits searchable UTF-8 files until the visitor returns false.
@@ -432,6 +530,106 @@ mod tests {
         assert!(!output.text.contains("src/b.ts"));
         assert!(!output.text.contains("ignored/c.rs"));
         assert!(!output.text.contains("binary.bin"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_files_mode_lists_unique_paths() {
+        let (ctx, root, _handle) = context("grep-files");
+        seed(&root);
+        std::fs::write(root.join("src/many.rs"), "alpha\nalpha\nalpha\n").unwrap();
+        let output = Grep
+            .execute(&ctx, json!({ "pattern": "alpha", "mode": "files" }))
+            .await
+            .unwrap();
+        assert!(output.text.starts_with("3 file(s) match:"));
+        assert_eq!(output.text.matches("src/many.rs").count(), 1);
+        assert!(output.text.contains("src/a.rs"));
+        assert!(output.text.contains("src/b.ts"));
+        assert!(!output.text.contains("ignored/c.rs"));
+
+        let scoped = Grep
+            .execute(
+                &ctx,
+                json!({ "pattern": "alpha", "mode": "files", "path": "src/a.rs" }),
+            )
+            .await
+            .unwrap();
+        assert!(scoped.text.contains("src/a.rs"));
+        assert!(!scoped.text.contains("src/b.ts"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_count_mode_reports_per_file_counts() {
+        let (ctx, root, _handle) = context("grep-count");
+        seed(&root);
+        std::fs::write(root.join("src/many.rs"), "alpha\nalpha\nalpha\n").unwrap();
+        let output = Grep
+            .execute(&ctx, json!({ "pattern": "alpha", "mode": "count" }))
+            .await
+            .unwrap();
+        assert!(output.text.starts_with("3 file(s) with matches:"));
+        assert!(output.text.contains("src/a.rs: 1"));
+        assert!(output.text.contains("src/b.ts: 1"));
+        assert!(output.text.contains("src/many.rs: 3"));
+        let a = output.text.find("src/a.rs: 1").unwrap();
+        let b = output.text.find("src/b.ts: 1").unwrap();
+        let many = output.text.find("src/many.rs: 3").unwrap();
+        assert!(a < b && b < many);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_content_mode_caps_matches_per_file() {
+        let (ctx, root, _handle) = context("grep-per-file");
+        seed(&root);
+        std::fs::write(root.join("many.rs"), "alpha\n".repeat(25)).unwrap();
+        let output = Grep
+            .execute(&ctx, json!({ "pattern": "alpha", "path": "many.rs" }))
+            .await
+            .unwrap();
+        assert!(output.text.starts_with("20 match(es):"));
+        assert_eq!(output.text.matches(": alpha").count(), 20);
+        assert!(
+            output
+                .text
+                .contains("[... 5 more matches in this file; narrow with include/path]")
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_modes_have_distinct_empty_results() {
+        let (ctx, root, _handle) = context("grep-empty");
+        seed(&root);
+        let content = Grep
+            .execute(&ctx, json!({ "pattern": "zzz" }))
+            .await
+            .unwrap();
+        let files = Grep
+            .execute(&ctx, json!({ "pattern": "zzz", "mode": "files" }))
+            .await
+            .unwrap();
+        let count = Grep
+            .execute(&ctx, json!({ "pattern": "zzz", "mode": "count" }))
+            .await
+            .unwrap();
+        assert_eq!(content.text, "No matches for zzz.");
+        assert_eq!(files.text, "No files match zzz.");
+        assert_eq!(count.text, "No matches in any file for zzz.");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn grep_rejects_unknown_mode() {
+        let (ctx, root, _handle) = context("grep-mode-error");
+        seed(&root);
+        assert!(
+            Grep.execute(&ctx, json!({ "pattern": "alpha", "mode": "bogus" }))
+                .await
+                .is_err()
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
