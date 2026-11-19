@@ -1,5 +1,6 @@
--- Baseline schema. Add new changes as V1__desc.sql, V2__desc.sql, and never
--- edit a migration that has already been applied.
+-- Baseline schema. The app is unreleased, so the whole schema lives here. Add
+-- new changes as V1__desc.sql, V2__desc.sql, and never edit a migration that
+-- has already been applied.
 CREATE TABLE sessions (
   id             TEXT PRIMARY KEY,
   workspace      TEXT NOT NULL,
@@ -26,7 +27,18 @@ CREATE TABLE runs (
   status      TEXT NOT NULL,
   started_at  INTEGER NOT NULL,
   finished_at INTEGER,
-  error       TEXT
+  error       TEXT,
+  -- Provider-reported usage for the whole run, and for its newest model
+  -- request so the composer can show the cache share after a reopen.
+  prompt_tokens           INTEGER NOT NULL DEFAULT 0,
+  completion_tokens       INTEGER NOT NULL DEFAULT 0,
+  cache_hit_tokens        INTEGER NOT NULL DEFAULT 0,
+  cache_miss_tokens       INTEGER NOT NULL DEFAULT 0,
+  model_steps             INTEGER NOT NULL DEFAULT 0,
+  last_prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+  last_completion_tokens  INTEGER NOT NULL DEFAULT 0,
+  last_cache_hit_tokens   INTEGER NOT NULL DEFAULT 0,
+  last_cache_miss_tokens  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX runs_by_session ON runs(session_id, started_at DESC);
 

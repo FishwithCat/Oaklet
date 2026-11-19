@@ -165,22 +165,16 @@ mod tests {
             )
             .unwrap();
         assert!(archive_index);
-        let version: i64 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, latest_version());
-    }
-
-    #[test]
-    fn v1_adds_run_usage_columns() {
-        let store = Store::in_memory().unwrap();
-        let conn = store.connection().unwrap();
         for column in [
             "prompt_tokens",
             "completion_tokens",
             "cache_hit_tokens",
             "cache_miss_tokens",
             "model_steps",
+            "last_prompt_tokens",
+            "last_completion_tokens",
+            "last_cache_hit_tokens",
+            "last_cache_miss_tokens",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -191,6 +185,10 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing runs.{column}");
         }
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, latest_version());
     }
 
     #[test]
