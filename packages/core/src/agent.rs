@@ -2,6 +2,8 @@
 //! asking for them, then hand the transcript back through `ctx`.
 
 mod approval;
+#[cfg(test)]
+mod bench;
 mod messages;
 mod model;
 mod step;

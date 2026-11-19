@@ -467,6 +467,12 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
+    /// Keep only tools whose name matches, for isolated probes.
+    #[cfg(test)]
+    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.tools.retain(|tool| keep(tool.name()));
+    }
+
     /// Model-facing `tools` payload for one chat request.
     pub fn schemas(&self) -> Value {
         Value::Array(
