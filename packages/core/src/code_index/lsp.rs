@@ -440,7 +440,7 @@ impl LanguageServerSession {
         {
             return Err(IndexError::Unsupported(capability.into()));
         }
-        if !matches!(query, Query::WorkspaceSymbols { .. }) {
+        if !matches!(query, Query::WorkspaceSymbols { file: None, .. }) {
             self.sync_document(path).await?;
         }
         let uri = lsp_types::Url::from_file_path(path).map_err(|_| backend("Invalid file URI"))?;
@@ -589,7 +589,7 @@ impl LanguageServerSession {
         };
         super::documents::normalize(&mut data, &self.workspace, self.encoding()).await?;
         Ok(QueryResult {
-            content_hash: if !matches!(query, Query::WorkspaceSymbols { .. }) {
+            content_hash: if !matches!(query, Query::WorkspaceSymbols { file: None, .. }) {
                 self.documents
                     .get(path)
                     .map(|(_, text)| blake3::hash(text.as_bytes()).to_hex().to_string())

@@ -218,7 +218,7 @@ impl Tool for CodeTool {
                     .manager
                     .query(ctx.workspace.root(), query.clone(), &ctx.cancel)
                     .await;
-                let result = if references
+                let result = if (references || query_mode)
                     && matches!(
                         result,
                         Err(IndexError::NotReady
@@ -329,6 +329,7 @@ fn failure(error: IndexError) -> ToolError {
         IndexError::NotReadyReason(reason) => Some(*reason),
         IndexError::Busy => Some("server_busy"),
         IndexError::NoReferences => Some("empty_backend_result"),
+        IndexError::NotReady => Some("index_not_ready"),
         _ => None,
     };
     ToolError::Failed(json!({"status":status,"reason":reason,"detail":error.to_string(),"completeness_known":false,"guidance":"Use grep/read_file as fallback; text matches are candidates, not confirmed calls. No result here proves absence."}).to_string())

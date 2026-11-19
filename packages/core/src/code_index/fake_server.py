@@ -45,6 +45,7 @@ if (root / "spawn-child").exists():
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     record("descendant", pid=child.pid)
 documents = {}
+symbol_queries = {}
 options = json.loads((root / "sync-options.json").read_text()) if (root / "sync-options.json").exists() else {}
 tool_range = {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}
 encoding = options.get("encoding", "utf-16")
@@ -169,6 +170,15 @@ while (message := read()) is not None:
             continue
         send({"id": request_id, "result": [{"name": "alive", "kind": 12, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}, "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}}}]})
     elif method == "workspace/symbol":
+        if options.get("symbolAfterEdit"):
+            query = params["query"]
+            record("workspace-symbols", query=query)
+            symbol_queries[query] = symbol_queries.get(query, 0) + 1
+            uri = (root / "src/lib.rs").as_uri()
+            saved = documents.get(uri, {}).get("text", "")
+            items = [{"name": query, "kind": 12, "location": {"uri": uri, "range": tool_range}}] if query in saved and symbol_queries[query] > 1 else []
+            send({"id": message["id"], "result": items})
+            continue
         if options.get("contextTools"):
             send({"id": message["id"], "result": [{"name": "alive", "kind": 12, "location": {"uri": (root / "src/lib.rs").as_uri(), "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 0}}}}]})
             continue

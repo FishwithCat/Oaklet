@@ -689,7 +689,10 @@ impl CodeIndexManager {
         let workspaces = self.workspaces.lock().unwrap();
         let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
         if entry.stale {
-            if matches!(query, Query::References { .. }) {
+            if matches!(
+                query,
+                Query::References { .. } | Query::WorkspaceSymbols { .. }
+            ) {
                 return Err(IndexError::NotReadyReason("workspace_updating"));
             }
             return Err(IndexError::NotReady);
@@ -736,8 +739,9 @@ impl CodeIndexManager {
         }
         let (key, path, generation, revision, lifetime) = self.route(workspace, &query)?;
         let references = matches!(query, Query::References { .. });
+        let symbol_search = matches!(query, Query::WorkspaceSymbols { .. });
         let mut result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }.map_err(|error| {
-            if references && error == IndexError::NotReady {
+            if (references || symbol_search) && error == IndexError::NotReady {
                 IndexError::NotReadyReason("server_not_ready")
             } else {
                 error
@@ -750,7 +754,7 @@ impl CodeIndexManager {
                 .filter(|entry| entry.generation == generation)
                 .ok_or(IndexError::Closed)?;
             if entry.stale || entry.revision != revision {
-                if references {
+                if references || symbol_search {
                     return Err(IndexError::NotReadyReason("workspace_changed"));
                 }
                 return Err(IndexError::NotReady);
@@ -777,6 +781,9 @@ impl CodeIndexManager {
             if references {
                 return Err(IndexError::NoReferences);
             }
+            if symbol_search {
+                return Err(IndexError::NotReadyReason("empty_symbol_result"));
+            }
             return Err(IndexError::NotReady);
         }
         Ok(result)
@@ -793,14 +800,14 @@ impl CodeIndexManager {
             let workspaces = self.workspaces.lock().unwrap();
             let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
             if entry.stale {
-                return Err(IndexError::NotReady);
+                return Err(IndexError::NotReadyReason("workspace_updating"));
             }
             if entry
                 .discovery
                 .as_ref()
                 .is_none_or(|discovery| discovery.projects.is_empty())
             {
-                return Err(IndexError::NotReady);
+                return Err(IndexError::NotReadyReason("project_discovering"));
             }
             let targets: Vec<_> = entry
                 .projects
@@ -815,7 +822,7 @@ impl CodeIndexManager {
                 {
                     Err(IndexError::Disabled)
                 } else {
-                    Err(IndexError::NotReady)
+                    Err(IndexError::NotReadyReason("project_starting"))
                 };
             }
             (targets, entry.generation, entry.revision)
@@ -841,7 +848,10 @@ impl CodeIndexManager {
             }
         }
         if !answered {
-            return Err(failure.unwrap_or(IndexError::NotReady));
+            return Err(match failure {
+                None | Some(IndexError::NotReady) => IndexError::NotReadyReason("server_not_ready"),
+                Some(error) => error,
+            });
         }
         {
             let workspaces = self.workspaces.lock().unwrap();
@@ -850,7 +860,7 @@ impl CodeIndexManager {
                 .filter(|entry| entry.generation == generation)
                 .ok_or(IndexError::Closed)?;
             if entry.stale || entry.revision != revision {
-                return Err(IndexError::NotReady);
+                return Err(IndexError::NotReadyReason("workspace_changed"));
             }
             // Workspace-symbol responses may include configuration and generated
             // paths a file-pinned query would have filtered out.
@@ -864,7 +874,7 @@ impl CodeIndexManager {
         }
         if symbols.is_empty() {
             // A ready protocol does not prove the project is indexed yet.
-            return Err(IndexError::NotReady);
+            return Err(IndexError::NotReadyReason("empty_symbol_result"));
         }
         Ok(QueryResult {
             content_hash: None,

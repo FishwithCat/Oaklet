@@ -292,7 +292,9 @@ impl CodeContext {
         }
         let result = match self.query(ctx, lookup).await {
             Ok(result) => result,
-            Err(IndexError::NotReady) => return ("not_ready", hits, Value::Null),
+            Err(IndexError::NotReady | IndexError::NotReadyReason(_)) => {
+                return ("not_ready", hits, Value::Null);
+            }
             Err(IndexError::Timeout) => return ("timed_out", hits, Value::Null),
             Err(_) => return ("unavailable", hits, Value::Null),
         };

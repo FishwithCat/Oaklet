@@ -229,12 +229,15 @@ impl CodeIndexManager {
             // the queried file and fills the coverage it can prove. `semantic_ready`
             // means a live backend answered; completeness remains unknown.
             let context = self.cache_context(&root, &query).ok();
-            let references = matches!(query, Query::References { .. });
+            let explain_change = matches!(
+                query,
+                Query::References { .. } | Query::WorkspaceSymbols { .. }
+            );
             let mut result = self.query_live(&root, query, cancel).await?;
             if let Some(context) = context {
                 if let Some(expected) = result.content_hash.clone() {
                     if file_hash(&context).await? != expected {
-                        if references {
+                        if explain_change {
                             return Err(IndexError::NotReadyReason("file_changed"));
                         }
                         return Err(IndexError::NotReady);

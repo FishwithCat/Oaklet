@@ -1839,6 +1839,69 @@ async fn agent_code_context_reads_definition_and_groups_references() {
 }
 
 #[tokio::test]
+async fn agent_symbol_search_syncs_saved_edits_and_retries_an_empty_index() {
+    use serde_json::json;
+    let fixture = Fixture::new("index-symbol-after-edit");
+    std::fs::write(
+        fixture.0.join("sync-options.json"),
+        r#"{"semanticTools":true,"symbolAfterEdit":true}"#,
+    )
+    .unwrap();
+    let manager = Arc::new(CodeIndexManager::new());
+    manager
+        .open_workspace(&fixture.0, fixture.config())
+        .unwrap();
+    ready(&manager, &fixture.0).await;
+    let registry = code_tools(manager.clone());
+    let (mut ctx, root, _owner) =
+        crate::tools::test_support::context("index-symbol-after-edit-tool");
+    ctx.workspace = crate::tools::Workspace::new(fixture.0.to_str().unwrap()).unwrap();
+    let before_edit = manager.status(&fixture.0).unwrap().revision;
+    std::fs::write(fixture.0.join("src/lib.rs"), "fn renamed() {}\n").unwrap();
+    until(|| {
+        manager
+            .status(&fixture.0)
+            .is_ok_and(|status| !status.stale && status.revision > before_edit)
+    })
+    .await;
+    let result = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_symbols",
+            "renamed",
+            json!({"path":"src/lib.rs","query":"renamed"}),
+        )
+        .await;
+    let missing = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_symbols",
+            "missing",
+            json!({"path":"src/lib.rs","query":"absent"}),
+        )
+        .await;
+    manager.shutdown().await;
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(result.ok, "{}", result.output);
+    let value: Value = serde_json::from_str(&result.output).unwrap();
+    assert_eq!(value["entries"][0]["name"], "renamed");
+    assert_eq!(value["coverage"]["file_verified"], true);
+    assert_eq!(
+        fixture
+            .events()
+            .iter()
+            .filter(|event| event["query"] == "renamed")
+            .count(),
+        2
+    );
+    assert!(!missing.ok);
+    let value: Value = serde_json::from_str(&missing.output).unwrap();
+    assert_eq!(value["reason"], "empty_symbol_result");
+}
+
+#[tokio::test]
 async fn agent_code_tools_candidates_recursive_calls_and_spill_pages() {
     use serde_json::json;
     let fixture = Fixture::new("index-agent-tools");
