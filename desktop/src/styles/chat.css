@@ -580,6 +580,16 @@
   white-space: nowrap;
 }
 
+.composer-usage {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
 .context-meter {
   position: absolute;
   top: 9px;

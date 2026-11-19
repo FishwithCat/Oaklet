@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  accumulateUsage,
   appendNotice,
   applyApproval,
   applyApprovalResolved,
@@ -13,6 +14,7 @@ import {
   settleRun,
   tabStatus,
   toChatTabInfo,
+  totalUsage,
   withItems,
 } from "../src/features/chat/session-model.ts";
 
@@ -57,6 +59,65 @@ test("applyContext records the latest gauge without touching the transcript", ()
 
   assert.deepEqual(updated.context, { used: 12000, window: 262144 });
   assert.deepEqual(updated.items, []);
+});
+
+test("tab usage accumulates across runs instead of resetting on send", () => {
+  const run1Step1 = {
+    promptTokens: 1000,
+    completionTokens: 10,
+    cacheHitTokens: 600,
+    cacheMissTokens: 400,
+    steps: 1,
+  };
+  const run1Step2 = {
+    promptTokens: 2500,
+    completionTokens: 25,
+    cacheHitTokens: 2000,
+    cacheMissTokens: 500,
+    steps: 2,
+  };
+  const run2Step1 = {
+    promptTokens: 3000,
+    completionTokens: 30,
+    cacheHitTokens: 2500,
+    cacheMissTokens: 500,
+    steps: 1,
+  };
+  const run2Step2 = {
+    promptTokens: 7000,
+    completionTokens: 70,
+    cacheHitTokens: 5000,
+    cacheMissTokens: 2000,
+    steps: 2,
+  };
+
+  const first = accumulateUsage(undefined, "run-1", run1Step1);
+  assert.deepEqual(totalUsage(first), run1Step1);
+
+  // A later event for the same run is cumulative, so it replaces the step.
+  const second = accumulateUsage(first, "run-1", run1Step2);
+  assert.deepEqual(totalUsage(second), run1Step2);
+
+  // A new run settles the previous one and starts from the running total.
+  const third = accumulateUsage(second, "run-2", run2Step1);
+  assert.deepEqual(totalUsage(third), {
+    promptTokens: 5500,
+    completionTokens: 55,
+    cacheHitTokens: 4500,
+    cacheMissTokens: 1000,
+    steps: 3,
+  });
+  assert.deepEqual(third.settled, run1Step2);
+  assert.deepEqual(third.current, run2Step1);
+
+  const fourth = accumulateUsage(third, "run-2", run2Step2);
+  assert.deepEqual(totalUsage(fourth), {
+    promptTokens: 9500,
+    completionTokens: 95,
+    cacheHitTokens: 7000,
+    cacheMissTokens: 2500,
+    steps: 4,
+  });
 });
 
 test("tabStatus ranks a blocked tool above running, done, and idle", () => {

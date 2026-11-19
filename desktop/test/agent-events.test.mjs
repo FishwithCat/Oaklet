@@ -11,6 +11,7 @@ const handlers = () => ({
   onApprovalResolved: () => {},
   onDone: () => {},
   onContext: () => {},
+  onUsage: () => {},
   onError: () => {},
   onStopped: () => {},
 });
@@ -34,6 +35,7 @@ test("registers every agent event and releases all listeners", async () => {
     "agent:approval_resolved",
     "agent:done",
     "agent:context",
+    "agent:usage",
     "agent:error",
     "agent:stopped",
   ]);
@@ -85,4 +87,38 @@ test("a failed registration releases the listeners that already succeeded", asyn
     /listen failed/,
   );
   assert.deepEqual(released, ["agent:delta", "agent:reasoning"]);
+});
+
+test("forwards cumulative run usage to onUsage", async () => {
+  const registered = new Map();
+  const register = async (event, handler) => {
+    registered.set(event, handler);
+    return () => {};
+  };
+  const seen = [];
+  const received = handlers();
+  received.onUsage = (payload) => seen.push(payload);
+
+  await subscribeAgentEvents(received, register);
+  registered.get("agent:usage")({
+    sessionId: "session-1",
+    runId: "run-1",
+    promptTokens: 1234,
+    completionTokens: 56,
+    cacheHitTokens: 1000,
+    cacheMissTokens: 234,
+    steps: 1,
+  });
+
+  assert.deepEqual(seen, [
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      promptTokens: 1234,
+      completionTokens: 56,
+      cacheHitTokens: 1000,
+      cacheMissTokens: 234,
+      steps: 1,
+    },
+  ]);
 });

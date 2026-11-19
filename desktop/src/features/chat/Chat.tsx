@@ -24,7 +24,7 @@ import {
   type Item,
 } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
-import type { ChatTabInfo, ContextUsage } from "./session-model";
+import type { ChatTabInfo, ContextUsage, RunUsage } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
 import oakletIcon from "../../assets/oaklet-icon.png";
 
@@ -56,6 +56,7 @@ export function Chat({
   compacting,
   activeRunId,
   context,
+  usage,
   model,
   onSend,
   onStop,
@@ -81,6 +82,7 @@ export function Chat({
   compacting: boolean;
   activeRunId: string | null;
   context: ContextUsage | null;
+  usage: RunUsage | null;
   model: string;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean>;
   onStop: () => void;
@@ -302,6 +304,7 @@ export function Chat({
       running={running}
       compacting={compacting}
       context={context}
+      usage={usage}
       showContextGauge={shouldShowContextGauge(context, items.length > 0)}
       model={model}
       welcome={welcome}

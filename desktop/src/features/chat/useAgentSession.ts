@@ -7,6 +7,7 @@ import { isBlankTab, type Item } from "./chat-model";
 import { sentAttachments, type Attachment } from "./attachments";
 import {
   appendNotice,
+  accumulateUsage,
   applyApproval,
   applyApprovalResolved,
   applyContext,
@@ -17,10 +18,13 @@ import {
   prependWindow,
   settleRun,
   toChatTabInfo,
+  totalUsage,
   withItems,
   type SessionSummary,
   type SessionView,
+  type RunUsage,
   type StreamDelta,
+  type TabUsage,
 } from "./session-model.ts";
 import { subscribeAgentEvents } from "./agent-events.ts";
 
@@ -62,6 +66,7 @@ export function useAgentSession({
     id: string;
     text: string;
   } | null>(null);
+  const [usageBySession, setUsageBySession] = useState<Record<string, TabUsage>>({});
 
   const sessionsRef = useRef(sessions);
   const openTabsRef = useRef(openTabs);
@@ -72,6 +77,7 @@ export function useAgentSession({
   const loadingOlderRef = useRef(false);
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
+  const usageBySessionRef = useRef(usageBySession);
 
   function commitSessions(next: Record<string, SessionView>) {
     sessionsRef.current = next;
@@ -96,6 +102,15 @@ export function useAgentSession({
     setOpenTabs(next);
   }
 
+  function recordUsage(id: string, runId: string, usage: RunUsage) {
+    const next = {
+      ...usageBySessionRef.current,
+      [id]: accumulateUsage(usageBySessionRef.current[id], runId, usage),
+    };
+    usageBySessionRef.current = next;
+    setUsageBySession(next);
+  }
+
   function activate(id: string) {
     activeTabIdRef.current = id;
     setActiveTabId(id);
@@ -107,6 +122,8 @@ export function useAgentSession({
     activate("");
     tabCountRef.current = 0;
     setHistory([]);
+    usageBySessionRef.current = {};
+    setUsageBySession({});
   }
 
   function addTab(view: SessionView) {
@@ -245,6 +262,16 @@ export function useAgentSession({
       onContext: (event) => {
         if (disposed) return;
         updateSession(event.sessionId, (tab) => applyContext(tab, event));
+      },
+      onUsage: (event) => {
+        if (disposed) return;
+        recordUsage(event.sessionId, event.runId, {
+          promptTokens: event.promptTokens,
+          completionTokens: event.completionTokens,
+          cacheHitTokens: event.cacheHitTokens,
+          cacheMissTokens: event.cacheMissTokens,
+          steps: event.steps,
+        });
       },
       onError: (event) => {
         if (disposed) return;
@@ -575,6 +602,7 @@ export function useAgentSession({
     ? activeTabId
     : (openTabs[0]?.id ?? "");
   const activeTab = sessions[resolvedActiveId];
+  const activeUsage = usageBySession[resolvedActiveId];
   const busy = openTabs.some(({ id }) => {
     const view = sessions[id];
     return Boolean(
@@ -596,6 +624,7 @@ export function useAgentSession({
     tabs,
     activeTabId: resolvedActiveId,
     context: activeTab?.context ?? null,
+    usage: activeUsage ? totalUsage(activeUsage) : null,
     busy,
     allowAll,
     history,

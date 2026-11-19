@@ -1,5 +1,6 @@
 import type { ProcessItem } from "./process-model";
 import type { SentAttachment } from "./attachments";
+import type { RunUsage } from "./session-model";
 
 export type Item = (
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
@@ -48,7 +49,44 @@ export function formatContextPercent(used: number, window: number): string {
 export function formatTokens(tokens: number): string {
   if (tokens < 1024) return `${tokens}`;
   const thousands = tokens / 1024;
-  return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  if (thousands < 1024) {
+    return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  }
+  const millions = thousands / 1024;
+  return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
+}
+
+/** Share of provider prompt tokens served from cache: 1000/1234 -> "81%". */
+export function formatCacheHitRate(usage: RunUsage): string {
+  const total = usage.cacheHitTokens + usage.cacheMissTokens;
+  if (total <= 0) return "0%";
+  return `${Math.round((usage.cacheHitTokens / total) * 100)}%`;
+}
+
+/** Compact provider token counts in decimal units: 1_218_000 -> "1.2M". */
+export function formatUsageTokens(tokens: number): string {
+  if (tokens < 1000) return `${tokens}`;
+  if (tokens < 1_000_000) {
+    const thousands = tokens / 1000;
+    return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+  }
+  const millions = tokens / 1_000_000;
+  return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
+}
+
+/** Composer label: the tab's cumulative prompt size, not just the cached part. */
+export function formatUsageLabel(usage: RunUsage): string {
+  if (usage.promptTokens <= 0) return "";
+  return formatUsageTokens(usage.promptTokens);
+}
+
+/** Tooltip with the cumulative cache rate and token breakdown. */
+export function formatUsageTitle(usage: RunUsage): string {
+  return [
+    `cache ${formatCacheHitRate(usage)}`,
+    `${formatUsageTokens(usage.cacheHitTokens)}/${formatUsageTokens(usage.promptTokens)} prompt`,
+    `${formatUsageTokens(usage.completionTokens)} completion`,
+  ].join(" · ");
 }
 
 /** Hover label for the context bar, e.g. "30% (77k/256k)". */

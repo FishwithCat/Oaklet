@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { SessionView } from "./session-model.ts";
+import type { RunUsage, SessionView } from "./session-model.ts";
 import type { FileDiff } from "./process-model.ts";
 
 export type DeltaEvent = { sessionId: string; runId: string; text: string };
@@ -46,6 +46,10 @@ export type ContextEvent = {
   used: number;
   window: number;
 };
+export type UsageEvent = {
+  sessionId: string;
+  runId: string;
+} & RunUsage;
 export type ErrorEvent = {
   sessionId: string;
   runId: string;
@@ -67,6 +71,7 @@ export type AgentEventHandlers = {
   onApprovalResolved: (event: ApprovalResolvedEvent) => void;
   onDone: (event: DoneEvent) => void;
   onContext: (event: ContextEvent) => void;
+  onUsage: (event: UsageEvent) => void;
   onError: (event: ErrorEvent) => void;
   onStopped: (event: StoppedEvent) => void;
 };
@@ -119,6 +124,7 @@ export async function subscribeAgentEvents(
     await add<ContextEvent>("agent:context", (payload) =>
       handlers.onContext(payload),
     );
+    await add<UsageEvent>("agent:usage", (payload) => handlers.onUsage(payload));
     await add<ErrorEvent>("agent:error", (payload) => handlers.onError(payload));
     await add<StoppedEvent>("agent:stopped", (payload) =>
       handlers.onStopped(payload),

@@ -3,6 +3,66 @@ import type { FileDiff } from "./process-model.ts";
 
 export type ContextUsage = { used: number; window: number };
 
+/** Provider-reported token usage accumulated over one run. */
+export type RunUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  steps: number;
+};
+
+/** Usage for one tab: settled runs plus the run currently reporting. */
+export type TabUsage = {
+  runId: string;
+  settled: RunUsage;
+  current: RunUsage;
+};
+
+export function addUsage(left: RunUsage, right: RunUsage): RunUsage {
+  return {
+    promptTokens: left.promptTokens + right.promptTokens,
+    completionTokens: left.completionTokens + right.completionTokens,
+    cacheHitTokens: left.cacheHitTokens + right.cacheHitTokens,
+    cacheMissTokens: left.cacheMissTokens + right.cacheMissTokens,
+    steps: left.steps + right.steps,
+  };
+}
+
+/**
+ * Fold a run's cumulative usage into the tab total. A new run id settles the
+ * previous run first, so the label never drops back to zero between sends.
+ */
+export function accumulateUsage(
+  previous: TabUsage | undefined,
+  runId: string,
+  usage: RunUsage,
+): TabUsage {
+  if (!previous) {
+    return {
+      runId,
+      settled: {
+        promptTokens: 0,
+        completionTokens: 0,
+        cacheHitTokens: 0,
+        cacheMissTokens: 0,
+        steps: 0,
+      },
+      current: usage,
+    };
+  }
+  if (previous.runId === runId) return { ...previous, current: usage };
+  return {
+    runId,
+    settled: addUsage(previous.settled, previous.current),
+    current: usage,
+  };
+}
+
+export function totalUsage(tab: TabUsage): RunUsage {
+  return addUsage(tab.settled, tab.current);
+}
+
 /** Authoritative session state from Rust. Items are the rendered transcript. */
 export type SessionView = {
   id: string;

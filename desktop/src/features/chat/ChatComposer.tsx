@@ -21,8 +21,14 @@ import {
   readAttachment,
   type Attachment,
 } from "./attachments";
-import { contextTier, formatContextUsage, formatModelId } from "./chat-model";
-import type { ContextUsage } from "./session-model";
+import {
+  contextTier,
+  formatContextUsage,
+  formatModelId,
+  formatUsageLabel,
+  formatUsageTitle,
+} from "./chat-model";
+import type { ContextUsage, RunUsage } from "./session-model";
 
 export type ChatComposerHandle = {
   focus: () => void;
@@ -30,16 +36,22 @@ export type ChatComposerHandle = {
 
 function ContextGauge({
   usage,
+  runUsage,
   running,
   compacting,
   onCompact,
 }: {
   usage: ContextUsage | null;
+  runUsage: RunUsage | null;
   running: boolean;
   compacting: boolean;
   onCompact: () => void;
 }) {
   const label = usage ? formatContextUsage(usage.used, usage.window) : null;
+  const tokens =
+    runUsage && runUsage.promptTokens > 0
+      ? formatUsageTitle(runUsage)
+      : null;
   const tier = usage ? contextTier(usage.used, usage.window) : "normal";
   const hint = running
     ? "Stop the run to compact context"
@@ -59,12 +71,12 @@ function ContextGauge({
       disabled={running}
       aria-label={
         label
-          ? `Context used: ${label}. ${hint}`
-          : `Context usage unavailable. ${hint}`
+          ? `Context used: ${label}.${tokens ? ` ${tokens}.` : ""} ${hint}`
+          : `Context usage unavailable.${tokens ? ` ${tokens}.` : ""} ${hint}`
       }
       title={
-        label
-          ? `${label} — ${hint}`
+        label || tokens
+          ? `${[label, tokens].filter(Boolean).join(" · ")} — ${hint}`
           : `Context usage unavailable — ${hint}`
       }
     >
@@ -80,6 +92,7 @@ export function ChatComposer({
   running,
   compacting,
   context,
+  usage,
   showContextGauge,
   model,
   welcome,
@@ -97,6 +110,7 @@ export function ChatComposer({
   running: boolean;
   compacting: boolean;
   context: ContextUsage | null;
+  usage: RunUsage | null;
   showContextGauge: boolean;
   model: string;
   welcome?: boolean;
@@ -222,6 +236,7 @@ export function ChatComposer({
         {showContextGauge && (
           <ContextGauge
             usage={context}
+            runUsage={usage}
             running={running}
             compacting={compacting}
             onCompact={onCompact}
@@ -296,6 +311,11 @@ export function ChatComposer({
         />
         <div className="composer-footer">
           <span className="composer-meta">
+            {usage && usage.promptTokens > 0 && (
+              <span className="composer-usage" title={formatUsageTitle(usage)}>
+                {formatUsageLabel(usage)}
+              </span>
+            )}
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}

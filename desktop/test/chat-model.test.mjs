@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   contextTier,
+  formatCacheHitRate,
   formatContextPercent,
   formatContextUsage,
   formatModelId,
   formatTokens,
+  formatUsageLabel,
+  formatUsageTokens,
+  formatUsageTitle,
   formatWorkdir,
   isAtBottom,
   isBlankTab,
@@ -134,6 +138,32 @@ test("the gauge tooltip pairs the percent with compact token counts", () => {
   assert.equal(formatContextUsage(78643, 262144), "30% (77k/256k)");
   assert.equal(formatContextUsage(262144, 262144), "100% (256k/256k)");
   assert.equal(formatTokens(999), "999");
+  assert.equal(formatTokens(1024), "1.0k");
+  assert.equal(formatTokens(1_572_864), "1.5M");
+});
+
+test("usage label and tooltip report the provider cache share", () => {
+  const usage = {
+    promptTokens: 1_400_000,
+    completionTokens: 48_000,
+    cacheHitTokens: 1_218_000,
+    cacheMissTokens: 182_000,
+    steps: 60,
+  };
+  assert.equal(formatCacheHitRate(usage), "87%");
+  assert.equal(formatUsageTokens(1_218_000), "1.2M");
+  assert.equal(formatUsageTokens(48_000), "48k");
+  assert.equal(formatUsageTokens(999), "999");
+  assert.equal(formatUsageLabel(usage), "1.4M");
+  assert.equal(
+    formatUsageTitle(usage),
+    "cache 87% · 1.2M/1.4M prompt · 48k completion",
+  );
+  assert.equal(
+    formatUsageLabel({ ...usage, promptTokens: 0 }),
+    "",
+  );
+  assert.equal(formatCacheHitRate({ ...usage, cacheHitTokens: 0, cacheMissTokens: 0 }), "0%");
 });
 
 test("the workdir shortens under the home directory", () => {
