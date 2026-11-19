@@ -1,32 +1,10 @@
 #!/usr/bin/env python3
-"""Repeatable parallel pilot for the code-index rename benefit test.
+"""Run regex programming tasks in isolated worktrees with comparable agent tools.
 
-The pilot asks a real model to rename `regex_syntax::hir::Look` to `LookKind`
-in a pinned checkout of rust-lang/regex.  Each attempt gets its own git
-worktree, so attempts cannot see each other's edits.  The `base` arm uses the
-production tool set; the `code` arm additionally registers the four code-index
-tools.  A run passes only when:
-
-  * `cargo check` succeeds for the touched crates,
-  * the `Look` enum in regex-syntax was actually renamed, and
-  * the unrelated `Look` types in regex-automata and regex-lite were left
-    alone.
-
-The script writes specs, model transcripts, patches, compile logs, and a
-Markdown/JSON summary under the output directory.  It never prints or stores
-the API key in a spec; the key is passed to the ignored Rust probe through
-`OAKLET_BENCH_API_KEY`.
-
-Example:
-
-    python3 scripts/bench/rename_pilot.py \
-        --repo /path/to/rust-lang/regex \
-        --runs 16 --jobs 4 \
-        --cargo-home /path/to/cargo-home
-
-The Rust probe is `packages/core/src/agent/bench.rs`
-(`agent::bench::benefit_pilot`).  It is compiled once, then the test binary is
-invoked directly so cargo's target lock does not serialize the parallel runs.
+The default rename case compares base against the four code-index tools.
+Behavior cases compare base against code_context and grade with offline Rust
+tests loaded after the agent exits. The script writes traces, patches, checks
+and reports. It passes the API key only through the probe's environment.
 """
 
 from __future__ import annotations
@@ -44,15 +22,23 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE = REPO_ROOT / "packages" / "core"
 
+CONTEXT_ARMS = ("context", "context_nudge")
+CONTEXT_NUDGE = (
+    "Start with at least one code_context call before other exploration or edits. "
+    "Choose the query or source location from the task. Use the snippets and semantic matches "
+    "to narrow your next reads, then continue with the tools you need."
+)
+
 PINNED_REV = "fde4946d4a3cb367338a21493ec91ec7106a12b4"
 
-TASK = {
+RENAME = {
     "name": "look",
     "prompt": (
         "Rename the `Look` type in `regex_syntax::hir` to `LookKind` throughout "
@@ -75,6 +61,37 @@ TASK = {
         "regex-automata/src/nfa/thompson/builder.rs",
         "regex-lite/",
     ],
+}
+
+
+TASKS = {
+    "rename": dict(RENAME, rev=PINNED_REV),
+    "parser-reuse": {
+        "name": "parser-reuse",
+        "rev": "1af206e293556fdf533994b3954ef434478e1ad8",
+        "package": "regex-syntax",
+        "ready": {"path": "regex-syntax/src/ast/parse.rs", "query": "Parser"},
+        "prompt": (
+            "A caller reuses one public AST parser for multiple regex patterns. "
+            "Parsing `a+` succeeds, but parsing `(?P<word>a)(b)` on that same "
+            "instance panics with 'parser can only be used once'. Fix parser reuse. "
+            "Each parse should start with fresh per-pattern state while retaining "
+            "the parser's configuration, even when the previous parse returned an error."
+        ),
+    },
+    "find-iter-at": {
+        "name": "find-iter-at",
+        "rev": PINNED_REV,
+        "package": "regex-lite",
+        "ready": {"path": "regex-lite/src/string.rs", "query": "find_iter"},
+        "prompt": (
+            "Add a public Regex::find_iter_at(haystack, start) to regex-lite. "
+            "Return the same Matches iterator as find_iter, starting at the given "
+            "UTF-8 byte boundary, with absolute match offsets. Assertions must see "
+            "the original haystack. An offset beyond the end returns no matches. "
+            "At offset zero the behavior should match find_iter, including empty matches."
+        ),
+    },
 }
 
 
@@ -242,27 +259,28 @@ def add_worktree(repo, tree, rev):
 
 
 def changed_files(tree):
-    result = git(tree, "status", "--porcelain", check=False)
-    changed = []
-    for line in result.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        path = line[3:]
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        path = path.strip().strip('"')
-        if path in ("Cargo.lock",) or path.startswith("target/"):
-            continue
-        changed.append(path)
-    return changed
+    tracked = git(tree, "diff", "HEAD", "--name-only", "--no-renames", "-z").stdout
+    untracked = git(tree, "ls-files", "--others", "--exclude-standard", "-z").stdout
+    return sorted({
+        path
+        for path in (tracked + untracked).split("\0")
+        if path and path != "Cargo.lock" and not path.startswith("target/")
+    })
 
 
 def save_state(tree, run_dir, run_id):
     changed = changed_files(tree)
-    patch = git(tree, "diff", "--binary", check=False).stdout
+    patch = [git(tree, "diff", "HEAD", "--binary").stdout]
+    untracked = git(tree, "ls-files", "--others", "--exclude-standard", "-z").stdout
+    for path in untracked.split("\0"):
+        if path in changed:
+            addition = git(tree, "diff", "--no-index", "--binary", "--", "/dev/null", path, check=False)
+            if addition.returncode != 1:
+                raise RuntimeError(f"cannot save untracked file {path}: {addition.stderr.strip()}")
+            patch.append(addition.stdout)
     patch_path = run_dir / "patches" / f"{run_id}.diff"
     patch_path.parent.mkdir(parents=True, exist_ok=True)
-    patch_path.write_text(patch)
+    patch_path.write_text("".join(patch))
     return changed, patch_path
 
 
@@ -272,18 +290,27 @@ def reset_worktree(tree, rev):
 
 
 def write_spec(path, args, tree, arm, result_path, config):
+    task = TASKS[args.task]
     spec = {
         "workspace": str(tree),
         "group": arm,
-        "task": TASK["name"],
-        "prompt": TASK["prompt"],
+        "task": task["name"],
+        "prompt": task["prompt"],
         "out": str(result_path),
         "baseUrl": config["baseUrl"],
         "model": config["model"],
         "maxSteps": args.max_steps,
-        "readyPosition": TASK["ready"],
-        "readyReferenceFile": TASK["ready_reference_file"],
+        "readyPosition": task["ready"],
+        "readyReferenceFile": task.get("ready_reference_file"),
     }
+    if "package" in task:
+        spec["prompt"] += (
+            f" Keep edits within {task['package']}/src or {task['package']}/tests. "
+            "You may add [[test]] entries with name and path for local tests under that crate's tests/ "
+            "in its Cargo.toml. Preserve the other manifest settings."
+        )
+    if arm == "context_nudge":
+        spec["systemSuffix"] = CONTEXT_NUDGE
     if config.get("contextWindow"):
         spec["contextWindow"] = config["contextWindow"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,41 +336,89 @@ def compile_run(args, out_dir, check_env, run):
     target = out_dir / "target-check" / run["id"]
     shutil.rmtree(target, ignore_errors=True)
     env_check["CARGO_TARGET_DIR"] = str(target)
-    package_args = []
-    for package in TASK["packages"]:
-        package_args += ["-p", package]
-    result = run_capture(
-        [args.cargo, "check", *package_args, "--offline"],
-        cwd=run["tree"],
-        env=env_check,
-        timeout=1200,
-    )
+    task = TASKS[args.task]
+    if "package" in task:
+        # The test source is introduced after the agent exits and lives outside its checkout.
+        judge = target / "judge"
+        (judge / "tests").mkdir(parents=True)
+        package = task["package"]
+        package_path = json.dumps(str(run["tree"] / package), ensure_ascii=False)
+        manifest = judge / "Cargo.toml"
+        manifest.write_text(
+            '[package]\nname = "oaklet-bench-judge"\nversion = "0.0.0"\nedition = "2024"\n'
+            f'[dependencies]\n{package} = {{ path = {package_path} }}\n[workspace]\n'
+        )
+        shutil.copyfile(Path(__file__).with_name("cases") / f"{args.task}.rs", judge / "tests" / "behavior.rs")
+        command = [args.cargo, "test", "--offline", "--manifest-path", manifest, "--test", "behavior"]
+    else:
+        command = [args.cargo, "check", "--offline"]
+        for package in task["packages"]:
+            command += ["-p", package]
+    result = run_capture(command, cwd=run["tree"], env=env_check, timeout=1200)
     text = (result["out"] + "\n" + result["err"]).strip()
     (out_dir / "checks" / f"{run['id']}.log").write_text(text)
     return result, text
 
 
-def score_run(run, compile_result, compile_text):
+def only_adds_test_targets(tree, package):
+    manifest = f"{package}/Cargo.toml"
+    try:
+        original = tomllib.loads(git(tree, "show", f"HEAD:{manifest}").stdout)
+        edited = tomllib.loads((tree / manifest).read_text())
+    except (OSError, ValueError):
+        return False
+    old_targets = original.pop("test", [])
+    new_targets = edited.pop("test", [])
+    if original != edited or not isinstance(new_targets, list):
+        return False
+    for target in old_targets:
+        if target not in new_targets:
+            return False
+        new_targets.remove(target)
+    crate = tree / package
+    for target in new_targets:
+        if not isinstance(target, dict) or target.keys() != {"name", "path"}:
+            return False
+        if not isinstance(target["name"], str) or not target["name"]:
+            return False
+        if not isinstance(target["path"], str):
+            return False
+        relative = Path(target["path"])
+        if not relative.parts or relative.parts[0] != "tests" or ".." in relative.parts:
+            return False
+        test_path = (crate / relative).resolve()
+        if not test_path.is_relative_to(crate / "tests") or not test_path.is_file():
+            return False
+    return True
+
+
+def score_run(args, run, compile_result, compile_text):
+    task = TASKS[args.task]
     result = run.get("result")
-    protected = [
-        path
-        for path in run["changed"]
-        if any(
-            path == item or (item.endswith("/") and path.startswith(item))
-            for item in TASK["protected"]
-        )
-    ]
-    definition_ok = False
-    definition_path = run["tree"] / TASK["definition_file"]
-    if definition_path.exists():
-        definition_ok = TASK["definition_marker"] in definition_path.read_text(
-            errors="replace"
-        )
+    if "package" in task:
+        package = task["package"]
+        protected = [
+            path for path in run["changed"]
+            if not path.startswith((f"{package}/src/", f"{package}/tests/"))
+            and not (path == f"{package}/Cargo.toml" and only_adds_test_targets(run["tree"], package))
+        ]
+        definition_ok = None
+    else:
+        protected = [
+            path
+            for path in run["changed"]
+            if any(
+                path == item or (item.endswith("/") and path.startswith(item))
+                for item in task["protected"]
+            )
+        ]
+        definition_path = run["tree"] / task["definition_file"]
+        definition_ok = definition_path.is_file() and task["definition_marker"] in definition_path.read_text(errors="replace")
 
     errors = [
         line
         for line in compile_text.splitlines()
-        if line.startswith("error[") or line.startswith("error:")
+        if line.startswith(("error[", "error:", "test result: FAILED", "thread "))
     ]
     agent_error = (result or {}).get("error")
     if run.get("timed_out"):
@@ -351,8 +426,8 @@ def score_run(run, compile_result, compile_text):
     elif agent_error:
         reason = "agent_error"
     elif compile_result["rc"] != 0 or compile_result["timed_out"]:
-        reason = "compile_error"
-    elif not definition_ok:
+        reason = "behavior_failed" if "package" in task else "compile_error"
+    elif definition_ok is False:
         reason = "definition_not_renamed"
     elif protected:
         reason = "protected_edit"
@@ -361,6 +436,12 @@ def score_run(run, compile_result, compile_text):
 
     steps = (result or {}).get("steps") or []
     tools = [step.get("tool", "") for step in steps]
+    context_steps = [step for step in steps if step.get("tool") == "code_context"]
+    successful_context = [step for step in context_steps if step.get("ok")]
+    semantic_calls = (
+        sum(step["contextSemantic"] == "answered" for step in successful_context)
+        if all("contextSemantic" in step for step in successful_context) else None
+    )
     usage = (result or {}).get("usage") or {}
     valid = reason not in ("agent_error", "agent_timeout")
     return {
@@ -377,6 +458,10 @@ def score_run(run, compile_result, compile_text):
         "code_calls": sum(1 for name in tools if name.startswith("code_")),
         "reference_calls": sum(1 for name in tools if name == "code_references"),
         "tool_calls": len(tools),
+        "grep_calls": tools.count("grep"),
+        "read_calls": tools.count("read_file"),
+        "context_calls": len(context_steps),
+        "context_semantic_calls": semantic_calls,
         "tokens": usage.get("total", 0),
         "prompt_tokens": usage.get("prompt", 0),
         "completion_tokens": usage.get("completion", 0),
@@ -424,16 +509,13 @@ def fisher_two_sided(a, b, c, d):
 
 def summarize(rows, args, arms, out_dir, repo, config):
     lines = []
-    lines.append("# regex `Look` rename pilot")
+    lines.append(f"# regex benchmark: {args.task}")
     lines.append("")
     lines.append(f"- date: {datetime.datetime.now().isoformat(timespec='seconds')}")
     lines.append(f"- repo: `{repo}` @ `{args.rev}`")
     lines.append(f"- model: `{config['model']}`")
     lines.append(f"- runs per arm: {args.runs}; jobs: {args.jobs}")
-    lines.append(
-        f"- task: rename `regex_syntax::hir::Look` to `LookKind`; keep "
-        "regex-automata's own `Look` and regex-lite untouched"
-    )
+    lines.append(f"- task: {TASKS[args.task]['prompt']}")
     lines.append("")
 
     lines.append("## Per run")
@@ -460,10 +542,10 @@ def summarize(rows, args, arms, out_dir, repo, config):
     lines.append("")
     lines.append(
         "| arm | valid n | invalid | pass | rate | 95% Wilson CI | mean tokens | "
-        "median seconds | code_* / run | refs / run |"
+        "tokens / pass | median seconds | grep / run | read_file / run | context / run | code_* / run | refs / run |"
     )
     lines.append(
-        "| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     counts = {}
     for arm in arms:
@@ -474,28 +556,44 @@ def summarize(rows, args, arms, out_dir, repo, config):
             row for row in rows if row["arm"] == arm and not row["score"]["valid"]
         ]
         if not group:
-            lines.append(f"| {arm} | 0 | {len(invalid)} | 0/0 | – | – | – | – | – | – |")
+            lines.append(f"| {arm} | 0 | {len(invalid)} | 0/0 | – | – | – | – | – | – | – | – | – | – |")
             continue
         passed = sum(1 for row in group if row["score"]["success"])
         counts[arm] = (passed, len(group) - passed)
         low, high = wilson(passed, len(group))
+        tokens_per_pass = f"{sum(row['score']['tokens'] for row in group) / passed:.0f}" if passed else "–"
+        tool_means = " | ".join(
+            f"{statistics.mean(row['score'][key] for row in group):.1f}"
+            if all(key in row["score"] for row in group) else "–"
+            for key in ("grep_calls", "read_calls", "context_calls")
+        )
         lines.append(
             f"| {arm} | {len(group)} | {len(invalid)} | {passed}/{len(group)} | "
             f"{passed / len(group):.1%} | {low:.1%}–{high:.1%} | "
-            f"{statistics.mean(row['score']['tokens'] for row in group):.0f} | "
-            f"{statistics.median(row['score']['duration_s'] for row in group):.1f} | "
+            f"{statistics.mean(row['score']['tokens'] for row in group):.0f} | {tokens_per_pass} | "
+            f"{statistics.median(row['score']['duration_s'] for row in group):.1f} | {tool_means} | "
             f"{statistics.mean(row['score']['code_calls'] for row in group):.1f} | "
             f"{statistics.mean(row['score']['reference_calls'] for row in group):.1f} |"
         )
 
-    if "base" in counts and "code" in counts:
-        base_pass, base_fail = counts["base"]
-        code_pass, code_fail = counts["code"]
-        p_value = fisher_two_sided(base_pass, base_fail, code_pass, code_fail)
+    for arm in ("code", *CONTEXT_ARMS):
+        if "base" in counts and arm in counts:
+            p_value = fisher_two_sided(*counts["base"], *counts[arm])
+            lines.append("")
+            lines.append(f"Two-sided Fisher exact test, base vs {arm}: p = {p_value:.3g}.")
+
+    for arm in CONTEXT_ARMS:
+        group = [row["score"] for row in rows if row["arm"] == arm and row["score"]["valid"]]
+        if not group:
+            continue
+        attempted = sum(score.get("context_calls", 0) > 0 for score in group)
         lines.append("")
-        lines.append(
-            f"Two-sided Fisher exact test on pass/fail: p = {p_value:.3g}."
-        )
+        lines.append(f"{arm} adoption: {attempted}/{len(group)} valid runs called `code_context`.")
+        if all(score.get("context_semantic_calls") is not None for score in group):
+            answered = sum(score["context_semantic_calls"] > 0 for score in group)
+            lines.append(f"{arm} semantic results: {answered}/{len(group)} valid runs received a semantic answer.")
+        else:
+            lines.append("Semantic answer counts are unavailable for some saved runs.")
 
     failures = [
         row for row in rows if row["score"]["valid"] and not row["score"]["success"]
@@ -534,7 +632,7 @@ def summarize(rows, args, arms, out_dir, repo, config):
     lines.append("```bash")
     command = (
         f"python3 scripts/bench/rename_pilot.py --repo {repo} "
-        f"--runs {args.runs} --jobs {args.jobs} --rev {args.rev}"
+        f"--task {args.task} --arms {args.arms} --runs {args.runs} --jobs {args.jobs} --rev {args.rev}"
     )
     if args.resume:
         command += f" --resume {out_dir}"
@@ -552,7 +650,7 @@ def recheck(args, out_dir, config):
     """Re-run compile checks for an existing run from its saved patches."""
     payload = json.loads((out_dir / "summary.json").read_text())
     saved = dict(payload.get("args") or {})
-    saved.setdefault("recheck", True)
+    saved.setdefault("task", "rename")
     saved["recheck"] = True
     run_args = argparse.Namespace(**saved)
     for key in ("repo", "rev", "cargo", "cargo_home", "check_jobs", "keep_worktrees"):
@@ -598,7 +696,7 @@ def recheck(args, out_dir, config):
         result, text = compile_run(run_args, out_dir, check_env, run)
         run["compile"] = result
         run["compile_text"] = text
-        run["score"] = score_run(run, result, text)
+        run["score"] = score_run(run_args, run, result, text)
         return run
 
     with concurrent.futures.ThreadPoolExecutor(
@@ -638,9 +736,10 @@ def recheck(args, out_dir, config):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="rust-lang/regex checkout; cloned if omitted")
-    parser.add_argument("--rev", default=PINNED_REV)
+    parser.add_argument("--task", choices=TASKS)
+    parser.add_argument("--rev")
     parser.add_argument("--runs", type=int, default=16, help="attempts per arm")
-    parser.add_argument("--arms", default="base,code")
+    parser.add_argument("--arms")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--out-dir", help="default: .data/bench/rename-pilot/<stamp>")
     parser.add_argument("--config", help="Oaklet config JSON")
@@ -691,8 +790,23 @@ def load_config(args):
 
 def main(argv=None):
     args = parse_args(argv)
+    saved_args = {}
+    if args.resume:
+        summary_path = Path(args.resume).expanduser().resolve() / "summary.json"
+        if not summary_path.exists():
+            sys.exit(f"cannot resume without {summary_path}")
+        payload = json.loads(summary_path.read_text())
+        saved_args = payload.get("args", {})
+        if args.task and args.task != saved_args.get("task", "rename"):
+            sys.exit("--task must match the existing run")
+        if not args.recheck and args.rev and args.rev != saved_args.get("rev"):
+            sys.exit("--rev must match the existing run")
+    args.task = args.task or saved_args.get("task", "rename")
+    task = TASKS[args.task]
+    args.rev = args.rev or saved_args.get("rev") or task["rev"]
+    args.arms = args.arms or saved_args.get("arms") or ("base,code" if args.task == "rename" else "base,context_nudge")
     arms = [arm.strip() for arm in args.arms.split(",") if arm.strip()]
-    if not arms or any(arm not in ("base", "code", "code_nudge", "code_only") for arm in arms):
+    if not arms or len(set(arms)) != len(arms) or any(arm not in ("base", "code", "code_nudge", "code_only", *CONTEXT_ARMS) for arm in arms):
         sys.exit(f"invalid --arms: {args.arms}")
     if args.runs < 1:
         sys.exit("--runs must be positive")
@@ -702,10 +816,7 @@ def main(argv=None):
     prior = {}
     if args.resume:
         out_dir = Path(args.resume).expanduser().resolve()
-        summary_path = out_dir / "summary.json"
-        if not summary_path.exists():
-            sys.exit(f"cannot resume without {summary_path}")
-        for item in json.loads(summary_path.read_text()).get("runs", []):
+        for item in payload.get("runs", []):
             reason = item.get("reason", "")
             valid = item.get(
                 "valid", reason not in ("agent_error", "agent_timeout")
@@ -718,7 +829,7 @@ def main(argv=None):
         out_dir = (
             Path(args.out_dir).expanduser().resolve()
             if args.out_dir
-            else REPO_ROOT / ".data" / "bench" / "rename-pilot" / stamp
+            else REPO_ROOT / ".data" / "bench" / ("rename-pilot" if args.task == "rename" else args.task) / stamp
         )
         if out_dir.exists() and any(out_dir.iterdir()):
             sys.exit(f"output directory is not empty: {out_dir}")
@@ -726,9 +837,15 @@ def main(argv=None):
     for name in ("results", "logs", "specs", "patches", "checks", "trees"):
         (out_dir / name).mkdir(exist_ok=True)
 
+    if args.dry_run:
+        for arm in arms:
+            for index in range(1, args.runs + 1):
+                log(f"would run {args.task} {arm}-{index:02d}")
+        return 0
+
     config = load_config(args)
     log(
-        f"pilot: {args.runs} x {', '.join(arms)} attempts, jobs={args.jobs}, "
+        f"pilot ({args.task}): {args.runs} x {', '.join(arms)} attempts, jobs={args.jobs}, "
         f"model={config['model']}"
     )
     log(f"artifacts: {out_dir}")
@@ -737,12 +854,6 @@ def main(argv=None):
         if not args.resume:
             sys.exit("--recheck requires --resume <existing output directory>")
         return recheck(args, out_dir, config)
-
-    if args.dry_run:
-        for arm in arms:
-            for index in range(1, args.runs + 1):
-                log(f"would run {arm}-{index:02d}")
-        return 0
 
     # Building the probe uses the checkout's own Cargo home (usually ~/.cargo).
     # The regex worktrees may need a different, pre-populated Cargo home, so
@@ -762,7 +873,7 @@ def main(argv=None):
         for arm in arms:
             runs.append(
                 {
-                    "id": f"{TASK['name']}-{arm}-{index:02d}",
+                    "id": f"{task['name']}-{arm}-{index:02d}",
                     "arm": arm,
                     "index": index,
                     "tree": out_dir / "trees" / f"{arm}-{index:02d}",
@@ -897,7 +1008,7 @@ def main(argv=None):
                 if run.get("done"):
                     run["score"] = run["prior_score"]
                 else:
-                    run["score"] = score_run(run, run["compile"], run["compile_text"])
+                    run["score"] = score_run(args, run, run["compile"], run["compile_text"])
                 rows.append(run)
             rows.sort(key=lambda row: (arms.index(row["arm"]), row["id"]))
 

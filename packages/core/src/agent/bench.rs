@@ -1,8 +1,8 @@
 //! Ignored real-model probe for the step 10 benefit pilot.
 //!
-//! One invocation runs one task in one disposable workspace copy, either with
-//! the production tool set (`base`) or with the four code-index tools added
-//! (`code`). It reuses the production registry, schemas, guidance, system
+//! One invocation runs one task in a disposable copy. The `code` arm adds
+//! the four code-index tools and the context arms add only `code_context` to `base`.
+//! The probe reuses the production registry, schemas, guidance, system
 //! prompt, and tool bodies. It does not use the Tauri run loop, so compaction,
 //! provider retries, approval cards, and transcript persistence are out of
 //! scope; the comparison is about tool selection and navigation only.
@@ -79,12 +79,19 @@ async fn run(spec: &Value) -> Result<Value, String> {
 
     let mut registry = ToolRegistry::new();
     let mut manager = None;
-    if group == "code" || group == "code_nudge" || group == "code_only" {
+    let context_arm = matches!(group, "context" | "context_nudge");
+    if context_arm || matches!(group, "code" | "code_nudge" | "code_only") {
         let index = Arc::new(CodeIndexManager::new());
         index
             .open_workspace(Path::new(workspace), CodeIndexConfig::default())
             .map_err(|error| format!("open_workspace: {error}"))?;
-        crate::tools::code::register(&mut registry, index.clone());
+        if context_arm {
+            registry.push(Box::new(crate::tools::code_context::CodeContext(
+                index.clone(),
+            )));
+        } else {
+            crate::tools::code::register(&mut registry, index.clone());
+        }
         manager = Some(index);
     }
 
@@ -117,10 +124,14 @@ async fn run(spec: &Value) -> Result<Value, String> {
     let ready_ms = if manager.is_some() {
         let mut args = spec["readyPosition"].clone();
         let required_file = spec["readyReferenceFile"].as_str();
-        let tool = if let Some(file) = required_file {
+        let tool = if context_arm {
+            "code_context"
+        } else if let Some(file) = required_file {
             args["reference_file"] = json!(file);
             args["limit"] = json!(1);
             "code_references"
+        } else if args["query"].is_string() {
+            "code_symbols"
         } else {
             "code_definition"
         };
@@ -130,10 +141,15 @@ async fn run(spec: &Value) -> Result<Value, String> {
             let outcome = registry
                 .execute(&ctx, &Allow, tool, "ready", args.clone())
                 .await;
-            let ready = required_file.is_none_or(|file| {
-                serde_json::from_str::<Value>(&outcome.output)
-                    .is_ok_and(|value| value["entries"][0]["path"].as_str() == Some(file))
-            });
+            let ready = match tool {
+                "code_context" => serde_json::from_str::<Value>(&outcome.output)
+                    .is_ok_and(|value| value["semantic"] == "answered"),
+                "code_references" => required_file.is_some_and(|file| {
+                    serde_json::from_str::<Value>(&outcome.output)
+                        .is_ok_and(|value| value["entries"][0]["path"].as_str() == Some(file))
+                }),
+                _ => true,
+            };
             if outcome.ok && ready {
                 break started.elapsed().as_millis() as u64;
             }
@@ -259,6 +275,12 @@ async fn run(spec: &Value) -> Result<Value, String> {
                 && let Ok(output) = serde_json::from_str::<Value>(&output.output)
             {
                 trace["referenceOutput"] = output;
+            }
+            if name == "code_context"
+                && let Ok(output) = serde_json::from_str::<Value>(&output.output)
+                && let Some(status) = output["semantic"].as_str()
+            {
+                trace["contextSemantic"] = json!(status);
             }
             steps.push(trace);
             messages.push(json!({
