@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   contextTier,
+  countUpValue,
   formatCacheHitRate,
+  formatContextLabel,
   formatContextPercent,
   formatContextUsage,
   formatModelId,
+  formatRequestTitle,
   formatTokens,
-  formatUsageLabel,
   formatUsageTokens,
   formatUsageTitle,
   formatWorkdir,
@@ -142,7 +144,7 @@ test("the gauge tooltip pairs the percent with compact token counts", () => {
   assert.equal(formatTokens(1_572_864), "1.5M");
 });
 
-test("usage label and tooltip report the provider cache share", () => {
+test("the context label reports the window size and the last request's cache", () => {
   const usage = {
     promptTokens: 1_400_000,
     completionTokens: 48_000,
@@ -150,24 +152,46 @@ test("usage label and tooltip report the provider cache share", () => {
     cacheMissTokens: 182_000,
     steps: 60,
   };
+  const step = {
+    promptTokens: 40_000,
+    completionTokens: 900,
+    cacheHitTokens: 38_000,
+    cacheMissTokens: 2_000,
+    steps: 1,
+  };
   assert.equal(formatCacheHitRate(usage), "87%");
   assert.equal(formatUsageTokens(1_218_000), "1.2M");
   assert.equal(formatUsageTokens(48_000), "48k");
   assert.equal(formatUsageTokens(999), "999");
-  assert.equal(formatUsageLabel(usage), "1.4M (87% cached)");
+  assert.equal(formatContextLabel(41_398, 262_144, step), "40k/256k (95% cached)");
+  assert.equal(formatContextLabel(41_398, 262_144, null), "40k/256k");
   assert.equal(
-    formatUsageLabel({ ...usage, cacheHitTokens: 0, cacheMissTokens: 0 }),
-    "1.4M",
+    formatContextLabel(41_398, 262_144, {
+      ...step,
+      cacheHitTokens: 0,
+      cacheMissTokens: 0,
+    }),
+    "40k/256k",
+  );
+  assert.equal(
+    formatRequestTitle(step),
+    "last request · cache 95% · 38k/40k prompt · 900 completion",
   );
   assert.equal(
     formatUsageTitle(usage),
-    "cache 87% · 1.2M/1.4M prompt · 48k completion",
-  );
-  assert.equal(
-    formatUsageLabel({ ...usage, promptTokens: 0 }),
-    "",
+    "60 steps · cache 87% · 1.2M/1.4M prompt · 48k completion",
   );
   assert.equal(formatCacheHitRate({ ...usage, cacheHitTokens: 0, cacheMissTokens: 0 }), "0%");
+  assert.match(formatUsageTitle({ ...usage, steps: 1 }), /^1 step · /);
+});
+
+test("the count-up eases toward the new token total", () => {
+  assert.equal(countUpValue(0, 1000, 0), 0);
+  assert.equal(countUpValue(0, 1000, 0.5), 875);
+  assert.equal(countUpValue(0, 1000, 1), 1000);
+  assert.equal(countUpValue(0, 1000, 2), 1000);
+  assert.equal(countUpValue(0, 1000, -1), 0);
+  assert.equal(countUpValue(5600, 5600, 0.5), 5600);
 });
 
 test("the workdir shortens under the home directory", () => {

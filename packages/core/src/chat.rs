@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::store::{self, ContextUsage, RunEnd, Store};
+use crate::store::{self, ContextUsage, RunEnd, StepUsage, Store};
 use crate::tools::CancelHandle;
 use transcript::view_from_window;
 
@@ -51,6 +51,8 @@ pub struct SessionView {
     /// Whether older events exist before `first_seq`.
     pub has_more: bool,
     pub context: Option<ContextUsage>,
+    /// Newest model request; the composer shows its cache share on reopen.
+    pub last_usage: Option<StepUsage>,
     pub running: bool,
     pub blocked: bool,
     pub compacting: bool,

@@ -84,6 +84,11 @@ pub struct RunUsage {
     pub cache_hit_tokens: usize,
     pub cache_miss_tokens: usize,
     pub steps: usize,
+    /// Counts reported by the newest step, kept for the restored composer gauge.
+    pub last_prompt_tokens: usize,
+    pub last_completion_tokens: usize,
+    pub last_cache_hit_tokens: usize,
+    pub last_cache_miss_tokens: usize,
 }
 
 impl RunUsage {
@@ -94,8 +99,22 @@ impl RunUsage {
             self.completion_tokens += usage.completion_tokens;
             self.cache_hit_tokens += usage.cache_hit_tokens;
             self.cache_miss_tokens += usage.cache_miss_tokens;
+            self.last_prompt_tokens = usage.prompt_tokens;
+            self.last_completion_tokens = usage.completion_tokens;
+            self.last_cache_hit_tokens = usage.cache_hit_tokens;
+            self.last_cache_miss_tokens = usage.cache_miss_tokens;
         }
     }
+}
+
+/// Provider-reported usage for one model request, restored with a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUsage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub cache_hit_tokens: usize,
+    pub cache_miss_tokens: usize,
 }
 
 /// A stored conversation: metadata plus its append-only event log.
@@ -130,6 +149,8 @@ pub struct SessionWindow {
     pub turns: usize,
     pub updated_at: i64,
     pub context: Option<ContextUsage>,
+    /// Newest model request in this session, or `None` before the first reply.
+    pub last_usage: Option<StepUsage>,
     pub events: Vec<Event>,
     /// Whether events exist before the first event in this window.
     pub has_more: bool,
@@ -332,6 +353,26 @@ fn next_seq(conn: &Connection, session_id: &str) -> Result<i64, String> {
         |row| row.get(0),
     )
     .map_err(|error| format!("Could not read the transcript: {error}"))
+}
+
+/// Last completed run's newest request; a running run has no counts yet.
+fn read_last_step(conn: &Connection, session_id: &str) -> Result<Option<StepUsage>, String> {
+    conn.query_row(
+        "SELECT last_prompt_tokens, last_completion_tokens, last_cache_hit_tokens, \
+         last_cache_miss_tokens FROM runs WHERE session_id = ?1 AND model_steps > 0 \
+         AND last_prompt_tokens > 0 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        [session_id],
+        |row| {
+            Ok(StepUsage {
+                prompt_tokens: row.get::<_, i64>(0)?.max(0) as usize,
+                completion_tokens: row.get::<_, i64>(1)?.max(0) as usize,
+                cache_hit_tokens: row.get::<_, i64>(2)?.max(0) as usize,
+                cache_miss_tokens: row.get::<_, i64>(3)?.max(0) as usize,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| format!("Could not read run usage: {error}"))
 }
 
 fn append_events(
@@ -556,6 +597,7 @@ impl Store {
         };
         let events = read_page(conn, id, before_seq, limit)?;
         let has_more = events.first().is_some_and(|event| event.seq > 1);
+        let last_usage = read_last_step(conn, id)?;
         Ok(Some(SessionWindow {
             id: meta.id,
             workspace: meta.workspace,
@@ -563,6 +605,7 @@ impl Store {
             turns: meta.turns,
             updated_at: meta.updated_at,
             context: meta.context,
+            last_usage,
             events,
             has_more,
         }))
@@ -889,7 +932,9 @@ impl Store {
             tx.execute(
                 "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4, \
                  prompt_tokens = ?5, completion_tokens = ?6, cache_hit_tokens = ?7, \
-                 cache_miss_tokens = ?8, model_steps = ?9 WHERE id = ?1",
+                 cache_miss_tokens = ?8, model_steps = ?9, last_prompt_tokens = ?10, \
+                 last_completion_tokens = ?11, last_cache_hit_tokens = ?12, \
+                 last_cache_miss_tokens = ?13 WHERE id = ?1",
                 params![
                     end.run_id,
                     end.status,
@@ -900,6 +945,10 @@ impl Store {
                     end.usage.cache_hit_tokens as i64,
                     end.usage.cache_miss_tokens as i64,
                     end.usage.steps as i64,
+                    end.usage.last_prompt_tokens as i64,
+                    end.usage.last_completion_tokens as i64,
+                    end.usage.last_cache_hit_tokens as i64,
+                    end.usage.last_cache_miss_tokens as i64,
                 ],
             )
             .map_err(|error| format!("Could not update the run: {error}"))?;
@@ -911,6 +960,7 @@ impl Store {
             .ok_or_else(|| "This session no longer exists.".to_string())?;
         let events = read_from(&conn, &end.session_id, end.start_seq)?;
         let has_more = events.first().is_some_and(|event| event.seq > 1);
+        let last_usage = read_last_step(&conn, &end.session_id)?;
         Ok(SessionWindow {
             id: meta.id,
             workspace: meta.workspace,
@@ -918,6 +968,7 @@ impl Store {
             turns: meta.turns,
             updated_at: meta.updated_at,
             context: meta.context,
+            last_usage,
             events,
             has_more,
         })
@@ -1090,7 +1141,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ContextUsage, EventPayload, NewUserTurn, RunEnd, RunUsage, Store, has_table, is_checkpoint,
+        ContextUsage, EventPayload, NewUserTurn, RunEnd, RunUsage, StepUsage, Store, has_table,
+        is_checkpoint,
     };
     use crate::agent::Usage;
 
@@ -1167,6 +1219,7 @@ mod tests {
         assert_eq!(first.window.turns, 1);
         assert_eq!(first.window.events.len(), 1);
         assert_eq!(first.window.events[0].seq, 1);
+        assert!(first.window.last_usage.is_none());
         assert!(matches!(
             first.window.events[0].payload,
             EventPayload::Message { .. }
@@ -1220,6 +1273,10 @@ mod tests {
                     cache_hit_tokens: 60,
                     cache_miss_tokens: 40,
                     steps: 2,
+                    last_prompt_tokens: 60,
+                    last_completion_tokens: 15,
+                    last_cache_hit_tokens: 40,
+                    last_cache_miss_tokens: 20,
                 },
                 error: None,
             })
@@ -1234,6 +1291,15 @@ mod tests {
                 window: 100
             })
         );
+        assert_eq!(
+            saved.last_usage,
+            Some(StepUsage {
+                prompt_tokens: 60,
+                completion_tokens: 15,
+                cache_hit_tokens: 40,
+                cache_miss_tokens: 20,
+            })
+        );
         assert_eq!(saved.updated_at, 9);
 
         let conn = store.connection().unwrap();
@@ -1245,10 +1311,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, ("done".into(), Some(9)));
-        let usage: (i64, i64, i64, i64, i64) = conn
+        let usage: (i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn
             .query_row(
                 "SELECT prompt_tokens, completion_tokens, cache_hit_tokens, \
-                 cache_miss_tokens, model_steps FROM runs WHERE id = 'r1'",
+                 cache_miss_tokens, model_steps, last_prompt_tokens, \
+                 last_completion_tokens, last_cache_hit_tokens, last_cache_miss_tokens \
+                 FROM runs WHERE id = 'r1'",
                 [],
                 |row| {
                     Ok((
@@ -1257,11 +1325,15 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )
             .unwrap();
-        assert_eq!(usage, (100, 20, 60, 40, 2));
+        assert_eq!(usage, (100, 20, 60, 40, 2, 60, 15, 40, 20));
     }
 
     #[test]
@@ -1289,6 +1361,10 @@ mod tests {
                 cache_hit_tokens: 110,
                 cache_miss_tokens: 140,
                 steps: 3,
+                last_prompt_tokens: 200,
+                last_completion_tokens: 10,
+                last_cache_hit_tokens: 50,
+                last_cache_miss_tokens: 100,
             }
         );
     }

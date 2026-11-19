@@ -182,6 +182,10 @@ async fn a_finished_run_saves_the_usage_accumulated_across_steps() {
             cache_hit_tokens: 110,
             cache_miss_tokens: 190,
             steps: 2,
+            last_prompt_tokens: 200,
+            last_completion_tokens: 10,
+            last_cache_hit_tokens: 50,
+            last_cache_miss_tokens: 150,
         }
     );
     ctx.finish_done(vec![request]).await;

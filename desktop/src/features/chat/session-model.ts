@@ -3,6 +3,14 @@ import type { FileDiff } from "./process-model.ts";
 
 export type ContextUsage = { used: number; window: number };
 
+/** Provider counts for one model request. */
+export type StepUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+};
+
 /** Provider-reported token usage accumulated over one run. */
 export type RunUsage = {
   promptTokens: number;
@@ -17,6 +25,16 @@ export type TabUsage = {
   runId: string;
   settled: RunUsage;
   current: RunUsage;
+  /** Token counts of the newest model step; drives the cache share. */
+  lastStep: StepUsage;
+};
+
+const NO_USAGE: RunUsage = {
+  promptTokens: 0,
+  completionTokens: 0,
+  cacheHitTokens: 0,
+  cacheMissTokens: 0,
+  steps: 0,
 };
 
 export function addUsage(left: RunUsage, right: RunUsage): RunUsage {
@@ -26,6 +44,25 @@ export function addUsage(left: RunUsage, right: RunUsage): RunUsage {
     cacheHitTokens: left.cacheHitTokens + right.cacheHitTokens,
     cacheMissTokens: left.cacheMissTokens + right.cacheMissTokens,
     steps: left.steps + right.steps,
+  };
+}
+
+/** Counts between two cumulative snapshots of one run: a single model step. */
+function stepDelta(before: RunUsage, after: RunUsage): StepUsage {
+  return {
+    promptTokens: after.promptTokens - before.promptTokens,
+    completionTokens: after.completionTokens - before.completionTokens,
+    cacheHitTokens: after.cacheHitTokens - before.cacheHitTokens,
+    cacheMissTokens: after.cacheMissTokens - before.cacheMissTokens,
+  };
+}
+
+function stepOf(usage: RunUsage): StepUsage {
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    cacheHitTokens: usage.cacheHitTokens,
+    cacheMissTokens: usage.cacheMissTokens,
   };
 }
 
@@ -41,21 +78,27 @@ export function accumulateUsage(
   if (!previous) {
     return {
       runId,
-      settled: {
-        promptTokens: 0,
-        completionTokens: 0,
-        cacheHitTokens: 0,
-        cacheMissTokens: 0,
-        steps: 0,
-      },
+      settled: NO_USAGE,
       current: usage,
+      lastStep: stepOf(usage),
     };
   }
-  if (previous.runId === runId) return { ...previous, current: usage };
+  if (previous.runId === runId) {
+    const delta = stepDelta(previous.current, usage);
+    // A step that reported nothing leaves the totals unchanged; keep the last
+    // billed request so the cache share does not flicker to zero.
+    const reported = delta.promptTokens > 0 || delta.completionTokens > 0;
+    return {
+      ...previous,
+      current: usage,
+      lastStep: reported ? delta : previous.lastStep,
+    };
+  }
   return {
     runId,
     settled: addUsage(previous.settled, previous.current),
     current: usage,
+    lastStep: stepOf(usage),
   };
 }
 
@@ -76,6 +119,8 @@ export type SessionView = {
   /** Whether events exist before `firstSeq`. */
   hasMore: boolean;
   context: ContextUsage | null;
+  /** Newest model request; the composer shows its cache share on reopen. */
+  lastUsage: StepUsage | null;
   running: boolean;
   blocked: boolean;
   compacting: boolean;

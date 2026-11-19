@@ -93,10 +93,22 @@ test("tab usage accumulates across runs instead of resetting on send", () => {
 
   const first = accumulateUsage(undefined, "run-1", run1Step1);
   assert.deepEqual(totalUsage(first), run1Step1);
+  assert.deepEqual(first.lastStep, {
+    promptTokens: 1000,
+    completionTokens: 10,
+    cacheHitTokens: 600,
+    cacheMissTokens: 400,
+  });
 
   // A later event for the same run is cumulative, so it replaces the step.
   const second = accumulateUsage(first, "run-1", run1Step2);
   assert.deepEqual(totalUsage(second), run1Step2);
+  assert.deepEqual(second.lastStep, {
+    promptTokens: 1500,
+    completionTokens: 15,
+    cacheHitTokens: 1400,
+    cacheMissTokens: 100,
+  });
 
   // A new run settles the previous one and starts from the running total.
   const third = accumulateUsage(second, "run-2", run2Step1);
@@ -109,6 +121,12 @@ test("tab usage accumulates across runs instead of resetting on send", () => {
   });
   assert.deepEqual(third.settled, run1Step2);
   assert.deepEqual(third.current, run2Step1);
+  assert.deepEqual(third.lastStep, {
+    promptTokens: 3000,
+    completionTokens: 30,
+    cacheHitTokens: 2500,
+    cacheMissTokens: 500,
+  });
 
   const fourth = accumulateUsage(third, "run-2", run2Step2);
   assert.deepEqual(totalUsage(fourth), {
@@ -118,6 +136,15 @@ test("tab usage accumulates across runs instead of resetting on send", () => {
     cacheMissTokens: 2500,
     steps: 4,
   });
+  assert.deepEqual(fourth.lastStep, {
+    promptTokens: 4000,
+    completionTokens: 40,
+    cacheHitTokens: 2500,
+    cacheMissTokens: 1500,
+  });
+  // A duplicate snapshot does not reset the cache share to zero.
+  const same = accumulateUsage(fourth, "run-2", run2Step2);
+  assert.deepEqual(same.lastStep, fourth.lastStep);
 });
 
 test("tabStatus ranks a blocked tool above running, done, and idle", () => {

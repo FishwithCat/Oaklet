@@ -366,6 +366,7 @@ function App() {
           activeRunId={session.activeRunId}
           context={session.context}
           usage={session.usage}
+          stepUsage={session.stepUsage}
           model={config.model}
           onSend={session.send}
           onStop={session.stop}

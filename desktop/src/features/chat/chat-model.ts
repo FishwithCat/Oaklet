@@ -1,6 +1,6 @@
 import type { ProcessItem } from "./process-model";
 import type { SentAttachment } from "./attachments";
-import type { RunUsage } from "./session-model";
+import type { RunUsage, StepUsage } from "./session-model";
 
 export type Item = (
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
@@ -57,7 +57,7 @@ export function formatTokens(tokens: number): string {
 }
 
 /** Share of provider prompt tokens served from cache: 1000/1234 -> "81%". */
-export function formatCacheHitRate(usage: RunUsage): string {
+export function formatCacheHitRate(usage: StepUsage): string {
   const total = usage.cacheHitTokens + usage.cacheMissTokens;
   if (total <= 0) return "0%";
   return `${Math.round((usage.cacheHitTokens / total) * 100)}%`;
@@ -74,18 +74,17 @@ export function formatUsageTokens(tokens: number): string {
   return `${millions < 10 ? millions.toFixed(1) : Math.round(millions)}M`;
 }
 
-/** Composer label: cumulative prompt size plus the provider's cache share. */
-export function formatUsageLabel(usage: RunUsage): string {
-  if (usage.promptTokens <= 0) return "";
-  const tokens = formatUsageTokens(usage.promptTokens);
-  if (usage.cacheHitTokens + usage.cacheMissTokens <= 0) return tokens;
-  return `${tokens} (${formatCacheHitRate(usage)} cached)`;
+/** Eased token total for the composer count-up; progress is clamped to 0..1. */
+export function countUpValue(from: number, to: number, progress: number): number {
+  const remaining = 1 - Math.min(1, Math.max(0, progress));
+  return Math.round(to - (to - from) * remaining ** 3);
 }
 
-/** Tooltip with the cumulative cache rate and token breakdown. */
+/** Tooltip explains what the total covers: model steps plus the token split. */
 export function formatUsageTitle(usage: RunUsage): string {
+  const steps = `${usage.steps} ${usage.steps === 1 ? "step" : "steps"}`;
   return [
-    `cache ${formatCacheHitRate(usage)}`,
+    `${steps} · cache ${formatCacheHitRate(usage)}`,
     `${formatUsageTokens(usage.cacheHitTokens)}/${formatUsageTokens(usage.promptTokens)} prompt`,
     `${formatUsageTokens(usage.completionTokens)} completion`,
   ].join(" · ");
@@ -94,6 +93,27 @@ export function formatUsageTitle(usage: RunUsage): string {
 /** Hover label for the context bar, e.g. "30% (77k/256k)". */
 export function formatContextUsage(used: number, window: number): string {
   return `${formatContextPercent(used, window)} (${formatTokens(used)}/${formatTokens(window)})`;
+}
+
+/** Composer label: current context size plus the last request's cache share. */
+export function formatContextLabel(
+  used: number,
+  window: number,
+  step: StepUsage | null,
+): string {
+  const size = `${formatTokens(used)}/${formatTokens(window)}`;
+  if (!step || step.cacheHitTokens + step.cacheMissTokens <= 0) return size;
+  return `${size} (${formatCacheHitRate(step)} cached)`;
+}
+
+/** Hover detail for the label: how the last model request was billed. */
+export function formatRequestTitle(step: StepUsage): string {
+  return [
+    "last request",
+    `cache ${formatCacheHitRate(step)}`,
+    `${formatUsageTokens(step.cacheHitTokens)}/${formatUsageTokens(step.promptTokens)} prompt`,
+    `${formatUsageTokens(step.completionTokens)} completion`,
+  ].join(" · ");
 }
 
 /** Show the workspace relative to the home directory: ~/Workspace/Acorn. */

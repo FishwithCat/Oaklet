@@ -23,16 +23,54 @@ import {
 } from "./attachments";
 import {
   contextTier,
+  countUpValue,
+  formatContextLabel,
   formatContextUsage,
   formatModelId,
-  formatUsageLabel,
+  formatRequestTitle,
   formatUsageTitle,
 } from "./chat-model";
-import type { ContextUsage, RunUsage } from "./session-model";
+import type { ContextUsage, RunUsage, StepUsage } from "./session-model";
 
 export type ChatComposerHandle = {
   focus: () => void;
 };
+
+/** Count-up digits: the context size eases to its new value instead of jumping. */
+function UsageLabel({
+  used,
+  limit,
+  step,
+}: {
+  used: number;
+  limit: number;
+  step: StepUsage | null;
+}) {
+  const [shown, setShown] = useState(used);
+  const shownRef = useRef(used);
+
+  useEffect(() => {
+    const from = shownRef.current;
+    if (from === used) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      shownRef.current = used;
+      setShown(used);
+      return;
+    }
+    const started = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const value = countUpValue(from, used, (now - started) / 450);
+      shownRef.current = value;
+      setShown(value);
+      if (value !== used) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [used]);
+
+  return <>{formatContextLabel(shown, limit, step)}</>;
+}
 
 function ContextGauge({
   usage,
@@ -93,6 +131,7 @@ export function ChatComposer({
   compacting,
   context,
   usage,
+  stepUsage,
   showContextGauge,
   model,
   welcome,
@@ -111,6 +150,7 @@ export function ChatComposer({
   compacting: boolean;
   context: ContextUsage | null;
   usage: RunUsage | null;
+  stepUsage: StepUsage | null;
   showContextGauge: boolean;
   model: string;
   welcome?: boolean;
@@ -311,9 +351,21 @@ export function ChatComposer({
         />
         <div className="composer-footer">
           <span className="composer-meta">
-            {usage && usage.promptTokens > 0 && (
-              <span className="composer-usage" title={formatUsageTitle(usage)}>
-                {formatUsageLabel(usage)}
+            {context && (
+              <span
+                className="composer-usage"
+                title={
+                  stepUsage
+                    ? formatRequestTitle(stepUsage)
+                    : "Current context; the cache share appears after the next reply"
+                }
+              >
+                <UsageLabel
+                  key={activeTabId}
+                  used={context.used}
+                  limit={context.window}
+                  step={stepUsage}
+                />
               </span>
             )}
             <span className="composer-model" title={`Model: ${model}`}>

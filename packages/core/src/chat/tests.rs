@@ -121,6 +121,7 @@ fn live_runs_override_the_persisted_view() {
         first_seq: None,
         has_more: false,
         context: None,
+        last_usage: None,
         running: true,
         blocked: true,
         compacting: false,

@@ -43,6 +43,7 @@ fn serializes_views_and_items_in_the_frontend_shape() {
         first_seq: None,
         has_more: false,
         context: None,
+        last_usage: None,
         running: false,
         blocked: false,
         compacting: false,
@@ -53,6 +54,7 @@ fn serializes_views_and_items_in_the_frontend_shape() {
     assert_eq!(value["updatedAt"], 7);
     assert_eq!(value["activeRunId"], serde_json::Value::Null);
     assert_eq!(value["context"], serde_json::Value::Null);
+    assert_eq!(value["lastUsage"], serde_json::Value::Null);
     assert_eq!(value["firstSeq"], serde_json::Value::Null);
     assert_eq!(value["hasMore"], false);
 

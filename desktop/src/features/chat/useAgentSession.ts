@@ -625,6 +625,7 @@ export function useAgentSession({
     activeTabId: resolvedActiveId,
     context: activeTab?.context ?? null,
     usage: activeUsage ? totalUsage(activeUsage) : null,
+    stepUsage: activeUsage?.lastStep ?? activeTab?.lastUsage ?? null,
     busy,
     allowAll,
     history,
