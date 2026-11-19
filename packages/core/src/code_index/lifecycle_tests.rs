@@ -1564,7 +1564,8 @@ async fn cache_write_failure_preserves_live_results_and_semantic_queries_always_
             .await
             .unwrap();
         assert_eq!(result.source, QuerySource::Live);
-        assert!(!result.completeness_known && !result.coverage.semantic_ready);
+        assert!(result.coverage.file_verified);
+        assert!(result.coverage.semantic_ready && !result.completeness_known);
     }
     assert_eq!(fixture.count("query"), 2);
     assert_eq!(manager.status(&fixture.0).unwrap().cache.entries, 1);
@@ -1781,6 +1782,8 @@ async fn agent_code_tools_candidates_recursive_calls_and_spill_pages() {
         assert_eq!(value["entries"][0]["column"], 3);
         assert_eq!(value["entries"][0]["path"], "src/lib.rs");
         assert_eq!(value["completeness_known"], false);
+        assert_eq!(value["coverage"]["file_verified"], true);
+        assert_eq!(value["coverage"]["semantic_ready"], true);
         if name == "code_definition" {
             assert_eq!(value["entries"][1]["external"], true);
             assert_eq!(value["entries"][1]["column_encoding"], "utf-16");
@@ -1843,6 +1846,42 @@ async fn agent_code_tools_candidates_recursive_calls_and_spill_pages() {
         assert!(paged.ok, "{}", paged.output);
         assert!(paged.output.contains("file_verified"));
     }
+    let outcome = registry
+        .execute(
+            &ctx,
+            &CodeToolAllow,
+            "code_symbols",
+            "search-all",
+            json!({"query":"same","limit":2}),
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.output);
+    let value: Value = serde_json::from_str(&outcome.output).unwrap();
+    let entries = value["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["location"]["path"] == "src/lib.rs"),
+        "{value}"
+    );
+    assert!(
+        value["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("same") && hint.contains("code_references"))
+    );
+    assert!(
+        fixture
+            .events()
+            .iter()
+            .any(|event| event["event"] == "workspace-symbols" && event["query"] == "same")
+    );
+    assert!(
+        registry
+            .prompt_status(&fixture.0)
+            .iter()
+            .any(|line| line.contains("ready for Rust"))
+    );
     let invalid = registry
         .execute(
             &ctx,
@@ -2058,6 +2097,10 @@ async fn real_project_agent_tools_probe() {
             assert_eq!(value["status"], "ok");
             assert_eq!(value["completeness_known"], false);
             assert!(!value["entries"].as_array().unwrap().is_empty());
+            if !tool.starts_with("code_symbols") {
+                assert_eq!(value["coverage"]["file_verified"], true, "{tool}");
+                assert_eq!(value["coverage"]["semantic_ready"], true, "{tool}");
+            }
             eprintln!(
                 "tool={tool} path={path} entries={} source={} truncated={}",
                 value["entries"].as_array().unwrap().len(),

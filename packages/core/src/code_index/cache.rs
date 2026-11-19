@@ -139,7 +139,10 @@ impl CodeIndexManager {
             return Err(IndexError::NotReady);
         }
         let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
-        let project = discovery.route(query.file()).map_err(IndexError::Invalid)?;
+        let file = query
+            .file()
+            .ok_or_else(|| IndexError::Invalid("A file is required for this query.".into()))?;
+        let project = discovery.route(file).map_err(IndexError::Invalid)?;
         let (status, key) = entry
             .projects
             .iter()
@@ -149,7 +152,7 @@ impl CodeIndexManager {
             return Err(IndexError::Disabled);
         }
         let path = Workspace::new(&root.to_string_lossy())
-            .and_then(|w| w.resolve(query.file()))
+            .and_then(|w| w.resolve(file))
             .map_err(IndexError::Invalid)?;
         let snapshot = entry
             .persistence
@@ -219,7 +222,25 @@ impl CodeIndexManager {
             .to_path_buf();
         // Never turn a successful-but-partial LSP response into an authoritative cached call graph.
         if !matches!(query, Query::Symbols { .. }) {
-            return self.query_live(&root, query, cancel).await;
+            if matches!(query, Query::WorkspaceSymbols { file: None, .. }) {
+                return self.query_live(&root, query, cancel).await;
+            }
+            // The live path does not cache non-symbol results, but it still verifies
+            // the queried file and fills the coverage it can prove. `semantic_ready`
+            // means a live backend answered; completeness remains unknown.
+            let context = self.cache_context(&root, &query).ok();
+            let mut result = self.query_live(&root, query, cancel).await?;
+            if let Some(context) = context {
+                if let Some(expected) = result.content_hash.clone() {
+                    if file_hash(&context).await? != expected {
+                        return Err(IndexError::NotReady);
+                    }
+                    result.coverage.file_verified = true;
+                }
+                result.coverage.project_verified = context.snapshot.is_some();
+            }
+            result.coverage.semantic_ready = true;
+            return Ok(result);
         }
         let context = self.cache_context(&root, &query)?;
         self.cache_current(&context, cancel)?;
@@ -367,6 +388,7 @@ impl CodeIndexManager {
         }
         result.coverage.file_verified = local_symbols(&result, &context.path);
         result.coverage.project_verified = key.is_some();
+        result.coverage.semantic_ready = result.source == QuerySource::Live;
         if let Some(key) = key.filter(|_| local_symbols(&result, &context.path)) {
             // Guard insertion with the same workspace lock used by close, rebuild and file invalidation.
             {
@@ -434,8 +456,9 @@ fn query_key(
 ) -> String {
     let mut query = query.clone();
     match &mut query {
+        // Workspace symbol searches are never cached; keep their optional path.
+        Query::WorkspaceSymbols { .. } => {}
         Query::Symbols { file }
-        | Query::WorkspaceSymbols { file, .. }
         | Query::Definition { file, .. }
         | Query::References { file, .. }
         | Query::Calls { file, .. } => {

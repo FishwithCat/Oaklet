@@ -6,7 +6,7 @@
 
 - `code_index/cache.rs` 接入共享 Rust Service；沿用标准 `HashMap`、BLAKE3 和既有 Store，不增加依赖、迁移或通信层。生产服务必须使用注入 Store 的 manager，独立协议探针仍可使用不持久化的 `new()`。
 - 文件符号依次读取内存、`code_index_queries`、`code_index_files` 中的有效符号，最后请求 LSP。文件索引提供首次查询与重启后的恢复来源。返回 `source` 为 `live`、`memory`、`sqlite` 或 `file_index`，`coverage` 分别标记目标文件内容、项目快照和语义就绪；`completeness_known` 与 `truncated` 保留，不把命中标成完整分析。
-- 当前 Rust/TS 后端没有可靠的语义就绪依据，定义、引用和调用查询始终走实时路径，不读写查询缓存。非空结果、协议 Ready、固定等待、TTL 或连续相同结果均不构成就绪证明；`semantic_cache_enabled` 明确为 false。文件符号只证明对应源码内容一致，完整性仍未知。
+- 当前 Rust/TS 后端没有可靠的语义完整度依据，定义、引用和调用查询始终走实时路径，不读写查询缓存。实时路径返回前仍会重新读取并 hash 查询文件，与 LSP 提交文本的 hash 不一致时返回 not_ready，成功时填写 `file_verified`，项目快照已验证时填写 `project_verified`，`semantic_ready=true` 表示实时后端已回答；这不构成完整索引证明，`completeness_known` 继续为 false。非空结果、协议 Ready、固定等待、TTL 或连续相同结果均不构成完整度证明；`semantic_cache_enabled` 明确为 false。文件符号只证明对应源码内容一致，完整性仍未知。
 - 缓存键包含规范化的工作区、项目、语言、完整 Query 参数、项目快照、后端命令/版本/工具链/SDK 指纹、目标文件内容 hash 和格式版本，使用 BLAKE3。绝对路径与等价相对路径产生相同键。generation/revision 用于请求与写入前后的时序检查，不作为可跨重启复用的稳定身份。
 - 每次符号查询均重新读取并 hash 磁盘文件；返回前再次核对 hash、generation/revision、stale 和取消状态。实时结果还核对实际提交给 LSP 的文本 hash。内容不同即使 mtime/size 相同也不能命中旧结果；发现内容尚未纳入项目快照时不写查询缓存。缓存中的符号必须全部属于该目标文件，不能用单文件 hash 验证其他文件的位置。
 - 仅对核对过项目快照和后端环境的非空文件符号启用查询缓存，内存全局最多 256 条、序列化结果负载最多 16 MiB，按访问序号淘汰。查询结果最多复用 10 分钟；内存/SQLite 命中不续期，SQLite 命中以原创建时间进入内存。有效的文件索引可在重新核对内容后重新生成查询结果。

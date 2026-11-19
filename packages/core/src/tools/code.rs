@@ -1,15 +1,21 @@
 //! Model positions are one-based Unicode characters; service positions are UTF-16.
 use super::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, Workspace, parse_args};
 use crate::code_index::{
-    CodeIndexManager, IndexError, Location, Query, QueryData, QueryResult, documents,
+    CodeIndexManager, IndexError, Language, Location, Query, QueryData, QueryResult, ServerState,
+    documents,
 };
 use futures_util::future::BoxFuture;
 use lsp_types::Position;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
-const GUIDANCE: &str = "Use code_symbols, code_definition, code_references and code_calls for saved-source semantic navigation. Paths belong to this session's workspace. Lines and columns start at 1; columns count Unicode characters. code_calls returns one hop and preserves prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation; cached symbols and protocol readiness do not prove semantic completeness. On unavailable, unsupported, not_ready or timeout, continue with grep/read_file and label text matches as candidates. External targets are metadata only; their columns remain explicitly UTF-16. Narrow truncated queries or raise limit up to 200. Oversized output is saved by the tool pipeline; use read_file with offset/limit on its spill path to recover all returned entries.";
+const GUIDANCE: &str = "When you know a symbol's name and need its definition, every reference, or its callers/callees, use code_symbols then code_references/code_calls before grep. Before renaming or changing a variant, field, method or type, get the declaration from code_symbols/code_definition, call code_references on that position, and across all pages edit only the locations it returns: a same-named bare token in another file may belong to another type, crate or import, and grep cannot attribute it. Keep grep for strings, macros, configuration, generated code and framework conventions. code_symbols with query searches every ready project and needs no path; without query it lists one file with exact positions, which code_definition, code_references and code_calls need (1-based line, 1-based Unicode character column). code_calls returns one hop and keeps prepared subjects and same-name candidates; only server call hierarchy results are call evidence. Results may be partial even without truncation, and protocol readiness does not prove semantic completeness. A truncated location result is not the full set: check file_counts and page with offset (limit max 200) until truncated is false before editing; never treat one page as an allowlist. On unavailable, unsupported, not_ready or timeout, fall back to grep/read_file and label text matches as candidates. External targets are metadata only (UTF-16 columns). Oversized output is spilled to a file readable with read_file offset/limit.";
 
 pub(crate) fn register(registry: &mut ToolRegistry, manager: Arc<CodeIndexManager>) {
     for name in [
@@ -31,12 +37,13 @@ struct CodeTool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
-    path: String,
+    path: Option<String>,
     query: Option<String>,
     line: Option<u32>,
     column: Option<u32>,
     direction: Option<Direction>,
     limit: Option<usize>,
+    offset: Option<usize>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,27 +59,30 @@ impl Tool for CodeTool {
     fn description(&self) -> &str {
         match self.name {
             "code_symbols" => {
-                "List saved-file symbols, or search the path's project with query. Returns distinct candidates with source and coverage; completeness is unknown."
+                "Start here when you know a symbol name but not its file, and to get the declaration position that code_references needs. query searches every ready project; path narrows the search to that file's project, and without query path lists that file. When returned names collide, a hint points at code_references; completeness is unknown."
             }
             "code_definition" => {
-                "Locate definitions of a saved-source position. Multiple candidates are preserved. External targets are reported without reading them."
+                "Use when a bare name may bind elsewhere (imports, re-exports, traits, shadowing) and text search cannot tell which declaration applies. Preserves multiple candidates; external targets are reported without reading them. When truncated, page with offset."
             }
             "code_references" => {
-                "Locate references of a saved-source position, excluding the declaration. Partial results do not establish absence of references."
+                "Call before renaming or editing a name that may also exist in another type, crate or import. Returns only locations bound to this declaration, excluding the declaration itself, so text hits outside the result belong to another symbol. Partial results do not establish absence. If truncated, read file_counts and page through every entry with offset before editing."
             }
             _ => {
-                "Find one hop of incoming callers or outgoing callees using server call hierarchy. Preserves recursive calls, prepared subjects and distinct candidates; unsupported is not an empty call graph."
+                "Use for callers or callees of one function when grep would confuse same-name functions. Server call hierarchy only: one hop, preserving recursive calls, prepared subjects and distinct candidates; unsupported is not an empty call graph."
             }
         }
     }
     fn parameters(&self) -> Value {
         let mut properties = json!({
-            "path": {"type":"string", "minLength":1, "description":"Saved source file in this session's workspace; selects the project for symbol search."},
+            "path": {"type":"string", "minLength":1, "description": if self.name == "code_symbols" {"Optional saved file. With query it selects a project; omit it to search every ready project. Without query it lists this file's symbols."} else {"Saved source file in this session's workspace; selects the project for symbol search."}},
             "limit": {"type":"integer", "minimum":1, "maximum":200, "default":50, "description":"Maximum entries; call sites share this budget."}
         });
-        let mut required = vec!["path"];
+        let mut required = Vec::new();
+        if self.name != "code_symbols" {
+            required.push("path");
+        }
         if self.name == "code_symbols" {
-            properties["query"] = json!({"type":"string", "minLength":1, "maxLength":1024, "description":"Optional project symbol search (server matching rules). Omit to list file symbols."});
+            properties["query"] = json!({"type":"string", "minLength":1, "maxLength":1024, "description":"Project symbol search (server matching rules). Omit to list one file's symbols."});
         } else {
             properties["line"] =
                 json!({"type":"integer","minimum":1, "description":"One-based saved-source line."});
@@ -83,24 +93,37 @@ impl Tool for CodeTool {
             properties["direction"] = json!({"type":"string", "enum":["incoming","outgoing"]});
             required.push("direction");
         }
+        if matches!(self.name, "code_definition" | "code_references") {
+            properties["offset"] = json!({"type":"integer","minimum":0,"maximum":1000000,"default":0,"description":"Number of location entries to skip; use with limit to page through truncated results."});
+        }
         json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
     }
     fn guidance(&self) -> &str {
         GUIDANCE
     }
+    fn prompt_status(&self, workspace: &Path) -> Option<String> {
+        if self.name != "code_symbols" {
+            return None;
+        }
+        index_note(&self.manager, workspace)
+    }
     fn summary(&self, args: &Value) -> String {
-        let path = args["path"].as_str().unwrap_or_default();
         match args.get("line").and_then(Value::as_u64) {
             Some(line) => format!(
-                "{path}:{line}:{} {}",
+                "{}:{line}:{} {}",
+                args["path"].as_str().unwrap_or_default(),
                 args["column"],
                 args["direction"].as_str().unwrap_or_default()
             )
             .trim()
             .into(),
-            None => format!("{path} {}", args["query"].as_str().unwrap_or_default())
-                .trim()
-                .into(),
+            None => format!(
+                "{} {}",
+                args["path"].as_str().unwrap_or_default(),
+                args["query"].as_str().unwrap_or_default()
+            )
+            .trim()
+            .into(),
         }
     }
     fn is_concurrency_safe(&self) -> bool {
@@ -118,20 +141,34 @@ impl Tool for CodeTool {
             let args: Args = parse_args(value)?;
             validate(self.name, &args)?;
             let limit = args.limit.unwrap_or(50);
+            let offset = args.offset.unwrap_or(0);
             let work = async {
-                let path = ctx
-                    .workspace
-                    .resolve(&args.path)
+                let resolved = args
+                    .path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| ctx.workspace.resolve(path))
+                    .transpose()
                     .map_err(IndexError::Invalid)?;
-                let file = path.to_string_lossy().into_owned();
+                let file = resolved
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned());
                 let mut input_hash = None;
+                let query_mode = self.name == "code_symbols" && args.query.is_some();
                 let query = if self.name == "code_symbols" {
                     match args.query {
                         Some(query) => Query::WorkspaceSymbols { file, query },
-                        None => Query::Symbols { file },
+                        None => Query::Symbols {
+                            file: file
+                                .ok_or_else(|| IndexError::Invalid("path is required".into()))?,
+                        },
                     }
                 } else {
-                    let text = documents::read(ctx.workspace.root(), &path).await?;
+                    let path = resolved
+                        .as_ref()
+                        .ok_or_else(|| IndexError::Invalid("path is required".into()))?;
+                    let text = documents::read(ctx.workspace.root(), path).await?;
                     input_hash = Some(blake3::hash(text.as_bytes()).to_hex().to_string());
                     let position = documents::convert(
                         &text,
@@ -139,6 +176,8 @@ impl Tool for CodeTool {
                         "utf-32",
                         "utf-16",
                     )?;
+                    let file =
+                        file.ok_or_else(|| IndexError::Invalid("path is required".into()))?;
                     match self.name {
                         "code_definition" => Query::Definition {
                             file,
@@ -163,14 +202,21 @@ impl Tool for CodeTool {
                     .query(ctx.workspace.root(), query, &ctx.cancel)
                     .await?;
                 if let Some(hash) = input_hash {
-                    let current = documents::read(ctx.workspace.root(), &path).await?;
+                    let path = resolved
+                        .as_ref()
+                        .ok_or_else(|| IndexError::Invalid("path is required".into()))?;
+                    let current = documents::read(ctx.workspace.root(), path).await?;
                     if result.content_hash.as_ref() != Some(&hash)
                         || blake3::hash(current.as_bytes()).to_hex().as_str() != hash
                     {
                         return Err(IndexError::NotReady);
                     }
                 }
-                render(&ctx.workspace, result, limit).await
+                let mut value = render(&ctx.workspace, result, limit, offset).await?;
+                if query_mode {
+                    add_duplicate_hint(&mut value);
+                }
+                Ok(value)
             };
             let result = tokio::select! { biased;
                 _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
@@ -188,10 +234,17 @@ impl Tool for CodeTool {
     }
 }
 fn validate(name: &str, args: &Args) -> Result<(), ToolError> {
-    let invalid = if args.path.trim().is_empty() {
-        Some("path must not be empty")
-    } else if !(1..=200).contains(&args.limit.unwrap_or(50)) {
+    let path = args
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let invalid = if !(1..=200).contains(&args.limit.unwrap_or(50)) {
         Some("limit must be 1..200")
+    } else if args.offset.is_some_and(|offset| offset > 1_000_000) {
+        Some("offset must be at most 1000000")
+    } else if args.offset.is_some() && !matches!(name, "code_definition" | "code_references") {
+        Some("offset is only supported by code_definition and code_references")
     } else if name == "code_symbols" {
         if args.line.is_some() || args.column.is_some() || args.direction.is_some() {
             Some("symbol queries do not accept positions or direction")
@@ -201,9 +254,13 @@ fn validate(name: &str, args: &Args) -> Result<(), ToolError> {
             .is_some_and(|q| q.trim().is_empty() || q.chars().count() > 1024)
         {
             Some("query must contain 1..1024 characters")
+        } else if path.is_none() && args.query.is_none() {
+            Some("path is required unless query is set")
         } else {
             None
         }
+    } else if path.is_none() {
+        Some("path is required")
     } else if args.query.is_some() {
         Some("query is only supported by code_symbols")
     } else if args.line.unwrap_or(0) == 0 || args.column.unwrap_or(0) == 0 {
@@ -274,6 +331,7 @@ async fn render(
     workspace: &Workspace,
     result: QueryResult,
     limit: usize,
+    offset: usize,
 ) -> Result<Value, IndexError> {
     let mut locations = Locations {
         workspace,
@@ -281,6 +339,7 @@ async fn render(
     };
     let mut entries = Vec::new();
     let mut truncated = result.truncated;
+    let mut page = None;
     match result.data {
         QueryData::Symbols(items) => {
             let mut pending: Vec<_> = items
@@ -304,10 +363,42 @@ async fn render(
             }
         }
         QueryData::Locations(items) => {
-            truncated |= items.len() > limit;
-            for item in items.into_iter().take(limit) {
+            let total = items.len();
+            let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
+            for item in &items {
+                *file_counts
+                    .entry(
+                        workspace
+                            .relative(&item.path)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                    .or_default() += 1;
+            }
+            let mut items = items;
+            items.sort_by(|a, b| {
+                let a_local = workspace.relative(&a.path) != a.path;
+                let b_local = workspace.relative(&b.path) != b.path;
+                b_local
+                    .cmp(&a_local)
+                    .then(workspace.relative(&a.path).cmp(workspace.relative(&b.path)))
+                    .then(a.line.cmp(&b.line))
+                    .then(a.column.cmp(&b.column))
+                    .then(a.end_line.cmp(&b.end_line))
+                    .then(a.end_column.cmp(&b.end_column))
+            });
+            truncated |= offset.saturating_add(limit) < total;
+            for item in items.into_iter().skip(offset).take(limit) {
                 entries.push(locations.render(&item).await?);
             }
+            page = Some((
+                offset,
+                total,
+                file_counts
+                    .into_iter()
+                    .map(|(path, count)| json!({"path":path,"count":count}))
+                    .collect::<Vec<_>>(),
+            ));
         }
         QueryData::Calls(items) => {
             let mut budget = limit;
@@ -327,9 +418,140 @@ async fn render(
             }
         }
     }
-    Ok(
-        json!({"status":"ok","source":result.source,"coverage":result.coverage,"generation":result.generation,"completeness_known":result.completeness_known,"truncated":truncated,"limit":limit,"position_base":1,"entries":entries}),
-    )
+    let mut value = json!({"status":"ok","source":result.source,"coverage":result.coverage,"generation":result.generation,"completeness_known":result.completeness_known,"truncated":truncated,"limit":limit,"position_base":1,"entries":entries});
+    if let Some((offset, total, file_counts)) = page {
+        value["offset"] = json!(offset);
+        value["total"] = json!(total);
+        value["file_counts"] = json!(file_counts);
+    }
+    Ok(value)
+}
+
+/// Point the model at the disambiguating tool when a search returns same-name symbols.
+fn add_duplicate_hint(value: &mut Value) {
+    let Some(entries) = value["entries"].as_array() else {
+        return;
+    };
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in entries {
+        if let Some(name) = entry["name"].as_str() {
+            *counts.entry(name.to_string()).or_default() += 1;
+        }
+    }
+    let duplicates: Vec<_> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name)
+        .take(3)
+        .collect();
+    if duplicates.is_empty() {
+        return;
+    }
+    value["hint"] = json!(format!(
+        "Several returned symbols share a name ({}). Before renaming or editing one, call \
+         code_references on its declaration and edit only the returned locations; a same-named \
+         token may bind to another type, crate or import.",
+        duplicates.join(", ")
+    ));
+}
+
+/// Whether any project in this workspace can still answer semantic queries.
+pub(crate) fn available(manager: &CodeIndexManager, workspace: &Path) -> bool {
+    let Some(root) = canonical_root(workspace) else {
+        return false;
+    };
+    match manager.status(&root) {
+        Ok(status) => {
+            status.discovering
+                || status.projects.is_empty()
+                || status.projects.iter().any(|project| {
+                    !matches!(
+                        project.state,
+                        ServerState::Disabled | ServerState::Failed(_) | ServerState::Closed
+                    )
+                })
+        }
+        Err(_) => false,
+    }
+}
+
+/// Tell the model which languages can answer before it decides to try.
+fn index_note(manager: &CodeIndexManager, workspace: &Path) -> Option<String> {
+    let root = canonical_root(workspace)?;
+    let status = manager.status(&root).ok()?;
+    if status.discovering {
+        return Some(
+            "Semantic index is starting for this workspace; code_* may return not_ready until it \
+             finishes. Use read_file/grep meanwhile."
+                .into(),
+        );
+    }
+    if status.projects.is_empty() {
+        return Some(
+            "Semantic index found no supported project here; do not call code_* in this \
+             workspace. Use read_file/grep."
+                .into(),
+        );
+    }
+    let mut ready = BTreeSet::new();
+    let mut starting = BTreeSet::new();
+    let mut unavailable = BTreeSet::new();
+    for project in &status.projects {
+        let name = language_name(project.language);
+        match project.state {
+            ServerState::Ready => {
+                ready.insert(name);
+            }
+            ServerState::Idle | ServerState::Queued | ServerState::Starting => {
+                starting.insert(name);
+            }
+            ServerState::Failed(_) | ServerState::Disabled | ServerState::Closed => {
+                unavailable.insert(name);
+            }
+        }
+    }
+    let mut parts = Vec::new();
+    let has_ready = !ready.is_empty();
+    if !ready.is_empty() {
+        parts.push(format!(
+            "ready for {}",
+            ready.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !starting.is_empty() {
+        parts.push(format!(
+            "starting for {}",
+            starting.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !unavailable.is_empty() {
+        parts.push(format!(
+            "unavailable for {}",
+            unavailable.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let action = if !has_ready {
+        "code_* will return not_ready until a server is ready; use read_file/grep meanwhile."
+    } else {
+        "Call code_* before grep for symbol, reference and caller questions."
+    };
+    Some(format!("Semantic index {}. {action}", parts.join("; ")))
+}
+
+fn language_name(language: Language) -> &'static str {
+    match language {
+        Language::Rust => "Rust",
+        Language::TypeScript => "TypeScript",
+        Language::Python => "Python",
+        Language::Go => "Go",
+        Language::Java => "Java",
+    }
+}
+
+fn canonical_root(workspace: &Path) -> Option<PathBuf> {
+    Workspace::new(&workspace.to_string_lossy())
+        .ok()
+        .map(|workspace| workspace.root().to_path_buf())
 }
 
 #[cfg(test)]
@@ -353,6 +575,7 @@ mod tests {
             ("code_symbols", json!({"path":"a.rs","line":1})),
             ("code_symbols", json!({"path":"a.rs","query":" "})),
             ("code_symbols", json!({"path":"a.rs","limit":201})),
+            ("code_symbols", json!({})),
             (
                 "code_definition",
                 json!({"path":"a.rs","line":0,"column":1}),
@@ -360,6 +583,11 @@ mod tests {
             (
                 "code_references",
                 json!({"path":"a.rs","line":1,"column":1,"direction":"incoming"}),
+            ),
+            ("code_symbols", json!({"path":"a.rs","offset":1})),
+            (
+                "code_references",
+                json!({"path":"a.rs","line":1,"column":1,"offset":1000001}),
             ),
             ("code_calls", json!({"path":"a.rs","line":1,"column":1})),
         ] {
@@ -369,10 +597,31 @@ mod tests {
                 false
             );
         }
+        assert!(
+            registry.get("code_symbols").unwrap().parameters()["required"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        for (name, value) in [
+            ("code_symbols", json!({"query":"Data"})),
+            ("code_symbols", json!({"path":"","query":"Data"})),
+            (
+                "code_definition",
+                json!({"path":"a.rs","line":1,"column":1}),
+            ),
+            (
+                "code_references",
+                json!({"path":"a.rs","line":1,"column":1,"offset":200}),
+            ),
+        ] {
+            assert!(validate(name, &parse_args::<Args>(value).unwrap()).is_ok());
+        }
         for value in [
             json!({"path":"a.rs","extra":true}),
             json!({"path":"a.rs","line":1.5}),
             json!({"path":"a.rs","direction":"both"}),
+            json!({"path":"a.rs","line":1,"column":1,"offset":-1}),
         ] {
             assert!(parse_args::<Args>(value).is_err());
         }
@@ -419,10 +668,10 @@ mod tests {
                 ..child
             }]),
         };
-        let limited = render(&ctx.workspace, result.clone(), 1).await.unwrap();
+        let limited = render(&ctx.workspace, result.clone(), 1, 0).await.unwrap();
         assert_eq!(limited["truncated"], true);
         assert_eq!(limited["entries"][0]["location"]["column"], 3);
-        let full = render(&ctx.workspace, result, 50).await.unwrap();
+        let full = render(&ctx.workspace, result, 50, 0).await.unwrap();
         assert_eq!(full["entries"][1]["container"], "same");
         assert_eq!(full["source"], "sqlite");
         assert_eq!(full["truncated"], false);
@@ -449,5 +698,66 @@ mod tests {
         }
         assert!(locations.texts.is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn location_pages_expose_all_files() {
+        let (ctx, root, _owner) = super::super::test_support::context("code-page");
+        std::fs::write(root.join("a.rs"), "aaaa\nbbbb\ncccc\n").unwrap();
+        std::fs::write(root.join("b.rs"), "dddd\n").unwrap();
+        let location = |name: &str, line: u32| Location {
+            path: root.join(name),
+            line,
+            column: 0,
+            end_line: line,
+            end_column: 1,
+        };
+        let result = QueryResult {
+            content_hash: None,
+            source: QuerySource::Live,
+            coverage: QueryCoverage::default(),
+            generation: 5,
+            truncated: false,
+            completeness_known: false,
+            data: QueryData::Locations(vec![
+                location("a.rs", 0),
+                location("a.rs", 1),
+                location("a.rs", 2),
+                location("b.rs", 0),
+            ]),
+        };
+
+        let first = render(&ctx.workspace, result.clone(), 2, 0).await.unwrap();
+        assert_eq!(first["offset"], 0);
+        assert_eq!(first["total"], 4);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(first["file_counts"][0]["path"], "a.rs");
+        assert_eq!(first["file_counts"][0]["count"], 3);
+        assert_eq!(first["file_counts"][1]["path"], "b.rs");
+        assert_eq!(first["file_counts"][1]["count"], 1);
+
+        let second = render(&ctx.workspace, result, 2, 2).await.unwrap();
+        assert_eq!(second["offset"], 2);
+        assert_eq!(second["total"], 4);
+        assert_eq!(second["truncated"], false);
+        let entries = second["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["path"], "a.rs");
+        assert_eq!(entries[1]["path"], "b.rs");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_symbol_names_point_at_references() {
+        let mut ambiguous = json!({"entries":[{"name":"Data"},{"name":"Data"},{"name":"Style"}]});
+        add_duplicate_hint(&mut ambiguous);
+        let hint = ambiguous["hint"].as_str().unwrap();
+        assert!(hint.contains("Data"));
+        assert!(hint.contains("code_references"));
+
+        let mut unique = json!({"entries":[{"name":"Data"}]});
+        add_duplicate_hint(&mut unique);
+        assert!(unique.get("hint").is_none());
     }
 }

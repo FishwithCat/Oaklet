@@ -8,7 +8,8 @@ pub enum Query {
         file: String,
     },
     WorkspaceSymbols {
-        file: String,
+        /// `None` searches every ready project in the workspace.
+        file: Option<String>,
         query: String,
     },
     Definition {
@@ -30,13 +31,13 @@ pub enum Query {
 }
 
 impl Query {
-    pub(super) fn file(&self) -> &str {
+    pub(super) fn file(&self) -> Option<&str> {
         match self {
             Self::Symbols { file }
-            | Self::WorkspaceSymbols { file, .. }
             | Self::Definition { file, .. }
             | Self::References { file, .. }
-            | Self::Calls { file, .. } => file,
+            | Self::Calls { file, .. } => Some(file),
+            Self::WorkspaceSymbols { file, .. } => file.as_deref(),
         }
     }
 }
@@ -99,8 +100,11 @@ pub enum QuerySource {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct QueryCoverage {
+    /// The queried file matched disk when the result was produced.
     pub file_verified: bool,
+    /// The project snapshot used for routing was verified.
     pub project_verified: bool,
+    /// A live backend answered; this is not proof of complete indexing.
     pub semantic_ready: bool,
 }
 

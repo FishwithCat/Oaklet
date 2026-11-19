@@ -5,7 +5,7 @@
 //! lookup, approval, deadlines, and result normalization. The agent loop never
 //! matches on a tool name.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -172,6 +172,10 @@ pub trait Tool: Send + Sync {
     /// One system-prompt rule; omitted when empty.
     fn guidance(&self) -> &str {
         ""
+    }
+    /// Per-request runtime status (for example code-index readiness).
+    fn prompt_status(&self, _workspace: &Path) -> Option<String> {
+        None
     }
     /// Short pending-call summary (usually the touched path or command).
     fn summary(&self, _args: &Value) -> String {
@@ -381,13 +385,13 @@ impl ToolRegistry {
         cancel: &Cancel,
     ) -> Self {
         let mut registry = Self::new();
-        // Setup manages `Arc<AppState>` (SharedState), not `AppState` itself.
-        code::register(
-            &mut registry,
-            app.state::<crate::SharedState>().code_index.clone(),
-        );
-
         let workspace = PathBuf::from(&config.workspace);
+        // Setup manages `Arc<AppState>` (SharedState), not `AppState` itself.
+        let index = app.state::<crate::SharedState>().code_index.clone();
+        if code::available(&index, &workspace) {
+            code::register(&mut registry, index);
+        }
+
         let home = app.path().home_dir().ok();
         let catalog = tauri::async_runtime::spawn_blocking(move || {
             skill::SkillCatalog::discover(&workspace, home.as_deref())
@@ -489,6 +493,16 @@ impl ToolRegistry {
             .iter()
             .map(|tool| tool.guidance())
             .filter(|text| !text.is_empty() && seen.insert(*text))
+            .collect()
+    }
+
+    /// Runtime status lines for the system prompt, without duplicates.
+    pub fn prompt_status(&self, workspace: &Path) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.tools
+            .iter()
+            .filter_map(|tool| tool.prompt_status(workspace))
+            .filter(|text| seen.insert(text.clone()))
             .collect()
     }
 

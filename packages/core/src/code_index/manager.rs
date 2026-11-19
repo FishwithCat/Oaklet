@@ -9,8 +9,8 @@ use std::{
 };
 
 use super::{
-    CodeIndexConfig, Discovery, IndexError, InstallStatus, ProjectStatus, Query, QueryResult,
-    ServerState, WorkspaceStatus, install,
+    CodeIndexConfig, Discovery, IndexError, InstallStatus, ProjectStatus, Query, QueryCoverage,
+    QueryData, QueryResult, QuerySource, ServerState, WorkspaceStatus, install,
     language_servers::{LanguageServerManager, ProjectKey},
 };
 use crate::tools::{Cancel, CancelHandle, Workspace};
@@ -692,7 +692,10 @@ impl CodeIndexManager {
             return Err(IndexError::NotReady);
         }
         let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
-        let project = discovery.route(query.file()).map_err(IndexError::Invalid)?;
+        let file = query
+            .file()
+            .ok_or_else(|| IndexError::Invalid("A file is required for this query.".into()))?;
+        let project = discovery.route(file).map_err(IndexError::Invalid)?;
         let (status, key) = entry
             .projects
             .iter()
@@ -704,7 +707,7 @@ impl CodeIndexManager {
             _ => IndexError::NotReady,
         })?;
         let path = Workspace::new(&workspace.to_string_lossy())
-            .and_then(|workspace| workspace.resolve(query.file()))
+            .and_then(|workspace| workspace.resolve(file))
             .map_err(IndexError::Invalid)?;
         Ok((
             key,
@@ -721,6 +724,13 @@ impl CodeIndexManager {
         query: Query,
         cancel: &Cancel,
     ) -> Result<QueryResult, IndexError> {
+        if let Query::WorkspaceSymbols {
+            file: None,
+            query: text,
+        } = &query
+        {
+            return self.workspace_symbols(workspace, text, cancel).await;
+        }
         let (key, path, generation, revision, lifetime) = self.route(workspace, &query)?;
         let mut result = tokio::select! { biased; _ = lifetime.cancelled() => return Err(IndexError::Closed), result = self.servers.query(&key, &path, &query, cancel) => result }?;
         {
@@ -736,7 +746,8 @@ impl CodeIndexManager {
                 && let super::QueryData::Symbols(items) = &mut result.data
             {
                 let discovery = entry.discovery.as_ref().ok_or(IndexError::NotReady)?;
-                let project = discovery.route(query.file()).map_err(IndexError::Invalid)?;
+                let file = query.file().ok_or(IndexError::NotReady)?;
+                let project = discovery.route(file).map_err(IndexError::Invalid)?;
                 items.retain(|item| {
                     discovery
                         .route(&item.location.path.to_string_lossy())
@@ -753,6 +764,105 @@ impl CodeIndexManager {
             return Err(IndexError::NotReady);
         }
         Ok(result)
+    }
+
+    /// Search every ready project when the caller does not pin one file.
+    async fn workspace_symbols(
+        &self,
+        workspace: &Path,
+        text: &str,
+        cancel: &Cancel,
+    ) -> Result<QueryResult, IndexError> {
+        let (targets, generation, revision) = {
+            let workspaces = self.workspaces.lock().unwrap();
+            let entry = workspaces.get(workspace).ok_or(IndexError::Closed)?;
+            if entry.stale {
+                return Err(IndexError::NotReady);
+            }
+            if entry
+                .discovery
+                .as_ref()
+                .is_none_or(|discovery| discovery.projects.is_empty())
+            {
+                return Err(IndexError::NotReady);
+            }
+            let targets: Vec<_> = entry
+                .projects
+                .iter()
+                .filter_map(|(_, key)| key.clone())
+                .collect();
+            if targets.is_empty() {
+                return if entry
+                    .projects
+                    .iter()
+                    .all(|(status, _)| matches!(status.state, ServerState::Disabled))
+                {
+                    Err(IndexError::Disabled)
+                } else {
+                    Err(IndexError::NotReady)
+                };
+            }
+            (targets, entry.generation, entry.revision)
+        };
+        let query = Query::WorkspaceSymbols {
+            file: None,
+            query: text.to_string(),
+        };
+        let mut symbols = Vec::new();
+        let mut failure = None;
+        let mut answered = false;
+        for key in targets {
+            match self.servers.query(&key, &key.root, &query, cancel).await {
+                Ok(QueryResult {
+                    data: QueryData::Symbols(items),
+                    ..
+                }) => {
+                    answered = true;
+                    symbols.extend(items);
+                }
+                Ok(_) => answered = true,
+                Err(error) => failure = failure.or(Some(error)),
+            }
+        }
+        if !answered {
+            return Err(failure.unwrap_or(IndexError::NotReady));
+        }
+        {
+            let workspaces = self.workspaces.lock().unwrap();
+            let entry = workspaces
+                .get(workspace)
+                .filter(|entry| entry.generation == generation)
+                .ok_or(IndexError::Closed)?;
+            if entry.stale || entry.revision != revision {
+                return Err(IndexError::NotReady);
+            }
+            // Workspace-symbol responses may include configuration and generated
+            // paths a file-pinned query would have filtered out.
+            if let Some(discovery) = &entry.discovery {
+                symbols.retain(|symbol| {
+                    discovery
+                        .route(&symbol.location.path.to_string_lossy())
+                        .is_ok()
+                });
+            }
+        }
+        if symbols.is_empty() {
+            // A ready protocol does not prove the project is indexed yet.
+            return Err(IndexError::NotReady);
+        }
+        Ok(QueryResult {
+            content_hash: None,
+            source: QuerySource::Live,
+            coverage: QueryCoverage {
+                project_verified: true,
+                semantic_ready: true,
+                ..Default::default()
+            },
+            data: QueryData::Symbols(symbols),
+            generation,
+            truncated: false,
+            completeness_known: false,
+        })
     }
 
     /// Queue global settings on existing workspace workers; each worker serializes refreshes.

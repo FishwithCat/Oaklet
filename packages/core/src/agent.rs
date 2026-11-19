@@ -141,6 +141,19 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         }
         retry_directly = false;
 
+        // Index readiness can change between steps; keep the one-shot status
+        // line current so a late-starting server does not look permanently down.
+        if let Some(system) = messages.first_mut()
+            && system["role"] == "system"
+        {
+            system["content"] = json!(system_prompt(
+                &config,
+                &tools,
+                &model_sources,
+                instructions.render().as_deref(),
+            ));
+        }
+
         meter.set_schema_tokens(crate::context::estimate_text(&tools.schemas().to_string()));
         let _ = meter.prepare(&messages);
 
