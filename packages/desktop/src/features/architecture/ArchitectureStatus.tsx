@@ -98,16 +98,6 @@ export function ArchitectureBanners({
         </div>
       )}
 
-      {currentLoad?.error && !currentLoad.stale && (
-        <div className="arch-banner error" role="alert">
-          <WarningRegular size={15} />
-          <div>
-            <strong>{currentLoad.error}</strong>
-            <Diagnostics items={currentLoad.diagnostics} />
-          </div>
-        </div>
-      )}
-
       {currentLoad &&
         !currentLoad.stale &&
         !currentLoad.error &&
