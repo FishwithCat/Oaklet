@@ -2,7 +2,9 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  type PointerEvent as ReactPointerEvent,
   type Ref,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -10,6 +12,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { commandForTerminal } from "./terminal-command";
+import { scrollbarGeometry } from "./terminal-scrollbar";
 import { terminalTheme } from "./terminal-theme";
 import { useResolvedTheme } from "../settings/theme";
 
@@ -44,6 +47,14 @@ export function TerminalPane({
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startLine: number;
+    travel: number;
+  } | null>(null);
   const teardownRef = useRef<() => void>(() => {});
   const sessionIdRef = useRef<string | null>(null);
   const openedRef = useRef(false);
@@ -78,6 +89,73 @@ export function TerminalPane({
     }
   }
 
+  function syncScrollbar(term: XTerm) {
+    const track = trackRef.current;
+    const thumb = thumbRef.current;
+    if (!track || !thumb) return;
+    const buffer = term.buffer.active;
+    const geometry = scrollbarGeometry(
+      buffer.viewportY,
+      term.rows,
+      buffer.baseY + term.rows,
+      track.clientHeight,
+    );
+    track.style.visibility = geometry.hidden ? "hidden" : "visible";
+    if (geometry.hidden) return;
+    thumb.style.height = `${geometry.height}px`;
+    thumb.style.transform = `translateY(${geometry.top}px)`;
+  }
+
+  function onThumbPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    const term = termRef.current;
+    const track = trackRef.current;
+    if (!term || !track) return;
+    const travel = track.clientHeight - (thumbRef.current?.offsetHeight ?? 0);
+    if (travel <= 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startLine: term.buffer.active.viewportY,
+      travel,
+    };
+  }
+
+  function onThumbPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const term = termRef.current;
+    const drag = dragRef.current;
+    if (!term || !drag || event.pointerId !== drag.pointerId) return;
+    const range = term.buffer.active.baseY;
+    if (range <= 0) return;
+    const lines = ((event.clientY - drag.startY) / drag.travel) * range;
+    term.scrollToLine(Math.round(drag.startLine + lines));
+  }
+
+  function onThumbPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function onTrackPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    const term = termRef.current;
+    const thumb = thumbRef.current;
+    if (!term || !thumb) return;
+    event.preventDefault();
+    const above = event.clientY < thumb.getBoundingClientRect().top;
+    term.scrollPages(above ? -1 : 1);
+  }
+
+  function onTrackWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    const term = termRef.current;
+    if (!term || event.deltaY === 0) return;
+    term.scrollLines(event.deltaY > 0 ? 3 : -3);
+  }
+
   useEffect(() => {
     if (!active || termRef.current) return;
     const host = hostRef.current;
@@ -90,7 +168,7 @@ export function TerminalPane({
       fontSize: 12,
       lineHeight: 1.45,
       scrollback: 5000,
-      // xterm sizes its custom scrollbar from this width (14px by default).
+      // Reserves the right gutter that the overlay scrollbar draws in.
       overviewRuler: { width: 8 },
       theme: getTerminalTheme(),
     });
@@ -99,6 +177,7 @@ export function TerminalPane({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+    const sync = () => syncScrollbar(term);
 
     let disposed = false;
     const sessionId = newSessionId();
@@ -146,6 +225,7 @@ export function TerminalPane({
         termRef.current === term
       ) {
         fit.fit();
+        sync();
       }
     };
 
@@ -158,7 +238,11 @@ export function TerminalPane({
       if (openedRef.current) {
         void invoke("terminal_resize", { id: sessionId, cols, rows });
       }
+      sync();
     });
+    const stopScroll = term.onScroll(sync);
+    const stopWrite = term.onWriteParsed(sync);
+    const stopBuffer = term.buffer.onBufferChange(sync);
     const observer = new ResizeObserver(fitToHost);
     observer.observe(host);
 
@@ -213,6 +297,9 @@ export function TerminalPane({
       observer.disconnect();
       stopInput.dispose();
       stopResize.dispose();
+      stopScroll.dispose();
+      stopWrite.dispose();
+      stopBuffer.dispose();
       for (const unlisten of unlisteners) unlisten();
       void invoke("terminal_close", { id: sessionId });
       term.dispose();
@@ -234,6 +321,7 @@ export function TerminalPane({
       if (host && term && host.clientWidth > 0 && host.clientHeight > 0) {
         term.options.theme = getTerminalTheme();
         fitRef.current?.fit();
+        syncScrollbar(term);
       }
       term?.focus();
     });
@@ -254,11 +342,27 @@ export function TerminalPane({
   );
 
   return (
-    <div
-      className="terminal-screen"
-      ref={hostRef}
-      hidden={!active}
-      role="tabpanel"
-    />
+    <div className="terminal-pane" hidden={!active}>
+      <div className="terminal-screen" ref={hostRef} role="tabpanel" />
+      <div
+        className="terminal-scrollbar"
+        ref={trackRef}
+        aria-hidden="true"
+        onPointerDown={onTrackPointerDown}
+        onWheel={onTrackWheel}
+      >
+        <div
+          className="terminal-scrollbar-thumb"
+          ref={thumbRef}
+          onPointerDown={onThumbPointerDown}
+          onPointerMove={onThumbPointerMove}
+          onPointerUp={onThumbPointerUp}
+          onPointerCancel={onThumbPointerUp}
+          onLostPointerCapture={() => {
+            dragRef.current = null;
+          }}
+        />
+      </div>
+    </div>
   );
 }

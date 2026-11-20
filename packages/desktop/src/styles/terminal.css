@@ -10,19 +10,37 @@
   display: none;
 }
 
-.terminal-screen {
+.terminal-pane {
+  position: relative;
   flex: 1;
   min-height: 0;
-  padding: 10px 0 10px 12px;
-  overflow: hidden;
+  display: flex;
 }
 
-.terminal-screen[hidden] {
+.terminal-pane[hidden] {
   display: none;
+}
+
+.terminal-screen {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  /* The fit addon sizes rows/cols from this box's computed height and width.
+     content-box keeps the padding out of that measurement, so the grid fits
+     inside the inset and the bottom padding actually shows. */
+  box-sizing: content-box;
+  padding: 10px 0 8px 12px;
+  overflow: hidden;
 }
 
 .terminal-screen .xterm {
   height: 100%;
+}
+
+/* xterm sizes its scrollbar to the row grid, so it stops short of the bottom
+   padding. Hide it and draw a pane-height overlay scrollbar instead. */
+.terminal-screen .xterm-scrollable-element > .scrollbar {
+  display: none;
 }
 
 .terminal-screen .xterm-viewport {
@@ -34,4 +52,32 @@
 
 .terminal-screen .xterm-viewport::-webkit-scrollbar {
   display: none;
+}
+
+.terminal-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 2;
+  visibility: hidden;
+  touch-action: none;
+}
+
+.terminal-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--border-strong);
+  background-clip: padding-box;
+  cursor: default;
+}
+
+.terminal-scrollbar-thumb:hover {
+  background-color: var(--muted);
 }
