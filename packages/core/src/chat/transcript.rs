@@ -131,27 +131,25 @@ fn project_events(events: &[Event]) -> Vec<Value> {
 
     for event in events {
         match &event.payload {
-            EventPayload::ToolTrim { .. } => {},
+            EventPayload::ToolTrim { .. } => {}
             EventPayload::Notice { tone, text } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,
                 "tone": tone,
                 "text": text,
             })),
-            EventPayload::Compaction { before, after, .. } | EventPayload::Context { before, after, .. } => items.push(json!({
+            EventPayload::Compaction { before, after, .. }
+            | EventPayload::Context { before, after, .. } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,
                 "tone": "muted",
                 "text": format!(
-                    "Compacted context: {} → {} tokens. Earlier messages stay readable with history_read.",
+                    "Compacted context: {} → {} tokens.",
                     format_tokens(*before),
                     format_tokens(*after)
                 ),
             })),
-            EventPayload::Message {
-                message,
-                display,
-            } => {
+            EventPayload::Message { message, display } => {
                 if display_flag(display.as_ref(), "hidden") {
                     continue;
                 }

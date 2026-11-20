@@ -249,6 +249,37 @@ fn a_user_message_that_quotes_a_checkpoint_marker_stays_visible() {
 }
 
 #[test]
+fn compaction_notice_names_the_token_drop_without_the_history_hint() {
+    let events = vec![
+        Event {
+            seq: 1,
+            created_at: 1,
+            payload: EventPayload::Compaction {
+                summary: json!({ "role": "user", "content": "summary" }),
+                shadowed_through: 0,
+                before: 81_000,
+                after: 13_000,
+            },
+        },
+        Event {
+            seq: 2,
+            created_at: 2,
+            payload: EventPayload::Context {
+                surface: Vec::new(),
+                archived: Vec::new(),
+                before: 81_000,
+                after: 13_000,
+            },
+        },
+    ];
+    let items = project_events(&events);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["kind"], "notice");
+    assert_eq!(items[0]["text"], "Compacted context: 79k → 13k tokens.");
+    assert_eq!(items[1]["text"], "Compacted context: 79k → 13k tokens.");
+}
+
+#[test]
 fn a_finished_run_projects_back_to_the_same_rows() {
     let state = ChatState::in_memory();
     state.store.create_session("s1", "/tmp/ws", 1).unwrap();
