@@ -53,9 +53,15 @@ impl AppState {
     }
 }
 
-pub(crate) fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn setup(
+    app: &mut App,
+    shell_environment: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(log_dir) = app.path().app_log_dir() {
         log::init(log_dir.join("oaklet.log"));
+    }
+    if let Some(warning) = shell_environment {
+        log::key(format_args!("[oaklet] {warning}"));
     }
     let config_path = app.path().app_config_dir()?.join("config.json");
     let mut config = read_config(&config_path).unwrap_or_default();
