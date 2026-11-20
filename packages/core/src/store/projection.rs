@@ -1,7 +1,15 @@
 //! Exact context references. Legacy prefix records are decoded only here.
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::events::{
+    append_events, checkpoint, decode_event, is_checkpoint, next_seq, read_from, tool_trims,
+};
+use super::{EventPayload, Store};
 use crate::context::{MessageId, identify, message_id};
-use serde_json::json;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceEntry {
@@ -340,7 +348,7 @@ pub(super) fn index_legacy_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{CompactionEnd, CompactionRecord, NewUserTurn, RunEnd};
+    use crate::store::{CompactionEnd, CompactionRecord, ContextUsage, NewUserTurn, RunEnd};
 
     fn message(message: Value) -> EventPayload {
         EventPayload::Message {
