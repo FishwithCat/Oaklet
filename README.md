@@ -56,9 +56,14 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Multiple tabs, each titled by its first prompt and with its own conversation
   and draft. **⌘N** opens a tab, **⌘X** closes the active one, and **⌘R** opens
   History, where you can restore a saved session. Sessions live in
-  the backend, so they survive a restart; a live run keeps streaming while you
-  switch tabs, but quitting Oaklet stops it and the next start marks it
-  interrupted.
+  the backend, so they survive a restart. Reopening a workspace restores the
+  last saved session you viewed, even if another session was updated more
+  recently; if it is gone or the preference cannot be read, the most recently
+  updated session opens instead, and a workspace with no history starts a blank
+  chat. Only that one tab reopens: extra tabs, blank tabs, and unsent drafts end
+  with the window, and picking a session in History makes it the next restore
+  target. A live run keeps streaming while you switch tabs, but quitting Oaklet
+  stops it and the next start marks it interrupted.
 - Each window belongs to one workspace. Opening the same folder again focuses
   its existing window instead of creating a second one. A second app launch
   focuses the last active window; `oaklet --workspace <path>` opens or focuses
@@ -296,9 +301,10 @@ recovered at startup) to `oaklet.log` in the platform log directory, for example
 
 ## Status
 
-Initial MVP. Open chat tabs and drafts are in memory (a restart clears them;
-every session remains in History), there is no multi-device server, and chat
-code blocks have no syntax highlighting.
+Initial MVP. Open chat tabs and drafts are in memory: a restart reopens the last
+saved session you viewed (or the most recently updated one), while extra tabs
+and unsent drafts are cleared. Every session remains in History. There is no
+multi-device server, and chat code blocks have no syntax highlighting.
 
 ## License
 
