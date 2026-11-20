@@ -38,7 +38,7 @@ async fn check(base_url: &str, api_key: &str, model: &str) -> Result<ConnectionT
         return Err("Model is required.".into());
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::shell_env::configure_http(reqwest::Client::builder())
         .timeout(TIMEOUT)
         .build()
         .map_err(|err| format!("Could not prepare the connection test: {err}"))?;

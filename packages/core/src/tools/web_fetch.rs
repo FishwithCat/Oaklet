@@ -88,7 +88,7 @@ async fn fetch(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
         ));
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::shell_env::configure_http(reqwest::Client::builder())
         .connect_timeout(Duration::from_secs(10))
         .timeout(FETCH_TIMEOUT)
         .user_agent("Oaklet/0.1")

@@ -27,9 +27,6 @@ pub use windows::WindowRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Before Tauri starts threads: Finder and Dock launches inherit only
-    // launchd's environment, so rebuild it from the user's login shell once.
-    let shell_environment = shell_env::hydrate();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             windows::handle_second_instance(app, &args);
@@ -37,7 +34,7 @@ pub fn run() {
         .on_window_event(windows::handle_window_event)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |app| app::setup(app, shell_environment))
+        .setup(app::setup)
         .invoke_handler(tauri::generate_handler![
             config::load_config,
             windows::window_workspace,

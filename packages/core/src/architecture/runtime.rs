@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use super::RuntimeStatus;
+use crate::shell_env::{self, ApplyEnvironment};
 
 pub(crate) fn find_node() -> Option<PathBuf> {
     if let Some(path) = env::var_os("OAKLET_NODE") {
@@ -19,7 +20,7 @@ pub(crate) fn find_node() -> Option<PathBuf> {
 
     let mut candidates = BTreeSet::new();
 
-    if let Some(path) = env::var_os("PATH") {
+    if let Some(path) = shell_env::var_os("PATH") {
         for directory in env::split_paths(&path) {
             candidates.insert(directory.join(node_name()));
         }
@@ -55,7 +56,7 @@ pub(crate) fn find_node() -> Option<PathBuf> {
         }
     }
 
-    if let Some(home) = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
+    if let Some(home) = shell_env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")) {
         let home = PathBuf::from(home);
         if cfg!(windows) {
             candidates.insert(home.join("AppData/Roaming/npm/node.exe"));
@@ -104,10 +105,10 @@ fn add_versioned_nodes(candidates: &mut BTreeSet<PathBuf>, root: &Path, suffix: 
 }
 
 fn node_version(node: &Path) -> Option<String> {
-    let output = std::process::Command::new(node)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new(node);
+    command.arg("--version");
+    command.apply_environment();
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }

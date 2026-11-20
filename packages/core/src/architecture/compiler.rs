@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::{Diagnostic, ViewInfo};
+use crate::shell_env::ApplyEnvironment;
 
 const MAX_HELPER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HELPER_STDERR_BYTES: usize = 64 * 1024;
@@ -48,13 +49,16 @@ async fn run_helper_with_timeout(
     timeout: Duration,
 ) -> Result<HelperResponse, String> {
     let script = helper.join("src").join("compile.mjs");
-    let mut child = Command::new(node)
+    let mut command = Command::new(node);
+    command
         .arg(&script)
         .current_dir(helper)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    command.apply_environment();
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the LikeC4 compiler: {error}"))?;
 

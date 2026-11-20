@@ -1,9 +1,13 @@
-//! Rebuild the process environment from the user's login shell.
+//! Rebuild child environments from the user's login shell.
 //!
 //! Finder and Dock launches give a macOS app launchd's minimal environment, so
 //! variables exported by `~/.zprofile` or `~/.zshrc` never reach it. Read the
-//! login shell once at startup and merge its environment back into this process
-//! so every child (agent shell, terminal, git hook, MCP server) inherits it.
+//! login shell once in the background and apply its environment to every child
+//! (agent shell, terminal, git hook, MCP server). The window never waits for
+//! the shell, and the process environment is left alone: `set_var` is not safe
+//! once Tauri has started threads.
+
+use std::ffi::{OsStr, OsString};
 
 #[cfg(unix)]
 mod imp {
@@ -14,13 +18,15 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::mpsc::{self, RecvTimeoutError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Once, OnceLock};
     use std::time::{Duration, Instant};
 
     const DELIMITER: &str = "_OAKLET_SHELL_ENV_DELIMITER_";
     const DUMP: &str = "printf '\\0%s\\0' '_OAKLET_SHELL_ENV_DELIMITER_'; command env -0 || exit; printf '\\0%s\\0' '_OAKLET_SHELL_ENV_DELIMITER_'; exit";
     const TIMEOUT: Duration = Duration::from_secs(10);
     const MAX_OUTPUT: usize = 4 * 1024 * 1024;
+    static ENVIRONMENT: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+    static START: Once = Once::new();
     /// Variables describing the probe shell, plus launcher-owned configuration
     /// the shell must not overwrite.
     const SKIPPED: [&str; 7] = [
@@ -33,22 +39,54 @@ mod imp {
         "ZSH_TMUX_AUTOSTART",
     ];
 
-    /// Read the login shell environment and apply it to this process.
+    /// Start reading the login shell environment in the background.
     ///
-    /// Returns a diagnostic when every candidate fails; the app then keeps the
-    /// inherited environment. Must run before Tauri starts threads or children.
-    pub(crate) fn hydrate() -> Option<String> {
+    /// Returns immediately so the window can appear while the shell starts.
+    /// The captured environment is applied to child processes through
+    /// [`super::ApplyEnvironment`].
+    pub(crate) fn start() {
+        START.call_once(|| {
+            if let Err(error) = std::thread::Builder::new()
+                .name("login-shell-env".into())
+                .spawn(|| match capture() {
+                    Ok(environment) => {
+                        let _ = ENVIRONMENT.set(environment);
+                    }
+                    Err(reason) => crate::log::key(format_args!("[oaklet] {reason}")),
+                })
+            {
+                crate::log::key(format_args!(
+                    "[oaklet] could not start the login shell environment probe: {error}"
+                ));
+            }
+        });
+    }
+
+    /// The filtered login-shell environment, once the background probe finishes.
+    pub(crate) fn environment() -> Option<&'static [(OsString, OsString)]> {
+        ENVIRONMENT.get().map(Vec::as_slice)
+    }
+
+    fn capture() -> Result<Vec<(OsString, OsString)>, String> {
         let mut failures = Vec::new();
         for shell in candidates() {
             match read_environment(&shell, TIMEOUT) {
                 Ok(environment) => {
-                    apply(&environment);
-                    return None;
+                    return Ok(environment
+                        .into_iter()
+                        .filter(|(key, _)| !skip(key))
+                        .collect());
                 }
-                Err(reason) => failures.push(format!("{}: {reason}", shell.display())),
+                Err(reason) => {
+                    crate::log::key(format_args!(
+                        "[oaklet] could not read {}: {reason}",
+                        shell.display()
+                    ));
+                    failures.push(format!("{}: {reason}", shell.display()));
+                }
             }
         }
-        Some(format!(
+        Err(format!(
             "could not read the login shell environment ({}); tool commands will use the inherited environment",
             failures.join("; ")
         ))
@@ -237,19 +275,6 @@ mod imp {
         Some(environment)
     }
 
-    fn apply(environment: &[(OsString, OsString)]) {
-        for (key, value) in environment {
-            if skip(key) {
-                continue;
-            }
-            // SAFETY: `run` calls hydrate before Tauri creates any thread or
-            // child, so no other thread can read the environment concurrently.
-            unsafe {
-                std::env::set_var(key, value);
-            }
-        }
-    }
-
     fn skip(key: &OsStr) -> bool {
         let key = key.as_bytes();
         SKIPPED.iter().any(|skipped| key == skipped.as_bytes()) || key.starts_with(b"OAKLET_")
@@ -375,9 +400,152 @@ mod imp {
 }
 
 #[cfg(unix)]
-pub(crate) use imp::hydrate;
+pub(crate) use imp::start;
 
 #[cfg(not(unix))]
-pub(crate) fn hydrate() -> Option<String> {
-    None
+pub(crate) fn start() {}
+
+/// Add the captured login-shell environment to a child process.
+pub(crate) trait ApplyEnvironment {
+    fn apply_environment(&mut self);
+}
+
+fn snapshot() -> Option<&'static [(OsString, OsString)]> {
+    #[cfg(unix)]
+    {
+        imp::environment()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Look up a variable in the captured environment before the inherited one.
+///
+/// Child commands inherit the overlay directly; this is for the few callers
+/// that need to inspect a value themselves, such as locating Node on `PATH`.
+pub(crate) fn var_os(key: &str) -> Option<OsString> {
+    snapshot()
+        .and_then(|environment| {
+            environment
+                .iter()
+                .rev()
+                .find(|(name, _)| name.as_os_str() == OsStr::new(key))
+                .map(|(_, value)| value.clone())
+        })
+        .or_else(|| std::env::var_os(key))
+}
+
+/// Apply the login-shell proxy variables to a reqwest client.
+///
+/// Reqwest reads proxy variables when the client is built, so the child
+/// environment overlay is not enough for model, MCP, and web requests.
+pub(crate) fn configure_http(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let Some(environment) = snapshot() else {
+        return builder;
+    };
+    let value = |key: &str| -> Option<String> {
+        environment
+            .iter()
+            .rev()
+            .find(|(name, _)| name.as_os_str() == OsStr::new(key))
+            .and_then(|(_, value)| value.to_str())
+            .map(str::to_owned)
+    };
+    let all = value("ALL_PROXY").or_else(|| value("all_proxy"));
+    let http = value("HTTP_PROXY")
+        .or_else(|| value("http_proxy"))
+        .or_else(|| all.clone());
+    let https = value("HTTPS_PROXY")
+        .or_else(|| value("https_proxy"))
+        .or(all);
+    if http.is_none() && https.is_none() {
+        return builder;
+    }
+    let no_proxy = value("NO_PROXY")
+        .or_else(|| value("no_proxy"))
+        .or_else(|| std::env::var("NO_PROXY").ok())
+        .or_else(|| std::env::var("no_proxy").ok())
+        .and_then(|raw| reqwest::NoProxy::from_string(&raw));
+
+    let mut builder = builder;
+    if let Some(proxy) = http {
+        match reqwest::Proxy::http(&proxy) {
+            Ok(proxy) => builder = builder.proxy(proxy.no_proxy(no_proxy.clone())),
+            Err(error) => {
+                crate::log::key(format_args!("[oaklet] ignoring HTTP_PROXY: {error}"));
+            }
+        }
+    }
+    if let Some(proxy) = https {
+        match reqwest::Proxy::https(&proxy) {
+            Ok(proxy) => builder = builder.proxy(proxy.no_proxy(no_proxy)),
+            Err(error) => {
+                crate::log::key(format_args!("[oaklet] ignoring HTTPS_PROXY: {error}"));
+            }
+        }
+    }
+    builder
+}
+
+impl ApplyEnvironment for std::process::Command {
+    fn apply_environment(&mut self) {
+        if let Some(environment) = snapshot() {
+            apply_to_std(self, environment);
+        }
+    }
+}
+
+fn apply_to_std(command: &mut std::process::Command, environment: &[(OsString, OsString)]) {
+    command.envs(
+        environment
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str())),
+    );
+}
+
+impl ApplyEnvironment for tokio::process::Command {
+    fn apply_environment(&mut self) {
+        if let Some(environment) = snapshot() {
+            self.envs(
+                environment
+                    .iter()
+                    .map(|(key, value)| (key.as_os_str(), value.as_os_str())),
+            );
+        }
+    }
+}
+
+impl ApplyEnvironment for portable_pty::CommandBuilder {
+    fn apply_environment(&mut self) {
+        if let Some(environment) = snapshot() {
+            for (key, value) in environment {
+                self.env(key, value);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use std::ffi::OsString;
+
+    use super::apply_to_std;
+
+    #[cfg(unix)]
+    #[test]
+    fn child_commands_receive_the_captured_environment() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "printf %s \"$OAKLET_TEST_VALUE\""]);
+        apply_to_std(
+            &mut command,
+            &[(
+                OsString::from("OAKLET_TEST_VALUE"),
+                OsString::from("from-login-shell"),
+            )],
+        );
+        let output = command.output().expect("run sh");
+        assert_eq!(output.stdout, b"from-login-shell");
+    }
 }

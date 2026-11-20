@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
 use super::{ApprovalRequest, Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use crate::shell_env::ApplyEnvironment;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: usize = 1_000_000;
@@ -225,10 +226,12 @@ pub(super) fn shell_command(command: &str) -> tokio::process::Command {
     if cfg!(windows) {
         let mut process = tokio::process::Command::new("cmd");
         process.args(["/C", command]);
+        process.apply_environment();
         process
     } else {
         let mut process = tokio::process::Command::new("sh");
         process.args(["-c", command]);
+        process.apply_environment();
         process
     }
 }

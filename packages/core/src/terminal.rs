@@ -11,6 +11,8 @@ use std::thread;
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::shell_env::ApplyEnvironment;
+
 pub(crate) mod commands;
 
 /// A chunk of raw terminal output, or the shell's final exit code.
@@ -126,6 +128,8 @@ fn spawn_shell(
         None => CommandBuilder::new_default_prog(),
     };
     command.cwd(workspace);
+    command.apply_environment();
+    // Keep the terminal's own values even if the login shell exports these.
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
 

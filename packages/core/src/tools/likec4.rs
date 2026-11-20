@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 use crate::architecture::read_capped;
+use crate::shell_env::ApplyEnvironment;
 
 pub struct LikeC4 {
     pub node: Option<PathBuf>,
@@ -83,14 +84,17 @@ impl Tool for LikeC4 {
                     .to_string(),
             )?;
             let helper = self.helper.as_ref().ok_or("LikeC4 MCP helper is missing. Install architecture-helper dependencies or reinstall Oaklet.".to_string())?;
-            let mut child = tokio::process::Command::new(node)
+            let mut command = tokio::process::Command::new(node);
+            command
                 .arg(helper.join("src/mcp.mjs"))
                 .arg(ctx.workspace.root())
                 .current_dir(helper)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .kill_on_drop(true)
+                .kill_on_drop(true);
+            command.apply_environment();
+            let mut child = command
                 .spawn()
                 .map_err(|error| format!("Could not start LikeC4 MCP: {error}"))?;
             let mut stdin = child.stdin.take().unwrap();

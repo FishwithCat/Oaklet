@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 
 use super::web_fetch::read_limited;
 use super::{Cancel, Tool, ToolContext, ToolError, ToolOutput, cap};
+use crate::shell_env::ApplyEnvironment;
 use crate::{McpServerConfig, McpTransport};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -533,6 +534,8 @@ struct StdioClient {
 impl StdioClient {
     fn start(name: &str, server: &McpServerConfig, workspace: &Path) -> Result<Self, String> {
         let mut command = Command::new(&server.command);
+        // Server-specific environment below must win over the login shell.
+        command.apply_environment();
         command
             .args(&server.args)
             .envs(&server.env)
@@ -660,7 +663,7 @@ impl HttpClient {
                 .map_err(|_| format!("Invalid value for header {name}"))?;
             headers.insert(name, value);
         }
-        let client = reqwest::Client::builder()
+        let client = crate::shell_env::configure_http(reqwest::Client::builder())
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(60))
             .build()

@@ -6,6 +6,7 @@ use serde::Serialize;
 use tauri::{State, WebviewWindow};
 
 use crate::SharedState;
+use crate::shell_env::ApplyEnvironment;
 use crate::windows::workspace_for_window;
 
 #[derive(Serialize)]
@@ -45,11 +46,14 @@ const NULL_DEVICE: &str = "NUL";
 const NULL_DEVICE: &str = "/dev/null";
 
 fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("--literal-pathspecs")
         .arg("-C")
         .arg(workspace)
-        .args(args)
+        .args(args);
+    command.apply_environment();
+    let output = command
         .output()
         .map_err(|error| format!("Could not run git: {error}"))?;
 
@@ -69,13 +73,16 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
 
 fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String, String> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("--literal-pathspecs")
         .arg("-C")
         .arg(workspace)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.apply_environment();
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not run git: {error}"))?;
     let stdout = child.stdout.take().unwrap();

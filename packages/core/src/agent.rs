@@ -40,7 +40,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         return;
     }
 
-    let client = match reqwest::Client::builder()
+    let client = match crate::shell_env::configure_http(reqwest::Client::builder())
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
         .build()
