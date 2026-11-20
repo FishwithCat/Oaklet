@@ -10,6 +10,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { commandForTerminal } from "./terminal-command";
+import { terminalTheme } from "./terminal-theme";
 import { useResolvedTheme } from "../settings/theme";
 
 type TerminalOutput = { id: string; sequence: number; data: number[] };
@@ -22,30 +23,7 @@ export type TerminalPaneHandle = {
 
 function getTerminalTheme() {
   const style = getComputedStyle(document.documentElement);
-  return {
-    background: "rgba(0, 0, 0, 0)",
-    foreground: style.getPropertyValue("--text").trim(),
-    cursor: style.getPropertyValue("--accent").trim(),
-    cursorAccent: style.getPropertyValue("--bg").trim(),
-    selectionBackground: style.getPropertyValue("--terminal-selection").trim(),
-    overviewRulerBorder: "rgba(0, 0, 0, 0)",
-    black: style.getPropertyValue("--terminal-black").trim(),
-    red: style.getPropertyValue("--terminal-red").trim(),
-    green: style.getPropertyValue("--terminal-green").trim(),
-    yellow: style.getPropertyValue("--terminal-yellow").trim(),
-    blue: style.getPropertyValue("--terminal-blue").trim(),
-    magenta: style.getPropertyValue("--terminal-magenta").trim(),
-    cyan: style.getPropertyValue("--terminal-cyan").trim(),
-    white: style.getPropertyValue("--terminal-white").trim(),
-    brightBlack: style.getPropertyValue("--terminal-bright-black").trim(),
-    brightRed: style.getPropertyValue("--terminal-bright-red").trim(),
-    brightGreen: style.getPropertyValue("--terminal-bright-green").trim(),
-    brightYellow: style.getPropertyValue("--terminal-bright-yellow").trim(),
-    brightBlue: style.getPropertyValue("--terminal-bright-blue").trim(),
-    brightMagenta: style.getPropertyValue("--terminal-bright-magenta").trim(),
-    brightCyan: style.getPropertyValue("--terminal-bright-cyan").trim(),
-    brightWhite: style.getPropertyValue("--terminal-bright-white").trim(),
-  };
+  return terminalTheme((property) => style.getPropertyValue(property));
 }
 
 export function newSessionId(): string {
@@ -106,7 +84,6 @@ export function TerminalPane({
     if (!host) return;
 
     const term = new XTerm({
-      allowTransparency: true,
       cursorBlink: true,
       fontFamily:
         'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace',
