@@ -149,7 +149,6 @@ pub(crate) fn find_helper(app: &AppHandle) -> Option<PathBuf> {
     candidates.push(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("..")
             .join("architecture-helper"),
     );
     if let Ok(executable) = env::current_exe() {

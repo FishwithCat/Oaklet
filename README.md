@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="desktop/src/assets/oaklet-icon.png" width="170" alt="Oaklet logo">
+  <img src="packages/desktop/src/assets/oaklet-icon.png" width="170" alt="Oaklet logo">
 </p>
 
 # Oaklet

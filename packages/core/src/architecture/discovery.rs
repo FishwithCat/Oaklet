@@ -566,7 +566,6 @@ mod tests {
     fn discovers_no_models_in_a_workspace_without_one() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("..")
             .join("architecture-helper/test/fixtures/no-model");
         let workspace = Workspace::new(fixture.to_str().unwrap()).unwrap();
 

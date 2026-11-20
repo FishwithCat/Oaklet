@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.oaklet.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --dir ../desktop run dev",
+    "beforeDevCommand": "pnpm --dir desktop run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --dir ../desktop run build",
-    "frontendDist": "../../desktop/dist"
+    "beforeBuildCommand": "pnpm --dir desktop run build",
+    "frontendDist": "../desktop/dist"
   },
   "app": {
     "windows": [
@@ -28,9 +28,9 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../../architecture-helper/src": "architecture-helper/src",
-      "../../architecture-helper/node_modules": "architecture-helper/node_modules",
-      "../../architecture-helper/package.json": "architecture-helper/package.json"
+      "../architecture-helper/src": "architecture-helper/src",
+      "../architecture-helper/node_modules": "architecture-helper/node_modules",
+      "../architecture-helper/package.json": "architecture-helper/package.json"
     },
     "icon": [
       "icons/32x32.png",

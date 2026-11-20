@@ -794,7 +794,7 @@ mod tests {
     #[tokio::test]
     async fn compiles_cross_directory_references_without_a_root_file_or_config() {
         let node = find_node().expect("Node is required for the compiler integration test");
-        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../architecture-helper");
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../architecture-helper");
         let fixture = helper.join("test/fixtures/scattered");
         let workspace = Workspace::new(fixture.to_str().unwrap()).unwrap();
         let (models, _) = discover_models(&workspace, false).unwrap();
@@ -827,7 +827,6 @@ mod tests {
             return;
         };
         let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
             .join("..")
             .join("architecture-helper");
         if !helper_ready(&helper) {

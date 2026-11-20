@@ -169,7 +169,7 @@ mod tests {
         let node =
             crate::architecture::find_node().expect("Node is required for MCP integration tests");
         let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../architecture-helper")
+            .join("../architecture-helper")
             .canonicalize()
             .unwrap();
         let workspace =

@@ -10,7 +10,7 @@
     "build": "tsc && vite build",
     "test": "node --experimental-strip-types --test test/*.test.mjs",
     "preview": "vite preview",
-    "tauri": "cd ../packages/core && tauri"
+    "tauri": "cd ../core && tauri"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

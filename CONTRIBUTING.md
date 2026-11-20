@@ -2,10 +2,11 @@
 
 Oaklet is a small Tauri 2 app with three parts:
 
-- `desktop/` — React/TypeScript UI (Vite)
+- `packages/desktop/` — React/TypeScript UI (Vite)
 - `packages/core/` — Rust backend (Tauri app, agent loop, tools, sessions and
   runs in SQLite)
-- `architecture-helper/` — pinned LikeC4 preview compiler and agent MCP bridge
+- `packages/architecture-helper/` — pinned LikeC4 preview compiler and agent MCP
+  bridge
 
 For how to use the app, see [README.md](README.md).
 
@@ -24,11 +25,11 @@ From the repository root, install the commit hooks and commitlint:
 pnpm install
 ```
 
-Then install frontend dependencies and start the desktop app:
+Then install frontend dependencies and start the desktop app from the repository
+root:
 
 ```sh
-cd desktop
-pnpm install
+pnpm --dir packages/desktop install
 pnpm tauri dev
 ```
 
@@ -36,7 +37,7 @@ Install the architecture helper once before opening the Architecture view or
 building a bundle:
 
 ```sh
-cd architecture-helper
+cd packages/architecture-helper
 pnpm install
 ```
 
@@ -47,8 +48,9 @@ the problem and the rest of Oaklet keeps working.
 
 ### Frontend only
 
-`pnpm dev` serves the UI in a browser. There is no Tauri IPC there, so it is
-only useful for styling. `pnpm build` builds the frontend.
+From the repository root, `pnpm dev` serves the UI in a browser. There is no
+Tauri IPC there, so it is only useful for styling. `pnpm build` builds the
+frontend.
 
 ### Checks
 
@@ -59,19 +61,19 @@ cargo clippy --all-targets
 ```
 
 ```sh
-cd architecture-helper
+cd packages/architecture-helper
 pnpm test
 ```
 
 ```sh
-cd desktop
+cd packages/desktop
 pnpm test
 ```
 
 ### Packaging
 
-Before packaging, make sure `architecture-helper/node_modules` exists; Tauri
-embeds that directory as an application resource. The packaged helper is
+Before packaging, make sure `packages/architecture-helper/node_modules` exists;
+Tauri embeds that directory as an application resource. The packaged helper is
 resolved from the app's resource directory, while development builds fall back
 to the helper in the Oaklet checkout. A universal macOS bundle must include both
 `@esbuild/darwin-arm64` and `@esbuild/darwin-x64`; the release workflow installs
@@ -311,13 +313,13 @@ server (1.60.0). Call it with `{}` to discover tool names and input schemas,
 then with `{"tool":"list-projects","arguments":{}}` to find projects. Other
 tools query elements, views, and relationships using those schemas.
 
-It uses the same Node runtime and installed `architecture-helper` dependencies
-as the preview; no global CLI, server port, or runtime package download is
-needed. Each call loads the current workspace afresh, so edits are visible on
-the next call. Calls use MCP initialization, tool discovery, and tool invocation
-over local stdio streams inside one helper process. Cancellation or the
-60-second deadline stops that process. Missing dependencies and MCP errors become
-tool errors; ordinary chat and file tools remain usable.
+It uses the same Node runtime and installed `packages/architecture-helper`
+dependencies as the preview; no global CLI, server port, or runtime package
+download is needed. Each call loads the current workspace afresh, so edits are
+visible on the next call. Calls use MCP initialization, tool discovery, and
+tool invocation over local stdio streams inside one helper process.
+Cancellation or the 60-second deadline stops that process. Missing dependencies
+and MCP errors become tool errors; ordinary chat and file tools remain usable.
 
 Unlike data-only preview compilation, the official MCP loader may execute
 workspace LikeC4 configuration and read files it references. LikeC4 MCP calls

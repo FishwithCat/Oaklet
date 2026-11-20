@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: desktop
+        working-directory: packages/desktop
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
+          cache-dependency-path: packages/desktop/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: architecture-helper
+        working-directory: packages/architecture-helper
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +54,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: architecture-helper/pnpm-lock.yaml
+          cache-dependency-path: packages/architecture-helper/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
@@ -78,10 +78,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: architecture-helper/pnpm-lock.yaml
+          cache-dependency-path: packages/architecture-helper/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
-        working-directory: architecture-helper
+        working-directory: packages/architecture-helper
 
       - uses: dtolnay/rust-toolchain@stable
         # clippy and rustfmt are included by default.
