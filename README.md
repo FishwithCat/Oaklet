@@ -14,6 +14,9 @@ runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 
 ## Install
 
+Oaklet currently supports macOS only (Apple Silicon and Intel). Windows and
+Linux are not supported yet.
+
 Download the latest `.dmg` from
 [Releases](https://github.com/FishwithCat/Oaklet/releases/latest), open it, and
 drag Oaklet into Applications. If no build is available there, build from source
