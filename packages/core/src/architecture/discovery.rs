@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 
 use super::{ModelRoot, SourceInfo};
@@ -36,6 +37,12 @@ const EXCLUDED_DIRECTORIES: &[&str] = &[
     "venv",
     "__pycache__",
     ".pnpm-store",
+    // Test fixtures often hold intentionally malformed or conflicting LikeC4
+    // sources. They are not part of the workspace architecture, and merging
+    // them into its default model makes the preview fail.
+    "fixtures",
+    "__fixtures__",
+    "testdata",
 ];
 
 pub(super) fn discover_models(
@@ -45,6 +52,7 @@ pub(super) fn discover_models(
     let files = walk_files(workspace.root(), include_ignored)?;
     let mut model_files = Vec::new();
     let mut configs: BTreeMap<String, ConfigFiles> = BTreeMap::new();
+    let mut config_warnings = Vec::new();
 
     for path in files {
         let Some(kind) = config_kind(&path) else {
@@ -57,7 +65,13 @@ pub(super) fn discover_models(
         let directory = path_string(Path::new(&relative).parent().unwrap_or(Path::new("")));
         let entry = configs.entry(directory).or_default();
         match kind {
-            ConfigKind::Json => entry.json = Some(relative),
+            ConfigKind::Json => {
+                entry.json = Some(relative.clone());
+                match load_exclude(&path) {
+                    Ok(exclude) => entry.exclude = exclude,
+                    Err(error) => config_warnings.push(format!("{relative}: {error}")),
+                }
+            }
             ConfigKind::Unsupported => entry.unsupported = Some(relative),
         }
     }
@@ -73,6 +87,7 @@ pub(super) fn discover_models(
     if include_ignored {
         warnings.push("Included files normally ignored by git and \".ignore\" rules.".into());
     }
+    warnings.extend(config_warnings);
     for config in configs.values() {
         if let Some(path) = &config.unsupported {
             warnings.push(format!(
@@ -86,8 +101,21 @@ pub(super) fn discover_models(
 
     for path in &model_files {
         let relative = path.strip_prefix(workspace.root()).unwrap_or(path);
-        let relative_text = path_string(relative);
         let root = deepest_config_root(relative, &config_roots).unwrap_or_else(|| ".".into());
+        if configs.get(&root).is_some_and(|config| {
+            let scoped = if root == "." {
+                relative
+            } else {
+                relative.strip_prefix(&root).unwrap_or(relative)
+            };
+            config
+                .exclude
+                .as_ref()
+                .is_some_and(|exclude| exclude.is_match(path_string(scoped)))
+        }) {
+            continue;
+        }
+        let relative_text = path_string(relative);
         grouped.entry(root).or_default().push(relative_text);
     }
 
@@ -124,6 +152,7 @@ pub(super) fn discover_models(
 struct ConfigFiles {
     json: Option<String>,
     unsupported: Option<String>,
+    exclude: Option<GlobSet>,
 }
 
 enum ConfigKind {
@@ -230,6 +259,42 @@ fn config_kind(path: &Path) -> Option<ConfigKind> {
     } else {
         None
     }
+}
+
+/// Read the data-only `exclude` patterns from a JSON project configuration.
+///
+/// The patterns are relative to the configuration's directory, like LikeC4's
+/// own project settings. Executable configurations are never read here.
+fn load_exclude(path: &Path) -> Result<Option<GlobSet>, String> {
+    let text =
+        fs::read_to_string(path).map_err(|error| format!("Cannot read configuration: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Invalid JSON configuration: {error}"))?;
+    let Some(exclude) = value.get("exclude") else {
+        return Ok(None);
+    };
+    let Some(patterns) = exclude.as_array() else {
+        return Err("The \"exclude\" field must be an array of glob patterns.".into());
+    };
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        let Some(pattern) = pattern.as_str() else {
+            return Err("Every \"exclude\" pattern must be a string.".into());
+        };
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .build()
+            .map_err(|error| format!("Invalid exclude pattern {pattern:?}: {error}"))?;
+        builder.add(glob);
+    }
+    builder
+        .build()
+        .map(Some)
+        .map_err(|error| format!("Invalid exclude patterns: {error}"))
 }
 
 fn relative_string(path: &Path, root: &Path) -> String {
@@ -410,6 +475,26 @@ mod tests {
     }
 
     #[test]
+    fn ignores_test_fixture_directories() {
+        let (workspace, root) = workspace("arch-fixtures");
+        write(&root, "architecture/model.c4", "model { }");
+        write(&root, "test/fixtures/model.c4", "model { broken ");
+        write(&root, "test/__fixtures__/model.c4", "model { }");
+        write(&root, "testdata/model.c4", "model { }");
+
+        let (models, _) = discover_models(&workspace, false).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].root, ".");
+        assert_eq!(models[0].sources, vec!["architecture/model.c4"]);
+        assert_eq!(
+            prompt_model_sources(workspace.root()),
+            vec!["architecture/model.c4"]
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn prompt_model_sources_honor_ignore_rules() {
         let (workspace, root) = workspace("arch-prompt-sources");
         write(&root, ".gitignore", "ignored/\n");
@@ -485,6 +570,74 @@ mod tests {
             vec!["architecture/model.c4", "architecture/sub/views.c4"]
         );
         assert!(warnings.is_empty());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn honors_exclude_patterns_from_json_configuration() {
+        let (workspace, root) = workspace("arch-config-exclude");
+        write(
+            &root,
+            "likec4.config.json",
+            r#"{"name":"root","exclude":["test/**","examples/*.c4"]}"#,
+        );
+        write(&root, "architecture/model.c4", "model { }");
+        write(&root, "test/one.c4", "model { }");
+        write(&root, "test/nested/two.c4", "model { }");
+        write(&root, "examples/sample.c4", "model { }");
+        write(&root, "examples/nested/keep.c4", "model { }");
+
+        let (models, warnings) = discover_models(&workspace, false).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].root, ".");
+        assert_eq!(
+            models[0].sources,
+            vec!["architecture/model.c4", "examples/nested/keep.c4"]
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn config_excludes_stay_inside_their_project() {
+        let (workspace, root) = workspace("arch-config-exclude-scope");
+        write(
+            &root,
+            "likec4.config.json",
+            r#"{"name":"root","exclude":["archive/**"]}"#,
+        );
+        write(&root, "archive/old.c4", "model { }");
+        write(&root, "model.c4", "model { }");
+        write(&root, "service/likec4.config.json", r#"{"name":"service"}"#);
+        write(&root, "service/archive/keep.c4", "model { }");
+
+        let (models, warnings) = discover_models(&workspace, false).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].root, ".");
+        assert_eq!(models[0].sources, vec!["model.c4"]);
+        assert_eq!(models[1].root, "service");
+        assert_eq!(models[1].sources, vec!["service/archive/keep.c4"]);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reports_invalid_json_configuration_without_hiding_the_model() {
+        let (workspace, root) = workspace("arch-config-invalid");
+        write(&root, "likec4.config.json", "{");
+        write(&root, "model.c4", "model { }");
+
+        let (models, warnings) = discover_models(&workspace, false).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].sources, vec!["model.c4"]);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Invalid JSON configuration"))
+        );
 
         fs::remove_dir_all(&root).ok();
     }

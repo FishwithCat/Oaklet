@@ -127,8 +127,11 @@ refused while a chat is running, asks before carrying uncommitted changes to the
 new branch, and closes the open file because its contents may change.
 
 **Architecture** discovers LikeC4 models in the workspace and renders their
-views. **Generate architecture** and **Update with agent** put an editable prompt
-in the composer without discarding your draft; the normal chat flow still sends,
+views. Test support directories (`fixtures`, `__fixtures__`, `testdata`) are
+skipped so intentionally broken fixture models do not shadow the workspace
+model, and `exclude` patterns in a JSON `likec4.config.json` are honored.
+**Generate architecture** and **Update with agent** put an editable prompt in
+the composer without discarding your draft; the normal chat flow still sends,
 approves, and can cancel it. Viewing an existing model never calls the model
 provider. The view re-reads when activated, on **Refresh**, and after an agent
 run finishes or fails; it keeps the last valid diagram, marked stale, while new

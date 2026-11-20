@@ -262,11 +262,14 @@ most eight notice turns between two user messages.
 The Architecture view scans `config.workspace` for `*.c4` and `*.likec4` files,
 honoring git and `.ignore` rules without requiring a Git repository. A JSON
 `likec4.config.json` groups its directory tree into one model root, with nested
-configurations defining separate projects. Files without an ancestor
+configurations defining separate projects, and its data-only `exclude` glob
+patterns are applied relative to that project. Files without an ancestor
 configuration share the workspace default model, even when spread across
 directories, matching MCP project grouping. If discovery finds independent
 roots, the view asks which one to load. **Scan ignored files** is available when
-a model lives in an ignored directory.
+a model lives in an ignored directory. Test support directories (`fixtures`,
+`__fixtures__`, `testdata`) are skipped because their LikeC4 sources are usually
+deliberately incomplete or conflicting.
 
 Opening the view only reads models. If no model exists, **Generate architecture**
 offers the default location `architecture/model.c4`; otherwise **Update with
