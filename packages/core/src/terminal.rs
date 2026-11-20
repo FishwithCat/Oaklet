@@ -11,6 +11,8 @@ use std::thread;
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+pub(crate) mod commands;
+
 /// A chunk of raw terminal output, or the shell's final exit code.
 #[derive(Debug)]
 pub enum Event {
@@ -170,6 +172,11 @@ fn spawn_shell(
         },
         events,
     ))
+}
+
+pub struct TerminalSession {
+    pub session: Session,
+    pub window: String,
 }
 
 #[cfg(test)]

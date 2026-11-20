@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+
+use crate::SharedState;
+use crate::windows::workspace_for_window;
 
 use super::{Tool, ToolContext, ToolError, ToolOutput};
 
@@ -518,6 +522,22 @@ fn split_frontmatter(raw: &str) -> Result<(String, String), String> {
     let meta = text[first_end..start].to_string();
     let body_start = (end + 1).min(text.len());
     Ok((meta, text[body_start..].to_string()))
+}
+
+/// Read-only snapshot of discovered skills for Settings.
+#[tauri::command]
+pub(crate) async fn skills_list(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<SkillList, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let home = app.path().home_dir().ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        SkillCatalog::discover(&workspace, home.as_deref()).into_list()
+    })
+    .await
+    .map_err(|error| format!("Could not scan skills: {error}"))
 }
 
 #[cfg(test)]

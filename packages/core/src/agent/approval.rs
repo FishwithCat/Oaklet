@@ -2,18 +2,20 @@
 //!
 //! The adapter registers a pending request in shared app state, emits the
 //! resolution events through `RunContext`, and waits for the frontend or a
-//! cancellation to resolve it. Workspace grants and command handlers stay in
-//! `lib.rs`.
+//! cancellation to resolve it.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
+use tauri::{State, WebviewWindow};
 use tokio::sync::oneshot;
 
+use crate::SharedState;
 use crate::chat::RunContext;
 use crate::tools::{ApprovalDecision, ApprovalRequest, Approver, Cancel};
-use crate::{PendingApproval, auto_approves_command};
+use crate::windows::workspace_for_window;
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -101,4 +103,113 @@ async fn request_approval(
     let allowed = matches!(decision, Ok(Ok(true)));
     ctx.approval_resolved(call_id, allowed);
     allowed
+}
+
+pub struct PendingApproval {
+    pub run_id: String,
+    pub window: String,
+    /// Workspace the command will run in, so a grant stays scoped to it.
+    pub workspace: PathBuf,
+    pub sender: oneshot::Sender<bool>,
+}
+
+/// Only shell commands in the exact workspace the user granted may skip the
+/// approval prompt; every other request still asks.
+fn auto_approves_command(tool: &str, workspace: &Path, granted: &HashSet<PathBuf>) -> bool {
+    tool == "run_command" && granted.contains(workspace)
+}
+
+#[tauri::command]
+pub(crate) fn approve_tool(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    request_id: String,
+    allow: bool,
+    always: bool,
+) -> Result<(), String> {
+    let mut approvals = state
+        .approvals
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?;
+    let Some(pending) = approvals.remove(&request_id) else {
+        return Err("This approval request has expired.".into());
+    };
+    if pending.window != window.label() {
+        approvals.insert(request_id, pending);
+        return Err("This approval request belongs to another window.".into());
+    }
+    drop(approvals);
+
+    pending
+        .sender
+        .send(allow)
+        .map_err(|_| "The agent is no longer waiting for this action.".to_string())?;
+
+    // A grant is session-only and scoped to the workspace the approved command
+    // runs in, not to whatever workspace settings show later.
+    if allow
+        && always
+        && let Ok(mut granted) = state.command_allow_all.lock()
+    {
+        granted.insert(pending.workspace);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn command_allow_all_active(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<bool, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    Ok(state
+        .command_allow_all
+        .lock()
+        .map(|granted| granted.contains(&workspace))
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub(crate) fn revoke_command_allow_all(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    if let Ok(mut granted) = state.command_allow_all.lock() {
+        granted.remove(&workspace);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn grant_command_allow_all(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<(), String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    if let Ok(mut granted) = state.command_allow_all.lock() {
+        granted.insert(workspace);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_approves_only_commands_in_the_granted_workspace() {
+        let workspace = Path::new("/tmp/oaklet-workspace");
+        let other = Path::new("/tmp/oaklet-other");
+        let granted = HashSet::from([workspace.to_path_buf()]);
+
+        assert!(auto_approves_command("run_command", workspace, &granted));
+        assert!(!auto_approves_command("run_command", other, &granted));
+        assert!(!auto_approves_command(
+            "run_command",
+            workspace,
+            &HashSet::new()
+        ));
+        assert!(!auto_approves_command("write_file", workspace, &granted));
+    }
 }

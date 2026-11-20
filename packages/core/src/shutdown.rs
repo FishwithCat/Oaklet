@@ -80,6 +80,17 @@ pub fn request_exit(app: &AppHandle, api: &tauri::ExitRequestApi) {
     });
 }
 
+pub(crate) fn handle_run_event(app: &AppHandle, event: tauri::RunEvent) {
+    if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        request_exit(app, &api);
+    } else if matches!(event, tauri::RunEvent::Exit) {
+        architecture::cancel_all(app.state::<SharedState>().inner());
+        chat::stop_all(app.state::<SharedState>().inner());
+        app.state::<SharedState>().jobs.kill_all();
+        tools::shutdown();
+    }
+}
+
 fn begin_drain(exit: &Mutex<ExitState>) -> bool {
     let mut state = exit.lock().unwrap();
     if *state != ExitState::Running {

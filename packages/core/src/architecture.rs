@@ -12,9 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::AppHandle;
+use tauri::{AppHandle, State, WebviewWindow};
 
+use crate::SharedState;
 use crate::tools::Workspace;
+use crate::windows::workspace_for_window;
 
 mod compiler;
 mod discovery;
@@ -467,6 +469,32 @@ fn cap_diagnostics(diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
             diagnostic
         })
         .collect()
+}
+
+#[tauri::command]
+pub(crate) async fn architecture_discover(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    include_ignored: bool,
+) -> Result<Discovery, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || discover(&app, &workspace, include_ignored))
+        .await
+        .map_err(|error| format!("Could not scan the workspace: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn architecture_load(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    root: String,
+    include_ignored: bool,
+) -> Result<LoadResult, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let shared = state.inner().clone();
+    load(app, shared, workspace, root, include_ignored).await
 }
 
 #[cfg(test)]

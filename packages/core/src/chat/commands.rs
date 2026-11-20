@@ -11,9 +11,10 @@ use super::{
     CompactResult, CompactionHandle, IncomingAttachment, SendResult, SessionSummary, SessionView,
     resolve_approvals,
 };
+use crate::SharedState;
 use crate::store::{self, NewUserTurn};
 use crate::tools::CancelHandle;
-use crate::{SharedState, workspace_for_window};
+use crate::windows::workspace_for_window;
 
 #[tauri::command]
 pub async fn session_create(

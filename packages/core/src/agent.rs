@@ -1,7 +1,7 @@
 //! One agent turn: stream a reply, run its tools, repeat until the model stops
 //! asking for them, then hand the transcript back through `ctx`.
 
-mod approval;
+pub(crate) mod approval;
 mod messages;
 mod model;
 mod step;

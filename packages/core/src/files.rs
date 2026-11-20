@@ -6,7 +6,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{State, WebviewWindow};
 
-use crate::{SharedState, tools::Workspace, workspace_for_window};
+use crate::windows::workspace_for_window;
+use crate::{SharedState, tools::Workspace};
 
 const MAX_BYTES: u64 = 2_000_000;
 static SAVE_LOCK: Mutex<()> = Mutex::new(());

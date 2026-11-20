@@ -3,6 +3,10 @@ use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 
 use serde::Serialize;
+use tauri::{State, WebviewWindow};
+
+use crate::SharedState;
+use crate::windows::workspace_for_window;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,6 +400,69 @@ fn parse_log(output: &str) -> Vec<GitCommit> {
             })
         })
         .collect()
+}
+
+#[tauri::command]
+pub(crate) async fn git_log(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    include_commits: bool,
+) -> Result<GitLog, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || log(&workspace, include_commits))
+        .await
+        .map_err(|error| format!("Could not read git history: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn git_show(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    hash: String,
+) -> Result<String, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || show(&workspace, &hash))
+        .await
+        .map_err(|error| format!("Could not read the commit: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn git_switch(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    branch: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    if state.chat.window_busy(&label) {
+        return Err("Stop the running chat before switching branches.".into());
+    }
+    let workspace = workspace_for_window(&state, &label)?;
+    tauri::async_runtime::spawn_blocking(move || switch(&workspace, &branch))
+        .await
+        .map_err(|error| format!("Could not switch branches: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn git_changes(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+) -> Result<Vec<GitChange>, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || changes(&workspace))
+        .await
+        .map_err(|error| format!("Could not read uncommitted changes: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn git_diff(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    path: String,
+) -> Result<String, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || diff(&workspace, &path))
+        .await
+        .map_err(|error| format!("Could not read the file diff: {error}"))?
 }
 
 #[cfg(test)]
