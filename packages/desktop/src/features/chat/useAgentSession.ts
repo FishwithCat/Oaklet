@@ -27,10 +27,17 @@ import {
   type TabUsage,
 } from "./session-model.ts";
 import { subscribeAgentEvents } from "./agent-events.ts";
+import {
+  pickStartupSession,
+  readLastSessionId,
+  rememberLastSession,
+} from "./session-restore.ts";
 
 type OpenTab = { id: string; number: number };
 
 type SendResult = { runId: string; session: SessionView };
+
+type StartupStatus = "loading" | "ready" | "error";
 
 type CompactResult = {
   session: SessionView;
@@ -42,7 +49,8 @@ type CompactResult = {
 /**
  * Chat tabs backed by Rust. The backend owns sessions, runs, and the transcript;
  * this hook keeps a render cache hydrated from command responses and events.
- * Open tabs are client UI state and are never written back to storage.
+ * Open tabs are client UI state; only the selected saved session id is kept in
+ * localStorage so the next launch can reopen it.
  */
 export function useAgentSession({
   workspace,
@@ -67,6 +75,9 @@ export function useAgentSession({
     text: string;
   } | null>(null);
   const [usageBySession, setUsageBySession] = useState<Record<string, TabUsage>>({});
+  const [startupStatus, setStartupStatus] =
+    useState<StartupStatus>("loading");
+  const [startupError, setStartupError] = useState("");
 
   const sessionsRef = useRef(sessions);
   const openTabsRef = useRef(openTabs);
@@ -78,6 +89,8 @@ export function useAgentSession({
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
   const usageBySessionRef = useRef(usageBySession);
+  const startupTokenRef = useRef(0);
+  const creatingTabRef = useRef(false);
 
   function commitSessions(next: Record<string, SessionView>) {
     sessionsRef.current = next;
@@ -126,11 +139,75 @@ export function useAgentSession({
     setUsageBySession({});
   }
 
+  /** Keep the visible saved session as the next startup target. */
+  function rememberSession(id: string, workspace = workspaceRef.current) {
+    const tab = sessionsRef.current[id];
+    if (tab && tab.turns > 0) rememberLastSession(workspace, id);
+  }
+
+  /** A deliberate user action wins over any startup response still in flight. */
+  function cancelStartup() {
+    startupTokenRef.current += 1;
+    setStartupError("");
+    setStartupStatus("ready");
+  }
+
   function addTab(view: SessionView) {
     tabCountRef.current += 1;
     commitTabs([...openTabsRef.current, { id: view.id, number: tabCountRef.current }]);
     putSession(view);
     activate(view.id);
+    rememberSession(view.id);
+  }
+
+  /**
+   * Open the remembered session when it is still in this workspace's history,
+   * otherwise the newest one. A workspace with no history gets a blank chat.
+   * Every await is checked against the workspace and the startup token so an
+   * old response cannot overwrite a tab the user opened in the meantime.
+   */
+  function runStartup(workspace: string) {
+    const token = ++startupTokenRef.current;
+    setStartupError("");
+    setStartupStatus("loading");
+    const current = () =>
+      workspaceRef.current === workspace && startupTokenRef.current === token;
+
+    void (async () => {
+      try {
+        const list = await invoke<SessionSummary[]>("session_list");
+        if (!current()) return;
+        setHistory(list);
+        if (openTabsRef.current.length > 0) {
+          setStartupStatus("ready");
+          return;
+        }
+
+        const picked = pickStartupSession(
+          list,
+          readLastSessionId(workspace),
+        );
+        const view = picked
+          ? await invoke<SessionView>("session_get", { id: picked.id })
+          : await invoke<SessionView>("session_create");
+        if (!current()) return;
+        if (openTabsRef.current.length > 0) {
+          setStartupStatus("ready");
+          return;
+        }
+        addTab(view);
+        setStartupStatus("ready");
+      } catch (error) {
+        if (!current()) return;
+        setStartupError(errorText(error));
+        setStartupStatus("error");
+      }
+    })();
+  }
+
+  function retryStartup() {
+    const workspace = workspaceRef.current;
+    if (workspace) runStartup(workspace);
   }
 
   function showError(text: string) {
@@ -162,23 +239,7 @@ export function useAgentSession({
     const switched = workspaceRef.current !== workspace;
     workspaceRef.current = workspace;
     if (switched) reset();
-
-    void (async () => {
-      try {
-        const list = await invoke<SessionSummary[]>("session_list");
-        if (workspaceRef.current !== workspace) return;
-        setHistory(list);
-        if (openTabsRef.current.length > 0) return;
-
-        const created = await invoke<SessionView>("session_create");
-        if (workspaceRef.current !== workspace) return;
-        if (openTabsRef.current.length > 0) return;
-        addTab(created);
-      } catch (error) {
-        startedForRef.current = null;
-        console.error(`Could not start a chat: ${errorText(error)}`);
-      }
-    })();
+    runStartup(workspace);
   }, [workspace, enabled]);
 
   function loadAllowance() {
@@ -311,17 +372,35 @@ export function useAgentSession({
     // The welcome tab is already a new chat; another one would just duplicate it.
     const active = sessionsRef.current[activeTabIdRef.current];
     if (active && isBlankTab(active)) return;
+    if (creatingTabRef.current) return;
+
+    const firstTab = openTabsRef.current.length === 0;
+    cancelStartup();
+    if (firstTab) setStartupStatus("loading");
+    creatingTabRef.current = true;
     try {
       const view = await invoke<SessionView>("session_create");
       if (workspaceRef.current !== workspace) return;
       addTab(view);
+      setStartupStatus("ready");
     } catch (error) {
-      if (workspaceRef.current === workspace) showError(errorText(error));
+      if (workspaceRef.current !== workspace) return;
+      if (sessionsRef.current[activeTabIdRef.current]) {
+        showError(errorText(error));
+      } else {
+        setStartupError(errorText(error));
+        setStartupStatus("error");
+      }
+    } finally {
+      creatingTabRef.current = false;
     }
   }
 
   function selectTab(id: string) {
-    if (openTabsRef.current.some((tab) => tab.id === id)) activate(id);
+    if (openTabsRef.current.some((tab) => tab.id === id)) {
+      activate(id);
+      rememberSession(id);
+    }
   }
 
   function closeTab(id: string) {
@@ -343,7 +422,9 @@ export function useAgentSession({
 
     commitTabs(remaining);
     if (activeTabIdRef.current === id) {
-      activate((remaining[index] ?? remaining[index - 1])!.id);
+      const nextId = (remaining[index] ?? remaining[index - 1])!.id;
+      activate(nextId);
+      rememberSession(nextId);
     }
   }
 
@@ -388,6 +469,13 @@ export function useAgentSession({
         attachments,
       });
       if (workspaceRef.current !== workspaceAtSend) return false;
+      if (
+        session.turns > 0 &&
+        sessionsRef.current[tab.id] &&
+        activeTabIdRef.current === tab.id
+      ) {
+        rememberLastSession(workspaceAtSend, tab.id);
+      }
       const current = sessionsRef.current[tab.id];
       // A terminal event may already have replaced the optimistic view.
       if (!current || !current.running) return true;
@@ -469,9 +557,12 @@ export function useAgentSession({
   async function restore(id: string) {
     if (openTabsRef.current.some((tab) => tab.id === id)) {
       activate(id);
+      rememberSession(id);
       return;
     }
 
+    // A manual history pick supersedes a startup restore that is still loading.
+    cancelStartup();
     const workspaceAtStart = workspaceRef.current;
     try {
       const view = await invoke<SessionView>("session_get", { id });
@@ -494,7 +585,13 @@ export function useAgentSession({
       }
       addTab(view);
     } catch (error) {
-      if (workspaceRef.current === workspaceAtStart) showError(errorText(error));
+      if (workspaceRef.current !== workspaceAtStart) return;
+      if (sessionsRef.current[activeTabIdRef.current]) {
+        showError(errorText(error));
+      } else {
+        setStartupError(errorText(error));
+        setStartupStatus("error");
+      }
     }
   }
 
@@ -629,6 +726,9 @@ export function useAgentSession({
     busy,
     allowAll,
     history,
+    restoring: startupStatus === "loading",
+    restoreError: startupStatus === "error" ? startupError : "",
+    retryRestore: retryStartup,
     newTab,
     selectTab,
     closeTab,

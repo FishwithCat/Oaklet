@@ -57,6 +57,8 @@ export function Chat({
   hasMore,
   loadingOlder,
   loadOlderError,
+  restoring,
+  restoreError,
   running,
   compacting,
   activeRunId,
@@ -68,6 +70,7 @@ export function Chat({
   onStop,
   onCompact,
   onLoadOlder,
+  onRetryRestore,
   onApproval,
   onSendToTerminal,
   onOpenFile,
@@ -84,6 +87,8 @@ export function Chat({
   hasMore: boolean;
   loadingOlder: boolean;
   loadOlderError: string;
+  restoring: boolean;
+  restoreError: string;
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
@@ -95,6 +100,7 @@ export function Chat({
   onStop: () => void;
   onCompact: () => void;
   onLoadOlder: () => Promise<boolean>;
+  onRetryRestore: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onSendToTerminal: (text: string) => void;
   onOpenFile: (href: string) => void;
@@ -329,6 +335,39 @@ export function Chat({
       onCompact={onCompact}
     />
   );
+
+  if (restoring) {
+    return (
+      <main className="chat" hidden={!active}>
+        <div className="chat-restore" role="status">
+          Restoring your last chat…
+        </div>
+      </main>
+    );
+  }
+
+  if (restoreError) {
+    return (
+      <main className="chat" hidden={!active}>
+        <div className="chat-restore">
+          <p className="chat-restore-title">
+            Could not restore your last chat.
+          </p>
+          <p className="chat-restore-error" role="alert">
+            {restoreError}
+          </p>
+          <div className="chat-restore-actions">
+            <button type="button" className="primary" onClick={onRetryRestore}>
+              Retry
+            </button>
+            <button type="button" onClick={onNewTab}>
+              New chat
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (welcome) {
     return (

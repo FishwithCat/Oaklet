@@ -179,6 +179,43 @@
   margin: 0;
 }
 
+.chat-restore {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 560px;
+  margin: 18vh auto 0;
+  padding: 0 24px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.chat-restore p {
+  margin: 0;
+}
+
+.chat-restore-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chat-restore-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.chat-restore-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .msg {
   display: flex;
   gap: 11px;

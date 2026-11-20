@@ -345,7 +345,12 @@ function App() {
 
       <div
         className={`main${
-          view === "chat" && session.items.length === 0 ? " empty-state" : ""
+          view === "chat" &&
+          session.items.length === 0 &&
+          !session.restoring &&
+          !session.restoreError
+            ? " empty-state"
+            : ""
         }`}
       >
         <Chat
@@ -361,6 +366,8 @@ function App() {
           hasMore={session.hasMore}
           loadingOlder={session.loadingOlder}
           loadOlderError={session.loadOlderError}
+          restoring={session.restoring}
+          restoreError={session.restoreError}
           running={session.running}
           compacting={session.compacting}
           activeRunId={session.activeRunId}
@@ -372,6 +379,7 @@ function App() {
           onStop={session.stop}
           onCompact={session.compact}
           onLoadOlder={session.loadOlder}
+          onRetryRestore={session.retryRestore}
           onApproval={session.respondToApproval}
           onOpenFile={openFileLink}
           onSendToTerminal={(text) => {
