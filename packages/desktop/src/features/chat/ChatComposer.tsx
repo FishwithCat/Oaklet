@@ -267,21 +267,12 @@ export function ChatComposer({
   return (
     <div className="composer-wrap">
       <form
-        className={`composer${showContextGauge ? " has-context" : ""}`}
+        className="composer"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        {showContextGauge && (
-          <ContextGauge
-            usage={context}
-            runUsage={usage}
-            running={running}
-            compacting={compacting}
-            onCompact={onCompact}
-          />
-        )}
         {attachments.length > 0 && (
           <ul className="composer-attachments" aria-label="Attachments">
             {attachments.map((attachment, index) => (
@@ -351,23 +342,34 @@ export function ChatComposer({
         />
         <div className="composer-footer">
           <span className="composer-meta">
-            {context && (
-              <span
-                className="composer-usage"
-                title={
-                  stepUsage
-                    ? formatRequestTitle(stepUsage)
-                    : "Current context; the cache share appears after the next reply"
-                }
-              >
-                <UsageLabel
-                  key={activeTabId}
-                  used={context.used}
-                  limit={context.window}
-                  step={stepUsage}
+            <span className="composer-context">
+              {showContextGauge && (
+                <ContextGauge
+                  usage={context}
+                  runUsage={usage}
+                  running={running}
+                  compacting={compacting}
+                  onCompact={onCompact}
                 />
-              </span>
-            )}
+              )}
+              {context && (
+                <span
+                  className="composer-usage"
+                  title={
+                    stepUsage
+                      ? formatRequestTitle(stepUsage)
+                      : "Current context; the cache share appears after the next reply"
+                  }
+                >
+                  <UsageLabel
+                    key={activeTabId}
+                    used={context.used}
+                    limit={context.window}
+                    step={stepUsage}
+                  />
+                </span>
+              )}
+            </span>
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}

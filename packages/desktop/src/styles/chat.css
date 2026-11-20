@@ -527,10 +527,6 @@
   color: var(--muted);
 }
 
-.composer.has-context textarea {
-  padding-left: 26px;
-}
-
 .composer-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -538,13 +534,6 @@
   margin: 0;
   padding: 0 2px;
   list-style: none;
-}
-
-/* The context gauge is absolutely positioned in the composer's left column;
-   keep chips from sliding underneath it. */
-.composer.has-context .composer-attachments,
-.composer.has-context .composer-error {
-  padding-left: 26px;
 }
 
 .composer-attachment {
@@ -644,6 +633,13 @@
   white-space: nowrap;
 }
 
+.composer-context {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 3px;
+}
+
 .composer-usage {
   flex: none;
   color: var(--muted);
@@ -655,12 +651,11 @@
 }
 
 .context-meter {
-  position: absolute;
-  top: 9px;
-  left: 7px;
   display: inline-flex;
   align-items: center;
-  padding: 5px;
+  flex: none;
+  margin-left: -3px;
+  padding: 3px;
   border: 0;
   border-radius: 6px;
   background: transparent;
