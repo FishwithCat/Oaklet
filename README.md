@@ -41,7 +41,8 @@ the rest of Oaklet works without it.
 ## Quick start
 
 1. Click the folder icon in the sidebar and choose a workspace. It opens in its
-   own window; repeat to work on another project side by side. File tools stay
+   own window; repeat to work on another project, and each new window steps down
+   and to the right of the last so neither hides the other. File tools stay
    inside each window's workspace.
 2. Open **Settings**, use the **Model** tab, enter an API key, and choose a Base
    URL and model. DeepSeek is the default.
