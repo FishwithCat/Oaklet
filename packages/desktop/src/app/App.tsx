@@ -230,10 +230,10 @@ function App() {
       } else if (action === "new-terminal") {
         terminalRef.current?.addTab();
       } else if (action === "history") {
-        if (!session.running) {
-          session.refreshHistory();
-          setHistoryOpen(true);
-        }
+        // A live run keeps streaming while History is open; picking a session
+        // only adds a tab, so the running one is untouched.
+        session.refreshHistory();
+        setHistoryOpen(true);
       } else {
         session.stop();
       }

@@ -55,7 +55,7 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Multiple tabs, each titled by its first prompt and with its own conversation
   and draft. **⌘N** opens a tab, **⌘X** closes the active one, and **⌘R** opens
-  History while idle, where you can restore a saved session. Sessions live in
+  History, where you can restore a saved session. Sessions live in
   the backend, so they survive a restart; a live run keeps streaming while you
   switch tabs, but quitting Oaklet stops it and the next start marks it
   interrupted.
