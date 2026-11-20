@@ -9,7 +9,8 @@
 
 /** Longest edge kept for a pasted image; providers downscale around here too. */
 const MAX_IMAGE_EDGE = 1568;
-const THUMBNAIL_EDGE = 96;
+/** Display copy for the thread, its preview, and the composer chip. */
+const THUMBNAIL_EDGE = 1024;
 const IMAGE_QUALITY = 0.9;
 const MAX_TEXT_BYTES = 200_000;
 const IMAGE_NAME = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
@@ -22,7 +23,7 @@ export type Attachment =
       bytes: number;
       /** Full image sent to the model. */
       dataUrl: string;
-      /** Small copy kept in chat history for the bubble. */
+      /** Downscaled copy kept in chat history for display and preview. */
       thumbnail: string;
     }
   | { kind: "file"; name: string; bytes: number; text: string };
