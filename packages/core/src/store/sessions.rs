@@ -2,10 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::events::{append_events, decode_events, read_last_step, read_page};
-use super::{
-    ContextUsage, EventPayload, Session, SessionMeta, SessionSummary, SessionWindow, Store,
-};
+use super::events::{decode_events, read_last_step, read_page};
+use super::{ContextUsage, Session, SessionMeta, SessionSummary, SessionWindow, Store};
 
 const SESSION_COLUMNS: &str = "id, workspace, title, turns, created_at, updated_at, \
      context_used, context_window";
@@ -128,32 +126,6 @@ impl Store {
     pub fn session_meta(&self, id: &str) -> Result<Option<SessionMeta>, String> {
         let conn = self.connection()?;
         Self::get_meta_with(&conn, id)
-    }
-
-    /// Append one visible notice outside a run, e.g. a background job result
-    /// announced to an idle session.
-    pub fn append_notice(
-        &self,
-        session_id: &str,
-        tone: &str,
-        text: &str,
-        now: i64,
-    ) -> Result<(), String> {
-        let mut conn = self.connection()?;
-        let tx = conn
-            .transaction()
-            .map_err(|error| format!("Could not append to the transcript: {error}"))?;
-        append_events(
-            &tx,
-            session_id,
-            &[EventPayload::Notice {
-                tone: tone.into(),
-                text: text.into(),
-            }],
-            now,
-        )?;
-        tx.commit()
-            .map_err(|error| format!("Could not append to the transcript: {error}"))
     }
 
     /// One UI page, ending just before `before_seq` when supplied.

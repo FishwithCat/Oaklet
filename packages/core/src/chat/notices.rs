@@ -7,7 +7,7 @@ use super::{
     run::{RunContext, start_run},
 };
 use crate::SharedState;
-use crate::store::{self, NewUserTurn};
+use crate::store::NewUserTurn;
 use crate::tools::CancelHandle;
 
 /// Largest job output a completion notice carries inline; a bigger one leaves
@@ -19,11 +19,10 @@ const MAX_WAKES: u32 = 8;
 /// Longest command label shown in a notice summary.
 const NOTICE_LABEL_CHARS: usize = 80;
 
-/// A settled background job waiting for its session: the one-line transcript
-/// notice and the model-facing message it carries.
+/// A settled background job waiting for its session: the model-facing message
+/// it carries.
 #[derive(Clone)]
 pub struct JobNotice {
-    pub summary: String,
     pub message: Value,
 }
 
@@ -36,8 +35,9 @@ pub(crate) fn job_settled(
     state: &SharedState,
     job: crate::tools::jobs::JobSettled,
 ) {
-    let (summary, message) = job_notice(&job);
-    let notice = JobNotice { summary, message };
+    let notice = JobNotice {
+        message: job_notice(&job),
+    };
     let session_id = job.owner.session_id.clone();
     let window = job.owner.window.clone();
     let chat = &state.chat;
@@ -120,16 +120,6 @@ fn wake_notice(
         .live()
         .wakes
         .insert(session_id.to_string(), spent.saturating_add(1));
-    if let Err(error) =
-        state
-            .chat
-            .store
-            .append_notice(session_id, "muted", &notice.summary, store::now_ms())
-    {
-        crate::log::key(format_args!(
-            "[oaklet] could not record a job notice: {error}"
-        ));
-    }
     Ok(())
 }
 
@@ -156,11 +146,6 @@ pub(super) fn resume_notices(ctx: &RunContext) {
         return;
     }
     let notices = chat.take_notices(ctx.session_id());
-    let summary = notices
-        .iter()
-        .map(|notice| notice.summary.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
     let text = notices
         .iter()
         .filter_map(|notice| {
@@ -172,7 +157,6 @@ pub(super) fn resume_notices(ctx: &RunContext) {
         .collect::<Vec<_>>()
         .join("\n\n");
     let notice = JobNotice {
-        summary,
         message: json!({ "role": "user", "content": [{ "type": "text", "text": text }] }),
     };
     if let Err(error) = wake_notice(
@@ -187,8 +171,8 @@ pub(super) fn resume_notices(ctx: &RunContext) {
     }
 }
 
-/// The model-facing completion text and the one-line transcript summary.
-fn job_notice(job: &crate::tools::jobs::JobSettled) -> (String, Value) {
+/// The model-facing completion text.
+fn job_notice(job: &crate::tools::jobs::JobSettled) -> Value {
     let line = job.command.lines().next().unwrap_or("").trim();
     let mut label: String = line.chars().take(NOTICE_LABEL_CHARS).collect();
     if label.chars().count() < line.chars().count() {
@@ -214,10 +198,7 @@ fn job_notice(job: &crate::tools::jobs::JobSettled) -> (String, Value) {
     } else {
         format!("{summary}. Read its output with job_output.")
     };
-    (
-        summary,
-        json!({ "role": "user", "content": [{ "type": "text", "text": text }] }),
-    )
+    json!({ "role": "user", "content": [{ "type": "text", "text": text }] })
 }
 
 #[cfg(test)]
@@ -242,20 +223,12 @@ mod tests {
 
     #[test]
     fn small_output_rides_along_and_large_output_points_at_job_output() {
-        let (summary, message) = job_notice(&settled("ok\n"));
-        assert_eq!(
-            summary,
-            "background job job-1a1ec825407-2 (bash: cargo test) finished \
-             [status: succeeded, exit code: 0]"
-        );
-        assert!(
-            message["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("ok")
-        );
+        let message = job_notice(&settled("ok\n"));
+        let text = message["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("background job job-1a1ec825407-2"));
+        assert!(text.contains("ok"));
 
-        let (_, message) = job_notice(&settled(&"x".repeat(super::INLINE_NOTICE_CHARS + 1)));
+        let message = job_notice(&settled(&"x".repeat(super::INLINE_NOTICE_CHARS + 1)));
         let text = message["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("job_output"));
         assert!(!text.contains("xxx"));
@@ -269,10 +242,7 @@ mod tests {
             .notices
             .entry("s1".into())
             .or_default()
-            .push(JobNotice {
-                summary: "done".into(),
-                message: json!({}),
-            });
+            .push(JobNotice { message: json!({}) });
         assert_eq!(state.take_notices("s1").len(), 1);
         assert!(state.take_notices("s1").is_empty());
     }

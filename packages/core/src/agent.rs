@@ -112,12 +112,8 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
 
         // A background job that settled while this run was busy joins the
         // conversation at the next step, so the model can act on it without a
-        // second run. The transcript keeps a visible notice beside it.
+        // second run.
         for notice in ctx.take_notices() {
-            ctx.record(crate::store::EventPayload::Notice {
-                tone: "muted".into(),
-                text: notice.summary,
-            });
             let message = ctx.record_message(notice.message, Some(json!({ "hidden": true })));
             messages.push(message);
         }
