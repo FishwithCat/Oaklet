@@ -8,6 +8,10 @@ A local code agent with a Tauri 2 desktop shell: React/TypeScript UI, Rust agent
 runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
+<p align="center">
+  <img src="docs/screenshot.png" width="900" alt="Oaklet chat window: a question about where sessions are stored, a Read files step, a reply with the SQLite schema, and the composer">
+</p>
+
 ## Install
 
 Download the latest `.dmg` from
