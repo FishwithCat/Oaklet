@@ -5,6 +5,8 @@ import {
   confirmLabel,
   latestPlanVersion,
   planBadge,
+  planHasReviewDetails,
+  planImpactGroups,
   planNotes,
   planSummary,
   planViews,
@@ -122,4 +124,82 @@ test("notes combine diagnostics, warnings, and overlaps without duplicates", () 
     { tone: "warning", text: "shared warning" },
     { tone: "warning", text: "Overlaps existing diffs: worker" },
   ]);
+});
+
+test("impact items are grouped and linked to steps by component id", () => {
+  const detailed = plan({
+    details: {
+      objective: "Add a worker",
+      changes: "Introduce a queue and a worker.",
+      steps: [
+        {
+          title: "Add the queue",
+          outcome: "Jobs can be enqueued.",
+          components: ["api.queue"],
+          verification: "cargo test queue",
+        },
+        {
+          title: "Route jobs",
+          outcome: "The web app enqueues jobs.",
+          components: ["api.web -> api.queue"],
+          verification: "cargo test worker",
+        },
+      ],
+    },
+    validation: validation({
+      diff: {
+        id: "worker",
+        title: "Add worker",
+        added: { elements: 1, relations: 1 },
+        removed: { elements: 0, relations: 0 },
+        modified: { elements: 0 },
+        views: [],
+        changes: {
+          added: {
+            elements: [{ id: "api.queue", title: "Queue", kind: "component" }],
+            relations: [
+              {
+                id: "rel1",
+                source: "api.web",
+                sourceTitle: "Web app",
+                target: "api.queue",
+                targetTitle: "Queue",
+                label: "Enqueues",
+              },
+            ],
+          },
+          removed: { elements: [], relations: [] },
+          modified: { elements: [] },
+        },
+      },
+    }),
+  });
+  const groups = planImpactGroups(detailed);
+  assert.deepEqual(
+    groups.map((group) => [group.kind, group.items.length]),
+    [["added", 2]],
+  );
+  assert.equal(groups[0].items[0].label, "Queue");
+  assert.equal(groups[0].items[0].step, 1);
+  assert.equal(groups[0].items[1].label, "Enqueues");
+  assert.equal(groups[0].items[1].detail, "Web app → Queue · Enqueues");
+  assert.equal(groups[0].items[1].step, 2);
+});
+
+test("review details appear for validation evidence or a changes narrative", () => {
+  assert.equal(planHasReviewDetails(plan()), true);
+  assert.equal(planHasReviewDetails(plan({ validation: null })), false);
+  assert.equal(
+    planHasReviewDetails(
+      plan({
+        validation: null,
+        details: {
+          objective: "Add a worker",
+          changes: "Introduce a queue and a worker.",
+          steps: [],
+        },
+      }),
+    ),
+    true,
+  );
 });

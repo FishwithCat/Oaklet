@@ -6,7 +6,11 @@ import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { PlanCard } from "./PlanCard";
-import { latestPlanVersion } from "./plan-model";
+import {
+  latestPlanVersion,
+  type PlanBaseline,
+  type PlanCompareData,
+} from "./plan-model";
 
 type ImageAttachment = Extract<SentAttachment, { kind: "image" }>;
 
@@ -22,6 +26,8 @@ export function ChatThread({
   onApproval,
   onConfirmPlan,
   onRevisePlan,
+  onCheckPlanBaseline,
+  onLoadPlanCompare,
   onOpenFile,
 }: {
   items: Item[];
@@ -31,6 +37,11 @@ export function ChatThread({
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onConfirmPlan: (version: number) => Promise<boolean>;
   onRevisePlan: (version: number) => void;
+  onCheckPlanBaseline: (version: number) => Promise<PlanBaseline>;
+  onLoadPlanCompare: (
+    version: number,
+    viewId: string,
+  ) => Promise<PlanCompareData>;
   onOpenFile: (href: string) => void;
 }) {
   const [preview, setPreview] = useState<ImageAttachment | null>(null);
@@ -162,6 +173,8 @@ export function ChatThread({
               running={running}
               onConfirm={onConfirmPlan}
               onRevise={() => onRevisePlan(item.version)}
+              onCheckBaseline={onCheckPlanBaseline}
+              onLoadCompare={onLoadPlanCompare}
               onOpenFile={onOpenFile}
             />
           );

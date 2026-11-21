@@ -24,6 +24,7 @@ import {
   type Item,
 } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
+import type { PlanBaseline, PlanCompareData } from "./plan-model";
 import type {
   ChatTabInfo,
   ContextUsage,
@@ -73,6 +74,8 @@ export function Chat({
   onRetryRestore,
   onApproval,
   onConfirmPlan,
+  onCheckPlanBaseline,
+  onLoadPlanCompare,
   onSendToTerminal,
   onOpenFile,
 }: {
@@ -104,6 +107,11 @@ export function Chat({
   onRetryRestore: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
   onConfirmPlan: (version: number) => Promise<boolean>;
+  onCheckPlanBaseline: (version: number) => Promise<PlanBaseline>;
+  onLoadPlanCompare: (
+    version: number,
+    viewId: string,
+  ) => Promise<PlanCompareData>;
   onSendToTerminal: (text: string) => void;
   onOpenFile: (href: string) => void;
 }) {
@@ -482,6 +490,8 @@ export function Chat({
             onApproval={onApproval}
             onConfirmPlan={onConfirmPlan}
             onRevisePlan={() => composerRef.current?.focus()}
+            onCheckPlanBaseline={onCheckPlanBaseline}
+            onLoadPlanCompare={onLoadPlanCompare}
             onOpenFile={onOpenFile}
           />
         )}

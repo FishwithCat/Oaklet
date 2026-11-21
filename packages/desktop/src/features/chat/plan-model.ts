@@ -30,6 +30,40 @@ export type PlanDiffSummary = {
   removed: PlanChangeCounts;
   modified: PlanModifiedCounts;
   views: PlanDiffView[];
+  changes?: PlanDiffChanges | null;
+};
+
+export type PlanElementChange = {
+  id: string;
+  title: string;
+  kind?: string | null;
+};
+
+export type PlanRelationChange = {
+  id: string;
+  source: string;
+  sourceTitle: string;
+  target: string;
+  targetTitle: string;
+  label: string;
+};
+
+export type PlanModifiedElementChange = PlanElementChange & {
+  fields: string[];
+};
+
+export type PlanDiffChanges = {
+  added: {
+    elements: PlanElementChange[];
+    relations: PlanRelationChange[];
+  };
+  removed: {
+    elements: PlanElementChange[];
+    relations: PlanRelationChange[];
+  };
+  modified: {
+    elements: PlanModifiedElementChange[];
+  };
 };
 
 export type PlanDiagnostic = {
@@ -61,8 +95,41 @@ export type PlanItem = {
   /** Set by the transcript projection for the newest plan version. */
   latest?: boolean;
   steps: string;
+  details?: PlanDetails | null;
   validation?: PlanValidation | null;
   seq?: number;
+};
+
+export type PlanStep = {
+  title: string;
+  outcome: string;
+  files?: string[];
+  components?: string[];
+  dependsOn?: number[];
+  verification: string;
+};
+
+export type PlanDetails = {
+  objective: string;
+  changes: string;
+  steps: PlanStep[];
+  risks?: string[];
+  questions?: string[];
+};
+
+export type PlanBaseline = {
+  version: number;
+  checked: boolean;
+  baselineChanged: boolean;
+};
+
+export type PlanCompareData = {
+  version: number;
+  modelRoot: string;
+  sourceDigest: string;
+  viewId: string;
+  model: unknown;
+  view: unknown;
 };
 
 export type PlanBadgeTone = "verified" | "warning" | "error" | "muted" | "accepted";
@@ -188,3 +255,160 @@ export function planNotes(plan: PlanItem): PlanNote[] {
   }
   return notes;
 }
+
+export type PlanImpactKind = "added" | "modified" | "removed";
+
+export type PlanImpactItem = {
+  key: string;
+  /** Model element or relation ID, shown in the expandable raw details. */
+  id: string;
+  kind: PlanImpactKind;
+  label: string;
+  detail: string;
+  refs: string[];
+  /** One-based step number when a step names this element or relation. */
+  step: number | null;
+};
+
+export type PlanImpactGroup = {
+  kind: PlanImpactKind;
+  label: string;
+  symbol: string;
+  items: PlanImpactItem[];
+};
+
+const IMPACT_GROUPS: Omit<PlanImpactGroup, "items">[] = [
+  { kind: "added", label: "Added", symbol: "+" },
+  { kind: "modified", label: "Modified", symbol: "~" },
+  { kind: "removed", label: "Removed", symbol: "−" },
+];
+
+function stepNumber(
+  refs: readonly string[],
+  steps: readonly PlanStep[],
+): number | null {
+  const wanted = new Set(refs.filter(Boolean));
+  const index = steps.findIndex((step) =>
+    (step.components ?? []).some((component) => wanted.has(component)),
+  );
+  return index === -1 ? null : index + 1;
+}
+
+function relationRefs(change: PlanRelationChange): string[] {
+  return [
+    change.id,
+    change.label,
+    `${change.source} -> ${change.target}`,
+    `${change.sourceTitle} -> ${change.targetTitle}`,
+  ].filter(Boolean);
+}
+
+function relationDetail(change: PlanRelationChange): string {
+  const route = `${change.sourceTitle || change.source} → ${
+    change.targetTitle || change.target
+  }`;
+  return change.label ? `${route} · ${change.label}` : route;
+}
+
+/** Architecture changes grouped the way the review checklist renders them. */
+export function planImpactGroups(plan: PlanItem): PlanImpactGroup[] {
+  const changes = plan.validation?.diff?.changes;
+  if (!changes) return [];
+  const steps = plan.details?.steps ?? [];
+  const groups: PlanImpactGroup[] = [
+    {
+      ...IMPACT_GROUPS[0]!,
+      items: changes.added.elements.map((element) => {
+        const refs = [element.id, element.title];
+        return {
+          key: `added-element-${element.id}`,
+          id: element.id,
+          kind: "added" as const,
+          label: element.title || element.id,
+          detail: element.kind ?? "Element",
+          refs,
+          step: stepNumber(refs, steps),
+        };
+      }),
+    },
+    {
+      ...IMPACT_GROUPS[1]!,
+      items: changes.modified.elements.map((element) => {
+        const refs = [element.id, element.title];
+        return {
+          key: `modified-element-${element.id}`,
+          id: element.id,
+          kind: "modified" as const,
+          label: element.title || element.id,
+          detail:
+            element.fields.length > 0
+              ? element.fields.join(", ")
+              : "Element updated",
+          refs,
+          step: stepNumber(refs, steps),
+        };
+      }),
+    },
+    {
+      ...IMPACT_GROUPS[2]!,
+      items: changes.removed.elements.map((element) => {
+        const refs = [element.id, element.title];
+        return {
+          key: `removed-element-${element.id}`,
+          id: element.id,
+          kind: "removed" as const,
+          label: element.title || element.id,
+          detail: element.kind ?? "Element",
+          refs,
+          step: stepNumber(refs, steps),
+        };
+      }),
+    },
+  ];
+  // Relations sit beside the elements they connect in the same status group.
+  groups[0]!.items.push(
+    ...changes.added.relations.map((relation) => {
+      const refs = relationRefs(relation);
+      return {
+        key: `added-relation-${relation.id}`,
+        id: relation.id,
+        kind: "added" as const,
+        label: relation.label || relationDetail(relation),
+        detail: relationDetail(relation),
+        refs,
+        step: stepNumber(refs, steps),
+      };
+    }),
+  );
+  groups[2]!.items.push(
+    ...changes.removed.relations.map((relation) => {
+      const refs = relationRefs(relation);
+      return {
+        key: `removed-relation-${relation.id}`,
+        id: relation.id,
+        kind: "removed" as const,
+        label: relation.label || relationDetail(relation),
+        detail: relationDetail(relation),
+        refs,
+        step: stepNumber(refs, steps),
+      };
+    }),
+  );
+  return groups.filter((group) => group.items.length > 0);
+}
+
+export function planHasReviewDetails(plan: PlanItem): boolean {
+  return Boolean(
+    plan.details?.changes?.trim() ||
+      plan.validation?.dsl ||
+      plan.validation?.diff,
+  );
+}
+
+export type CompareMode = "changes" | "as-is" | "to-be";
+
+export const COMPARE_MODES: { id: CompareMode; label: string }[] = [
+  { id: "changes", label: "Changes" },
+  { id: "as-is", label: "As-is" },
+  { id: "to-be", label: "To-be" },
+];
