@@ -40,6 +40,12 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 libc = "0.2"
 
 
+# Keep dev artifacts small: the default `debug = true` embeds full DWARF for every
+# codegen unit, which is what made `target/debug/deps` grow into tens of GB.
+# Line tables keep backtraces/breakpoints usable at a fraction of the size.
+[profile.dev]
+debug = "line-tables-only"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1
