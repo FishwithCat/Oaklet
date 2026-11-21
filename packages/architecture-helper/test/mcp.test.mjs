@@ -39,6 +39,20 @@ test("queries a real project and its elements over MCP", async () => {
   assert.ok(summary.structuredContent.elements.length > 0);
 });
 
+test("read-only discovery hides mutating tools and refuses their calls", async () => {
+  const result = await query({ readOnly: true });
+  assert.ok(result.tools.length > 0);
+  assert.ok(result.tools.every((tool) => tool.annotations?.readOnlyHint === true));
+  assert.ok(!result.tools.some((tool) => tool.name === "apply-semantic-layout"));
+
+  const listed = await query({ readOnly: true, tool: "list-projects" });
+  assert.equal(listed.structuredContent.projects[0].id, "oaklet-fixture");
+  await assert.rejects(
+    query({ readOnly: true, tool: "apply-semantic-layout" }),
+    /not read-only/,
+  );
+});
+
 test("preserves MCP tool errors for unknown tools and invalid arguments", async () => {
   assert.equal((await query({ tool: "nonexistent" })).isError, true);
   assert.equal((await query({ tool: "read-element", arguments: {} })).isError, true);

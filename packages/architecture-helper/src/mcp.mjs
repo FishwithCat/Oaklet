@@ -5,6 +5,22 @@ import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/s
 
 // Keep the official stdio server in this process so cancellation kills all work.
 // shortcut: reload per call; keep a session if workspace startup becomes too slow.
+async function listTools(client) {
+  const tools = [];
+  let cursor;
+  do {
+    const page = await client.listTools({ cursor });
+    tools.push(...page.tools.map(({ name, description, inputSchema, annotations }) => ({
+      name,
+      description,
+      inputSchema,
+      ...(annotations ? { annotations } : {}),
+    })));
+    cursor = page.nextCursor;
+  } while (cursor);
+  return tools;
+}
+
 async function query(workspace, request) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -38,16 +54,19 @@ async function query(workspace, request) {
     await server.start();
     await client.connect(transport);
     if (request.tool) {
+      // Planning runs may not mutate the model, so gate the exact call instead
+      // of trusting the caller to have used the filtered list.
+      if (request.readOnly) {
+        const tools = await listTools(client);
+        const tool = tools.find(({ name }) => name === request.tool);
+        if (tool?.annotations?.readOnlyHint !== true) {
+          throw new Error(`tool ${request.tool} is not read-only`);
+        }
+      }
       return await client.callTool({ name: request.tool, arguments: request.arguments ?? {} });
     }
-    const tools = [];
-    let cursor;
-    do {
-      const page = await client.listTools({ cursor });
-      tools.push(...page.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })));
-      cursor = page.nextCursor;
-    } while (cursor);
-    return { tools };
+    const tools = await listTools(client);
+    return { tools: request.readOnly ? tools.filter((tool) => tool.annotations?.readOnlyHint === true) : tools };
   } finally {
     try {
       await client.close();
