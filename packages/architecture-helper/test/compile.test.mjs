@@ -257,6 +257,24 @@ diff worker { add { extend api { queue = component 'Queue' } } }`,
   assert.match(response.error, /only contain its top-level diff/);
 });
 
+test("lists descendants and connected relations removed with their parent", async () => {
+  const { response } = await compile(await sourcesFor("valid"), {
+    path: "architecture/.oaklet-plan-remove-parent.c4",
+    text: "diff cleanup { remove { api } }",
+  });
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.diff.removed, { elements: 4, relations: 3 });
+  assert.deepEqual(
+    response.diff.changes.removed.elements.map(({ id }) => id).sort(),
+    ["api", "api.store", "api.web", "api.worker"],
+  );
+  assert.deepEqual(
+    response.diff.changes.removed.relations.map(({ label }) => label).sort(),
+    ["Queues jobs", "Reads and writes", "Uses"],
+  );
+});
+
 test("rejects a draft whose ID already exists in the model", async () => {
   const sources = await sourcesFor("valid");
   sources["architecture/existing.c4"] = `diff worker 'Existing worker' {

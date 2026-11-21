@@ -174,7 +174,9 @@ function diffSummary(summary, changes) {
     title: summary.title,
     description: richText(summary.description),
     added: summary.added,
-    removed: summary.removed,
+    removed: changes
+      ? { elements: changes.removed.elements.length, relations: changes.removed.relations.length }
+      : summary.removed,
     modified: summary.modified,
     views: summary.views ?? [],
     ...(changes ? { changes } : {}),
@@ -228,6 +230,7 @@ function diffChanges(models) {
   const beforeElements = before?.$data?.elements ?? {};
   const afterElements = after?.$data?.elements ?? {};
   const beforeRelations = before?.$data?.relations ?? {};
+  const afterRelations = after?.$data?.relations ?? {};
   return {
     added: {
       elements: Object.values(diff.add.elements).map((element) =>
@@ -238,12 +241,12 @@ function diffChanges(models) {
       ),
     },
     removed: {
-      elements: diff.remove.elements.map((id) =>
-        elementChange(id, beforeElements[id]),
-      ),
-      relations: diff.remove.relations.map((id) =>
-        relationChange(beforeRelations[id], beforeElements),
-      ),
+      elements: Object.entries(beforeElements)
+        .filter(([id]) => !Object.hasOwn(afterElements, id))
+        .map(([id, element]) => elementChange(id, element)),
+      relations: Object.entries(beforeRelations)
+        .filter(([id]) => !Object.hasOwn(afterRelations, id))
+        .map(([, relation]) => relationChange(relation, beforeElements)),
     },
     modified: {
       elements: Object.entries(diff.modify.elements).map(([id, overlay]) => {
