@@ -10,11 +10,18 @@
  *
  *   { "version": 1, "sources": { ... }, "diff": { "path": "...", "text": "..." } }
  *
+ * The review view asks for one layouted compare diagram as well:
+ *
+ *   { "version": 1, "sources": { ... }, "diff": { ... },
+ *     "compare": { "viewId": "containers" } }
+ *
  * The helper only receives model sources. It never reads a workspace, imports
  * workspace configuration files, or executes workspace JavaScript. `fromSources`
  * builds a virtual workspace in memory and `layoutedModel()` runs Graphviz as
  * WebAssembly, so compilation leaves no temporary files behind.
  */
+import { createCompareModels } from "@likec4/core/compute-view";
+
 const HELPER_VERSION = "0.1.0";
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -98,7 +105,11 @@ function validateRequest(request) {
   if (Object.keys(sources).length === 0) {
     throw new Error("The architecture request has no sources.");
   }
-  return { sources, diff: validateDiff(request.diff, sources) };
+  return {
+    sources,
+    diff: validateDiff(request.diff, sources),
+    compare: validateCompare(request.compare),
+  };
 }
 
 function safePath(path) {
@@ -128,6 +139,17 @@ function validateDiff(diff, sources) {
   return { path: diff.path, text: diff.text };
 }
 
+function validateCompare(compare) {
+  if (compare === undefined) return null;
+  if (!compare || typeof compare !== "object" || Array.isArray(compare)) {
+    throw new Error("The architecture compare request must be an object.");
+  }
+  if (typeof compare.viewId !== "string" || compare.viewId.trim().length === 0) {
+    throw new Error("The architecture compare request has no view ID.");
+  }
+  return { viewId: compare.viewId };
+}
+
 function documentFor(likec4, path) {
   return [...likec4.langium.likec4.shared.workspace.LangiumDocuments.all].find(
     (document) =>
@@ -146,7 +168,7 @@ function richText(value) {
   return null;
 }
 
-function diffSummary(summary) {
+function diffSummary(summary, changes) {
   return {
     id: summary.id,
     title: summary.title,
@@ -155,7 +177,96 @@ function diffSummary(summary) {
     removed: summary.removed,
     modified: summary.modified,
     views: summary.views ?? [],
+    ...(changes ? { changes } : {}),
   };
+}
+
+function modelRef(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.model === "string") return value.model;
+  return null;
+}
+
+function elementTitle(element, fallback) {
+  return richText(element?.title) ?? fallback;
+}
+
+function elementChange(id, element) {
+  return {
+    id,
+    title: elementTitle(element, id),
+    kind: typeof element?.kind === "string" ? element.kind : null,
+  };
+}
+
+function relationChange(relation, elements) {
+  const source = modelRef(relation?.source) ?? "";
+  const target = modelRef(relation?.target) ?? "";
+  return {
+    id: typeof relation?.id === "string" ? relation.id : "",
+    source,
+    sourceTitle: elementTitle(elements?.[source], source),
+    target,
+    targetTitle: elementTitle(elements?.[target], target),
+    label: richText(relation?.title) ?? "",
+  };
+}
+
+const MODIFIED_FIELDS = [
+  "title",
+  "description",
+  "technology",
+  "tags",
+  "links",
+  "metadata",
+];
+
+/** Names for the review checklist, built from the parsed diff and both models. */
+function diffChanges(models) {
+  if (!models) return null;
+  const { diff, before, after } = models;
+  const beforeElements = before?.$data?.elements ?? {};
+  const afterElements = after?.$data?.elements ?? {};
+  const beforeRelations = before?.$data?.relations ?? {};
+  return {
+    added: {
+      elements: Object.values(diff.add.elements).map((element) =>
+        elementChange(element.id, element),
+      ),
+      relations: Object.values(diff.add.relations).map((relation) =>
+        relationChange(relation, afterElements),
+      ),
+    },
+    removed: {
+      elements: diff.remove.elements.map((id) =>
+        elementChange(id, beforeElements[id]),
+      ),
+      relations: diff.remove.relations.map((id) =>
+        relationChange(beforeRelations[id], beforeElements),
+      ),
+    },
+    modified: {
+      elements: Object.entries(diff.modify.elements).map(([id, overlay]) => {
+        const element = afterElements[id] ?? beforeElements[id];
+        return {
+          ...elementChange(id, element),
+          fields: Object.keys(overlay ?? {}).filter((field) =>
+            MODIFIED_FIELDS.includes(field),
+          ),
+        };
+      }),
+    },
+  };
+}
+
+async function changesForDraft(likec4, id) {
+  try {
+    const parsed = await likec4.modelBuilder.parseModel();
+    return parsed ? diffChanges(createCompareModels(parsed.$data, id)) : null;
+  } catch {
+    // The checklist is optional; validation and the diff summary still stand.
+    return null;
+  }
 }
 
 async function validateDraft(likec4, diff, diagnostics) {
@@ -219,9 +330,46 @@ async function validateDraft(likec4, diff, diagnostics) {
 
   return {
     ok: true,
-    diff: diffSummary(summary),
+    diff: diffSummary(summary, await changesForDraft(likec4, id)),
     warnings,
     overlaps: check.overlaps,
+  };
+}
+
+async function compareDraft(likec4, diff, viewId) {
+  const validation = await validateDraft(likec4, diff, []);
+  if (!validation.ok) return validation;
+  const view = (validation.diff.views ?? []).find(
+    (candidate) => candidate.id === viewId,
+  );
+  if (!view) {
+    return {
+      ok: false,
+      error: `The diff does not change view "${viewId}".`,
+      diagnostics: [],
+    };
+  }
+  const compareView = await likec4.modelDiffs.layoutCompareView({
+    viewId,
+    diffId: validation.diff.id,
+  });
+  if (!compareView) {
+    return {
+      ok: false,
+      error: `LikeC4 could not lay out the compare view "${viewId}".`,
+      diagnostics: [],
+    };
+  }
+  const layouted = await likec4.layoutedModel();
+  const model = JSON.parse(JSON.stringify(layouted.$data));
+  // The desktop only needs the model metadata and this one compare view; the
+  // compare view keeps its own layout for all three review states.
+  model.views = { [compareView.id]: compareView };
+  return {
+    ok: true,
+    diff: validation.diff,
+    view: compareView,
+    model,
   };
 }
 
@@ -249,7 +397,7 @@ let responded = false;
 async function main() {
   let likec4;
   try {
-    const { sources, diff } = validateRequest(await readRequest());
+    const { sources, diff, compare } = validateRequest(await readRequest());
     const allSources = diff ? { ...sources, [diff.path]: diff.text } : sources;
     const { fromSources } = await import("@likec4/language-services/node");
     likec4 = await fromSources(allSources, {
@@ -278,6 +426,20 @@ async function main() {
         views: [],
         draftError,
       });
+      return;
+    }
+
+    if (compare) {
+      if (!diff) {
+        respond({
+          ok: false,
+          error: "The architecture compare request needs a diff.",
+          diagnostics: [],
+          views: [],
+        });
+        return;
+      }
+      respond(await compareDraft(likec4, diff, compare.viewId));
       return;
     }
 

@@ -18,7 +18,7 @@ async function sourcesFor(name) {
   return sources;
 }
 
-function compile(sources, diff) {
+function compile(sources, diff, compare) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [helper], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -39,7 +39,14 @@ function compile(sources, diff) {
         );
       }
     });
-    child.stdin.end(JSON.stringify({ version: 1, sources, ...(diff ? { diff } : {}) }));
+    child.stdin.end(
+      JSON.stringify({
+        version: 1,
+        sources,
+        ...(diff ? { diff } : {}),
+        ...(compare ? { compare } : {}),
+      }),
+    );
   });
 }
 
@@ -105,12 +112,119 @@ test("validates one native diff draft and returns its summary", async () => {
   assert.equal(response.diff.title, "Add background worker");
   assert.equal(response.diff.description, "Introduce a queue in front of the worker");
   assert.deepEqual(response.diff.added, { elements: 1, relations: 1 });
+  assert.deepEqual(response.diff.changes.added.elements, [
+    { id: "api.queue", title: "Queue", kind: "component" },
+  ]);
+  assert.deepEqual(
+    response.diff.changes.added.relations.map((relation) => ({
+      source: relation.source,
+      sourceTitle: relation.sourceTitle,
+      target: relation.target,
+      targetTitle: relation.targetTitle,
+      label: relation.label,
+    })),
+    [
+      {
+        source: "api.web",
+        sourceTitle: "Web app",
+        target: "api.queue",
+        targetTitle: "Queue",
+        label: "Enqueues",
+      },
+    ],
+  );
   assert.deepEqual(response.diff.views[0].nodes, {
     added: 1,
     removed: 0,
     modified: 0,
   });
   assert.deepEqual(response.overlaps, []);
+});
+
+test("lays out a compare view for the review card", async () => {
+  const diff = {
+    path: "architecture/.oaklet-plan-3.c4",
+    text: `diff worker 'Add background worker' {
+  add {
+    extend api {
+      queue = component 'Queue'
+    }
+    api.web -> api.queue 'Enqueues'
+  }
+}
+`,
+  };
+  const { response } = await compile(await sourcesFor("valid"), diff, {
+    viewId: "containers",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.view.id, "containers");
+  assert.equal(response.view._stage, "layouted");
+  assert.equal(
+    response.view.nodes.find((node) => node.id === "api.queue")?.diffStatus,
+    "added",
+  );
+  assert.deepEqual(Object.keys(response.model.views), ["containers"]);
+  assert.equal(
+    response.model.views.containers.nodes.find(
+      (node) => node.id === "api.queue",
+    )?.diffStatus,
+    "added",
+  );
+});
+
+test("rejects a compare view the diff does not affect", async () => {
+  const { response } = await compile(
+    await sourcesFor("valid"),
+    {
+      path: "architecture/.oaklet-plan-4.c4",
+      text: `diff worker 'Add background worker' {
+  add { extend api { queue = component 'Queue' } }
+}
+`,
+    },
+    { viewId: "missing" },
+  );
+
+  assert.equal(response.ok, false);
+  assert.match(response.error, /does not change view/);
+});
+
+test("names removed and modified model changes for the checklist", async () => {
+  const { response } = await compile(await sourcesFor("valid"), {
+    path: "architecture/.oaklet-plan-5.c4",
+    text: `diff cleanup 'Cleanup worker' {
+  add {
+    extend api.worker {
+      metadata { owner 'platform' }
+    }
+  }
+  remove {
+    api.worker -> api.store 'Reads and writes'
+  }
+}
+`,
+  });
+
+  assert.equal(response.ok, true);
+  const changes = response.diff.changes;
+  assert.deepEqual(
+    changes.modified.elements.map((element) => ({
+      id: element.id,
+      title: element.title,
+      fields: element.fields,
+    })),
+    [{ id: "api.worker", title: "Worker", fields: ["metadata"] }],
+  );
+  assert.deepEqual(
+    changes.removed.relations.map((relation) => ({
+      source: relation.source,
+      target: relation.target,
+      label: relation.label,
+    })),
+    [{ source: "api.worker", target: "api.store", label: "Reads and writes" }],
+  );
 });
 
 test("rejects a draft with more than one top-level diff", async () => {
