@@ -288,7 +288,7 @@ export function PlanCard({
 
       {details?.objective && (
         <div className="plan-objective">
-          <p>{details.objective}</p>
+          <MarkdownText text={details.objective} onOpenFile={onOpenFile} />
         </div>
       )}
 
@@ -411,7 +411,7 @@ export function PlanCard({
           {details?.changes && (
             <div className="plan-overview">
               <span className="plan-label">Changes</span>
-              <p>{details.changes}</p>
+              <MarkdownText text={details.changes} onOpenFile={onOpenFile} />
             </div>
           )}
 
