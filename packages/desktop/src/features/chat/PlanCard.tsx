@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { DownSmallRegular } from "@mingcute/react/core-regular";
 import { MarkdownText } from "../../shared/Markdown";
 import { errorText } from "../../shared/error-text";
-import { PlanCompare } from "./PlanCompare";
 import {
   canConfirmPlan,
   confirmLabel,
@@ -18,6 +17,10 @@ import {
   type PlanItem,
   type PlanStep,
 } from "./plan-model";
+
+const PlanCompare = lazy(() =>
+  import("./PlanCompare").then((module) => ({ default: module.PlanCompare })),
+);
 
 function stepId(version: number, number: number): string {
   return `plan-v${version}-step-${number}`;
@@ -452,7 +455,15 @@ export function PlanCard({
           )}
 
           {views.length > 0 && validation?.status === "verified" && (
-            <PlanCompare plan={plan} onLoad={onLoadCompare} />
+            <Suspense
+              fallback={
+                <p className="plan-compare-status" role="status">
+                  Loading comparison…
+                </p>
+              }
+            >
+              <PlanCompare plan={plan} onLoad={onLoadCompare} />
+            </Suspense>
           )}
           {views.length > 0 && validation?.status !== "verified" && (
             <div className="plan-views">
