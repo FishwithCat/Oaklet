@@ -352,6 +352,7 @@ mod tests {
         let ctx = ToolContext {
             workspace,
             cancel,
+            access: crate::tools::Access::execute(),
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "run-test".into(),
             window: "main".into(),

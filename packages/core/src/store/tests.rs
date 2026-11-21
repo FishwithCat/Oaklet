@@ -3,8 +3,8 @@
 use serde_json::json;
 
 use super::{
-    ContextUsage, EventPayload, NewUserTurn, RunEnd, RunUsage, StepUsage, Store, has_table,
-    is_checkpoint,
+    ContextUsage, EventPayload, NewUserTurn, PlanState, PlanStatus, RunEnd, RunUsage, StepUsage,
+    Store, has_table, is_checkpoint,
 };
 use crate::agent::Usage;
 
@@ -256,6 +256,43 @@ fn new_runs_start_with_zero_usage() {
         )
         .unwrap();
     assert_eq!(usage, (0, 0, 0, 0, 0));
+}
+
+#[test]
+fn plan_state_survives_runs_and_advances_versions() {
+    let store = store();
+    store.create_session("s1", "/tmp/a", 1).unwrap();
+    let started = store.begin_run("s1", "r1", &turn("plan", None), 2).unwrap();
+    assert_eq!(started.plan, PlanState::default());
+    store
+        .finish_run(&RunEnd {
+            session_id: "s1".into(),
+            run_id: "r1".into(),
+            start_seq: started.start_seq,
+            status: "done",
+            finished_at: 3,
+            appended: vec![EventPayload::Plan {
+                version: 1,
+                status: PlanStatus::Pending,
+            }],
+            compaction: None,
+            context: None,
+            usage: Default::default(),
+            error: None,
+        })
+        .unwrap();
+    assert_eq!(
+        store.plan_state("s1").unwrap(),
+        PlanState {
+            latest: Some(1),
+            pending: true,
+        }
+    );
+    let started = store
+        .begin_run("s1", "r2", &turn("revise", None), 4)
+        .unwrap();
+    assert_eq!(started.plan.latest, Some(1));
+    assert!(started.plan.pending);
 }
 
 #[test]

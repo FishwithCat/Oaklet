@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use super::{Event, EventPayload, StepUsage};
+use super::{Event, EventPayload, PlanState, PlanStatus, StepUsage};
 
 pub(super) fn decode_event(seq: i64, raw: &str, created_at: i64) -> Result<Event, String> {
     let payload = serde_json::from_str(raw)
@@ -165,6 +165,29 @@ pub(super) fn read_last_step(
     )
     .optional()
     .map_err(|error| format!("Could not read run usage: {error}"))
+}
+
+/// The newest plan and whether it is still awaiting review.
+pub(super) fn plan_state(conn: &Connection, session_id: &str) -> Result<PlanState, String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM session_events WHERE session_id = ?1 \
+             AND json_extract(payload, '$.type') = 'plan' ORDER BY seq DESC LIMIT 1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the plan: {error}"))?;
+    let Some(raw) = raw else {
+        return Ok(PlanState::default());
+    };
+    match decode_event(0, &raw, 0)?.payload {
+        EventPayload::Plan { version, status } => Ok(PlanState {
+            latest: Some(version),
+            pending: status == PlanStatus::Pending,
+        }),
+        _ => Ok(PlanState::default()),
+    }
 }
 
 pub(super) fn append_events(

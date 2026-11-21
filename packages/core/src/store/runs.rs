@@ -3,7 +3,7 @@
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 
-use super::events::{append_events, next_seq, read_from, read_last_step};
+use super::events::{append_events, next_seq, plan_state, read_from, read_last_step};
 use super::projection::{save_surface, surface_messages_with};
 use super::{EventPayload, NewUserTurn, PAGE_EVENTS, RunEnd, RunStart, SessionWindow, Store};
 
@@ -41,6 +41,7 @@ impl Store {
         // the user turn, so a concurrent compaction cannot slip between them.
         let prior_messages = surface_messages_with(&tx, session_id)?
             .ok_or_else(|| "This session no longer exists.".to_string())?;
+        let plan = plan_state(&tx, session_id)?;
         let start_seq = next_seq(&tx, session_id)?;
         append_events(
             &tx,
@@ -70,6 +71,7 @@ impl Store {
             window,
             start_seq,
             prior_messages,
+            plan,
         })
     }
 

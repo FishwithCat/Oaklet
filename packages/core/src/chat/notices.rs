@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{
     ChatState,
-    run::{RunContext, start_run},
+    run::{RunContext, RunTrigger, start_run},
 };
 use crate::SharedState;
 use crate::store::NewUserTurn;
@@ -41,10 +41,17 @@ pub(crate) fn job_settled(
     let session_id = job.owner.session_id.clone();
     let window = job.owner.window.clone();
     let chat = &state.chat;
+    // A plan under review must not be bypassed by a job completion.
+    let pending = chat
+        .store
+        .plan_state(&session_id)
+        .map(|plan| plan.pending)
+        .unwrap_or(true);
 
     let wake = {
         let mut live = chat.live();
-        let busy = live.runs.values().any(|run| run.session_id == session_id)
+        let busy = pending
+            || live.runs.values().any(|run| run.session_id == session_id)
             || live.compacting.contains_key(&session_id)
             || live.closing.contains(&window)
             || live
@@ -103,6 +110,7 @@ fn wake_notice(
         state,
         window,
         session_id,
+        RunTrigger::Notice,
         config,
         turn,
         cancel,
@@ -135,6 +143,14 @@ fn queue_notice(chat: &ChatState, session_id: &str, notice: JobNotice) {
 /// after its last step: the run's end wakes the session once with them.
 pub(super) fn resume_notices(ctx: &RunContext) {
     let chat = &ctx.state().chat;
+    if chat
+        .store
+        .plan_state(ctx.session_id())
+        .map(|plan| plan.pending)
+        .unwrap_or(true)
+    {
+        return;
+    }
     let spent = {
         let live = chat.live();
         if live.notices.get(ctx.session_id()).is_none_or(Vec::is_empty) {

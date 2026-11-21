@@ -132,6 +132,9 @@ fn project_events(events: &[Event]) -> Vec<Value> {
     for event in events {
         match &event.payload {
             EventPayload::ToolTrim { .. } => {}
+            // Rendered as the plan card in a later step; the assistant reply
+            // above it already shows the plan text.
+            EventPayload::Plan { .. } => {}
             EventPayload::Notice { tone, text } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,

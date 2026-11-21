@@ -15,8 +15,15 @@ use super::transcript::{settle_streaming, view_from_window};
 use super::{JobNotice, RunHandle, SessionView, Tone};
 use crate::agent::Usage;
 use crate::store::{self, EventPayload, NewUserTurn};
-use crate::tools::CancelHandle;
+use crate::tools::{Access, CancelHandle};
 use crate::{SharedState, context};
+
+/// What opened a run. Background notices never unlock execution tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunTrigger {
+    User,
+    Notice,
+}
 
 /// Register a run for an already-built user turn and spawn the agent loop. The
 /// caller decides what the turn means: a typed message or a job notice.
@@ -26,6 +33,7 @@ pub(super) fn start_run(
     state: &SharedState,
     window: &str,
     session_id: &str,
+    trigger: RunTrigger,
     config: crate::AppConfig,
     turn: NewUserTurn,
     cancel: crate::tools::Cancel,
@@ -36,7 +44,7 @@ pub(super) fn start_run(
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
-    let (view, start_seq, messages) = {
+    let (view, start_seq, messages, access, next_plan_version) = {
         let mut live = state.chat.live();
         if live.closing.contains(window)
             || live
@@ -50,6 +58,12 @@ pub(super) fn start_run(
             || live.runs.values().any(|run| run.session_id == session_id)
         {
             return Err("This chat is already working.".into());
+        }
+        // A notice wake must not run while a plan awaits review. The live lock
+        // keeps this check and the registration atomic against a finishing run.
+        let plan = store.plan_state(session_id)?;
+        if trigger == RunTrigger::Notice && plan.pending {
+            return Err("A plan is waiting for review.".into());
         }
         let started = store.begin_run(session_id, &run_id, &turn, store::now_ms())?;
         // `prior_messages` is the surface before this user turn, read in the
@@ -73,7 +87,9 @@ pub(super) fn start_run(
                 view: view.clone(),
             },
         );
-        (view, started.start_seq, messages)
+        let access = access_for(trigger, started.plan.pending);
+        let next_plan_version = started.plan.latest.unwrap_or(0) + 1;
+        (view, started.start_seq, messages, access, next_plan_version)
     };
 
     let ctx = RunContext {
@@ -91,6 +107,9 @@ pub(super) fn start_run(
         compacted: Arc::new(AtomicBool::new(false)),
         compaction_sizes: Arc::new(Mutex::new(None)),
         usage: Arc::new(Mutex::new(store::RunUsage::default())),
+        access,
+        next_plan_version,
+        records_plan: trigger == RunTrigger::User,
     };
     let recovery_ctx = ctx.clone();
     let recovery_messages = messages.clone();
@@ -262,6 +281,12 @@ pub struct RunContext {
     compaction_sizes: Arc<Mutex<Option<(usize, usize)>>>,
     /// Provider-reported tokens accumulated across this run's model steps.
     usage: Arc<Mutex<store::RunUsage>>,
+    /// Capability gate shared with the tool registry.
+    access: Arc<Access>,
+    /// Version the next plan recorded by this run will carry.
+    next_plan_version: u64,
+    /// Background-notice turns never create a plan awaiting review.
+    records_plan: bool,
 }
 
 #[derive(Default)]
@@ -314,6 +339,14 @@ impl RunContext {
 
     pub fn jobs(&self) -> std::sync::Arc<crate::tools::jobs::JobRegistry> {
         self.state.jobs.clone()
+    }
+
+    pub fn access(&self) -> &Arc<Access> {
+        &self.access
+    }
+
+    pub fn next_plan_version(&self) -> u64 {
+        self.next_plan_version
     }
 
     pub fn archived(&self) -> Arc<Mutex<Vec<(i64, Value)>>> {
@@ -448,6 +481,9 @@ impl RunContext {
             compacted: Arc::new(AtomicBool::new(false)),
             compaction_sizes: Arc::new(Mutex::new(None)),
             usage: Arc::new(Mutex::new(store::RunUsage::default())),
+            access: access_for(RunTrigger::User, started.plan.pending),
+            next_plan_version: started.plan.latest.unwrap_or(0) + 1,
+            records_plan: true,
         }
     }
 
@@ -460,9 +496,20 @@ impl RunContext {
     }
 }
 
+/// Background notices and reviewed plans lock the gate; a plain user turn only
+/// starts read-only so `assess_change` can classify it.
+fn access_for(trigger: RunTrigger, pending_plan: bool) -> Arc<Access> {
+    if trigger == RunTrigger::Notice || pending_plan {
+        Access::locked_read_only()
+    } else {
+        Access::read_only()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::{ArchitectureImpact, Assessment, Intent, ToolAccess};
 
     #[test]
     fn closes_a_tool_block_that_stopped_before_its_results() {
@@ -531,5 +578,31 @@ mod tests {
         partial.reasoning_started_at = Some(8000);
         partial.settle_reasoning(7999);
         assert_eq!(partial.reasoning_duration_ms, Some(2500));
+    }
+
+    #[test]
+    fn only_user_turns_without_a_pending_plan_can_open_execution() {
+        let access = access_for(RunTrigger::User, false);
+        assert!(!access.is_locked());
+        assert_eq!(access.mode(), ToolAccess::ReadOnly);
+        assert_eq!(
+            access.assess(Assessment {
+                intent: Intent::Implement,
+                impact: ArchitectureImpact::None,
+            }),
+            ToolAccess::Execute
+        );
+
+        for (trigger, pending) in [(RunTrigger::Notice, false), (RunTrigger::User, true)] {
+            let access = access_for(trigger, pending);
+            assert!(access.is_locked());
+            assert_eq!(
+                access.assess(Assessment {
+                    intent: Intent::Implement,
+                    impact: ArchitectureImpact::None,
+                }),
+                ToolAccess::ReadOnly
+            );
+        }
     }
 }

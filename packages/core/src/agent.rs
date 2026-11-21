@@ -65,6 +65,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     };
     let mut instructions = WorkspaceInstructions::load(workspace.root());
     let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config, &cancel).await;
+    tools.set_access(ctx.access().clone());
     if cancel.is_cancelled() {
         crate::tools::shutdown_workspace(workspace.root());
         ctx.finish_stopped(strip_system(&input)).await;
@@ -74,6 +75,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     let tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
+        access: ctx.access().clone(),
         jobs: ctx.jobs(),
         session_id: ctx.session_id().to_string(),
         window: ctx.window_label().to_string(),
@@ -98,6 +100,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     );
     let mut meter = Meter::default();
     let mut guard = RepeatGuard::new();
+    let mut mode = tools.access().mode();
     // A forced compaction already shrank the prompt for the retry, so do not
     // immediately run the normal preflight on it again.
     let mut retry_directly = false;
@@ -215,7 +218,10 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // Newly reached directories join the existing system prompt instead of
         // becoming a history message, so a later run starts from disk again
         // rather than replaying stale instructions.
-        if reload_instructions(&mut instructions, &tool_context, &batch.instruction_touches) {
+        if reload_instructions(&mut instructions, &tool_context, &batch.instruction_touches)
+            || tools.access().mode() != mode
+        {
+            mode = tools.access().mode();
             messages[0] = json!({
                 "role": "system",
                 "content": system_prompt(

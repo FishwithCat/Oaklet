@@ -6,6 +6,7 @@
 //! matches on a tool name.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -24,6 +25,7 @@ pub(crate) mod jobs;
 mod likec4;
 mod mcp;
 mod patch;
+mod plan;
 mod search;
 mod shell;
 pub(crate) mod skill;
@@ -157,6 +159,144 @@ impl PartialEq<str> for ToolOutput {
     }
 }
 
+/// What a tool may do to the workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolAccess {
+    ReadOnly,
+    Execute,
+}
+
+impl ToolAccess {
+    /// Whether a run in `self` mode may call a tool with `required` access.
+    pub fn allows(self, required: ToolAccess) -> bool {
+        self == Self::Execute || required == Self::ReadOnly
+    }
+}
+
+/// What the user asked for this turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Intent {
+    /// Change the code now.
+    Implement,
+    /// Assess a possible change; stop at a plan.
+    Evaluate,
+    /// Revise a plan that is already under review.
+    Revise,
+    /// Answer a question without changing anything.
+    Question,
+}
+
+/// Whether the change reaches the architecture model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchitectureImpact {
+    /// Confined to existing components, with no element or dependency change.
+    None,
+    /// Adds, removes, or re-scopes elements, or changes a dependency.
+    Possible,
+    /// The user explicitly asks for an architectural change.
+    Confirmed,
+}
+
+/// The model's classification of one turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Assessment {
+    pub intent: Intent,
+    pub impact: ArchitectureImpact,
+}
+
+impl Assessment {
+    /// Whether this classification opens the execution tools: the user asked
+    /// to implement now and the change stays inside existing components.
+    pub fn opens_execution(self) -> bool {
+        self.intent == Intent::Implement && self.impact == ArchitectureImpact::None
+    }
+
+    /// Whether this turn ends in a plan that needs user review instead of edits.
+    pub fn needs_plan(self) -> bool {
+        match self.intent {
+            Intent::Implement => self.impact != ArchitectureImpact::None,
+            Intent::Evaluate | Intent::Revise => true,
+            Intent::Question => false,
+        }
+    }
+}
+
+/// Per-run capability gate.
+///
+/// Every run starts read-only. The model classifies the turn with
+/// `assess_change`, and only a direct implementation with no architectural
+/// impact opens the execution tools. A run started while a plan awaits review,
+/// or by a background notice, is locked and can never open them.
+pub struct Access {
+    state: Mutex<AccessState>,
+}
+
+#[derive(Clone, Copy)]
+struct AccessState {
+    mode: ToolAccess,
+    locked: bool,
+    assessment: Option<Assessment>,
+}
+
+impl Access {
+    fn new(mode: ToolAccess, locked: bool) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(AccessState {
+                mode,
+                locked,
+                assessment: None,
+            }),
+        })
+    }
+
+    /// A normal turn: read-only until the model classifies it.
+    pub fn read_only() -> Arc<Self> {
+        Self::new(ToolAccess::ReadOnly, false)
+    }
+
+    /// A turn that can never write, such as a background-notice wake.
+    pub fn locked_read_only() -> Arc<Self> {
+        Self::new(ToolAccess::ReadOnly, true)
+    }
+
+    /// Full access, used by callers outside the chat flow such as compaction.
+    pub fn execute() -> Arc<Self> {
+        Self::new(ToolAccess::Execute, false)
+    }
+
+    pub fn mode(&self) -> ToolAccess {
+        self.lock().mode
+    }
+
+    pub fn is_locked(&self) -> bool {
+        self.lock().locked
+    }
+
+    pub fn assessment(&self) -> Option<Assessment> {
+        self.lock().assessment
+    }
+
+    /// Record the model's classification and return the mode it activates.
+    pub fn assess(&self, assessment: Assessment) -> ToolAccess {
+        let mut state = self.lock();
+        state.assessment = Some(assessment);
+        state.mode = if !state.locked && assessment.opens_execution() {
+            ToolAccess::Execute
+        } else {
+            ToolAccess::ReadOnly
+        };
+        state.mode
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, AccessState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// One capability exposed to the model.
 pub trait Tool: Send + Sync {
     /// Model-facing name, also used by the registry for lookup.
@@ -180,6 +320,10 @@ pub trait Tool: Send + Sync {
     /// Approval to request before running this call, if any.
     fn approval(&self, _args: &Value) -> Option<ApprovalRequest> {
         None
+    }
+    /// What this tool may do to the workspace. Everything defaults to writing.
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Execute
     }
     /// Whether this call may overlap with sibling read-only calls. The agent
     /// only groups runs of exact `true`; everything else is a barrier. Opt in
@@ -281,6 +425,8 @@ impl ToolOutcome {
 pub struct ToolContext {
     pub workspace: Workspace,
     pub cancel: Cancel,
+    /// Capability gate shared with the run and the tool registry.
+    pub access: Arc<Access>,
     /// Background jobs owned by the app process, shared across runs.
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session that owns spill files.
@@ -366,6 +512,7 @@ impl Cancel {
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     warnings: Vec<String>,
+    access: Arc<Access>,
 }
 
 impl ToolRegistry {
@@ -420,6 +567,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: vec![
+                Box::new(plan::AssessChange),
                 Box::new(fs::ReadFile),
                 Box::new(image::ReadImage),
                 Box::new(fs::WriteFile),
@@ -434,7 +582,17 @@ impl ToolRegistry {
                 Box::new(jobs::JobKill),
             ],
             warnings: Vec::new(),
+            access: Access::execute(),
         }
+    }
+
+    /// Apply the run's capability gate. Call before building the system prompt.
+    pub fn set_access(&mut self, access: Arc<Access>) {
+        self.access = access;
+    }
+
+    pub fn access(&self) -> &Arc<Access> {
+        &self.access
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -458,6 +616,7 @@ impl ToolRegistry {
         Value::Array(
             self.tools
                 .iter()
+                .filter(|tool| self.access.mode().allows(tool.access()))
                 .map(|tool| {
                     json!({
                         "type": "function",
@@ -477,6 +636,7 @@ impl ToolRegistry {
         let mut seen = std::collections::HashSet::new();
         self.tools
             .iter()
+            .filter(|tool| self.access.mode().allows(tool.access()))
             .map(|tool| tool.guidance())
             .filter(|text| !text.is_empty() && seen.insert(*text))
             .collect()
@@ -497,6 +657,7 @@ impl ToolRegistry {
     /// Pending-call diff preview for tools that edit files.
     pub fn preview_diffs(&self, ctx: &ToolContext, name: &str, args: &Value) -> Vec<FileDiff> {
         self.get(name)
+            .filter(|tool| self.access.mode().allows(tool.access()))
             .map(|tool| tool.preview(ctx, args))
             .unwrap_or_default()
     }
@@ -520,6 +681,16 @@ impl ToolRegistry {
         let Some(tool) = self.get(name) else {
             return ToolOutcome::failure(ToolError::Unknown(name.to_string()).to_string());
         };
+        if !self.access.mode().allows(tool.access()) {
+            return ToolOutcome::failure(if self.access.is_locked() {
+                "This turn is read-only because a plan is waiting for review. \
+                 Revise the plan instead of editing."
+            } else {
+                "This turn is read-only until you classify it with assess_change. \
+                 Only a direct implementation with no architectural impact opens \
+                 write, patch, shell, and background-job tools."
+            });
+        }
 
         if let Some(request) = tool.approval(&args) {
             match approver.approve(request).await {
@@ -601,7 +772,7 @@ pub(crate) mod test_support {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{CancelHandle, ToolContext, Workspace, jobs};
+    use super::{Access, CancelHandle, ToolContext, Workspace, jobs};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -625,6 +796,7 @@ pub(crate) mod test_support {
             ToolContext {
                 workspace,
                 cancel,
+                access: Access::execute(),
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 session_id: "run-test".into(),
                 window: "main".into(),
@@ -648,10 +820,11 @@ mod tests {
 
     use super::test_support::context;
     use super::{
-        ApprovalDecision, ApprovalRequest, Approver, CancelHandle, SPILL_MARKER_HEAD,
-        SPILL_MARKER_POINTER, SPILL_MARKER_TAIL, TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER,
-        TOOL_OUTPUT_TAIL_CHARS, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError,
-        ToolOutput, ToolRegistry, cap, prune_tool_output, spill_pointer,
+        Access, ApprovalDecision, ApprovalRequest, Approver, ArchitectureImpact, Assessment,
+        CancelHandle, Intent, SPILL_MARKER_HEAD, SPILL_MARKER_POINTER, SPILL_MARKER_TAIL,
+        TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER, TOOL_OUTPUT_TAIL_CHARS,
+        TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, cap,
+        prune_tool_output, spill_pointer,
     };
 
     #[test]
@@ -805,6 +978,7 @@ mod tests {
         ToolRegistry {
             tools: vec![Box::new(Wordy { name, output })],
             warnings: Vec::new(),
+            access: Access::execute(),
         }
     }
 
@@ -982,6 +1156,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "assess_change",
                 "read_file",
                 "read_image",
                 "write_file",
@@ -1018,6 +1193,107 @@ mod tests {
         ] {
             assert!(!registry.is_concurrency_safe(name), "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn read_only_gate_hides_and_rejects_working_tools() {
+        let (ctx, root, _handle) = context("read-only-gate");
+        let mut registry = ToolRegistry::new();
+        registry.set_access(Access::read_only());
+
+        let names: Vec<String> = registry
+            .schemas()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|schema| {
+                schema
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        for allowed in [
+            "assess_change",
+            "read_file",
+            "read_image",
+            "list_dir",
+            "glob",
+            "grep",
+        ] {
+            assert!(names.iter().any(|name| name == allowed), "{allowed}");
+        }
+        for denied in [
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "run_command",
+            "job_list",
+            "job_output",
+            "job_kill",
+        ] {
+            assert!(!names.iter().any(|name| name == denied), "{denied}");
+        }
+
+        let outcome = registry
+            .execute(
+                &ctx,
+                &Allow,
+                "write_file",
+                "call-1",
+                json!({ "path": "notes.txt", "content": "leak" }),
+            )
+            .await;
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("assess_change"));
+        assert!(!root.join("notes.txt").exists());
+
+        registry.access().assess(Assessment {
+            intent: Intent::Implement,
+            impact: ArchitectureImpact::None,
+        });
+        let schemas = registry.schemas();
+        let names: Vec<&str> = schemas
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|schema| schema.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"write_file"));
+        let outcome = registry
+            .execute(
+                &ctx,
+                &Allow,
+                "write_file",
+                "call-2",
+                json!({ "path": "notes.txt", "content": "saved" }),
+            )
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "saved"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn a_locked_gate_points_at_the_pending_review() {
+        let (ctx, root, _handle) = context("locked-gate");
+        let mut registry = ToolRegistry::new();
+        registry.set_access(Access::locked_read_only());
+        let outcome = registry
+            .execute(
+                &ctx,
+                &Allow,
+                "run_command",
+                "call-1",
+                json!({ "command": "ls" }),
+            )
+            .await;
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("waiting for review"));
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -1086,6 +1362,7 @@ mod tests {
         let registry = ToolRegistry {
             tools: vec![tool],
             warnings: Vec::new(),
+            access: Access::execute(),
         };
         let (ctx, root, _handle) = context("denied");
         let outcome = registry
@@ -1103,6 +1380,7 @@ mod tests {
         let registry = ToolRegistry {
             tools: vec![tool],
             warnings: Vec::new(),
+            access: Access::execute(),
         };
         let (ctx, root, _handle) = context("stopped");
         let outcome = registry
@@ -1119,6 +1397,7 @@ mod tests {
         let registry = ToolRegistry {
             tools: vec![tool],
             warnings: Vec::new(),
+            access: Access::execute(),
         };
         let (ctx, root, _handle) = context("timeout");
         let outcome = registry

@@ -37,6 +37,24 @@ pub enum EventPayload {
         before: usize,
         after: usize,
     },
+    /// An implementation plan waiting for the user's decision. Only the newest
+    /// version is actionable; a later version supersedes earlier ones.
+    Plan { version: u64, status: PlanStatus },
+}
+
+/// Lifecycle of a persisted plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    /// Waiting for the user to confirm or revise it.
+    Pending,
+}
+
+/// The newest plan version, and whether it still needs review.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanState {
+    pub latest: Option<u64>,
+    pub pending: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +160,8 @@ pub struct RunStart {
     pub window: SessionWindow,
     pub start_seq: i64,
     pub prior_messages: Vec<Value>,
+    /// Plan state read in the same transaction that appended the user turn.
+    pub plan: PlanState,
 }
 
 /// A lightweight row for the history palette.

@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use super::input::{build_user_turn, session_title};
 use super::manual_compaction::{CompactionSlot, compact_session};
-use super::run::start_run;
+use super::run::{RunTrigger, start_run};
 use super::transcript::view_from_session;
 use super::{
     CompactResult, CompactionHandle, IncomingAttachment, SendResult, SessionSummary, SessionView,
@@ -130,6 +130,7 @@ pub async fn session_send(
         state.inner(),
         window.label(),
         &session_id,
+        RunTrigger::User,
         config,
         turn,
         cancel,

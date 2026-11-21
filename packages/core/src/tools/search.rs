@@ -16,7 +16,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
 const MAX_GLOB_RESULTS: usize = 100;
 const MAX_GLOB_SCAN: usize = 20_000;
@@ -88,6 +88,10 @@ struct GlobArgs {
 impl Tool for Glob {
     fn name(&self) -> &str {
         "glob"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {
@@ -226,6 +230,10 @@ struct GrepArgs {
 impl Tool for Grep {
     fn name(&self) -> &str {
         "grep"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {

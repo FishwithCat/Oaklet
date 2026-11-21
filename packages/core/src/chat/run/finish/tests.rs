@@ -5,6 +5,7 @@ use crate::chat::{RunHandle, test_support::state};
 use crate::compaction::test_support::user;
 use crate::store::NewUserTurn;
 use crate::tools::CancelHandle;
+use crate::tools::{ArchitectureImpact, Assessment, Intent};
 
 #[test]
 fn repairs_pending_events_for_unanswered_tool_calls() {
@@ -221,6 +222,54 @@ fn live_run() -> (RunContext, store::Store, std::path::PathBuf) {
         },
     );
     (ctx, store, root)
+}
+
+#[tokio::test]
+async fn a_planning_turn_records_a_pending_plan() {
+    let (ctx, store, root) = live_run();
+    ctx.access().assess(Assessment {
+        intent: Intent::Evaluate,
+        impact: ArchitectureImpact::Confirmed,
+    });
+    ctx.record_message(json!({"role":"assistant", "content":"plan"}), None);
+    ctx.finish_done(Vec::new()).await;
+
+    let session = store.get_session("s").unwrap().unwrap();
+    assert!(session.events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::Plan {
+            version: 1,
+            status: store::PlanStatus::Pending,
+        }
+    )));
+    assert_eq!(
+        store.plan_state("s").unwrap(),
+        store::PlanState {
+            latest: Some(1),
+            pending: true,
+        }
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn a_direct_implementation_turn_records_no_plan() {
+    let (ctx, store, root) = live_run();
+    ctx.access().assess(Assessment {
+        intent: Intent::Implement,
+        impact: ArchitectureImpact::None,
+    });
+    ctx.record_message(json!({"role":"assistant", "content":"done"}), None);
+    ctx.finish_done(Vec::new()).await;
+
+    let session = store.get_session("s").unwrap().unwrap();
+    assert!(
+        !session
+            .events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::Plan { .. }))
+    );
+    std::fs::remove_dir_all(root).ok();
 }
 
 #[tokio::test]

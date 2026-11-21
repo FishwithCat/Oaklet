@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use crate::SharedState;
 use crate::windows::workspace_for_window;
 
-use super::{Tool, ToolContext, ToolError, ToolOutput};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput};
 
 const MAX_SKILL_BYTES: u64 = 256 * 1024;
 const MAX_BODY_CHARS: usize = 24_000;
@@ -286,6 +286,10 @@ impl LoadSkill {
 impl Tool for LoadSkill {
     fn name(&self) -> &str {
         "skill"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &str {

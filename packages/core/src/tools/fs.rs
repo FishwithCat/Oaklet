@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::diff::{FileDiff, compute_diffs};
-use super::{Tool, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
 const DEFAULT_READ_LINES: usize = 400;
 const MAX_LIST_ENTRIES: usize = 500;
@@ -108,6 +108,10 @@ pub struct ReadFile;
 impl Tool for ReadFile {
     fn name(&self) -> &str {
         "read_file"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {
@@ -438,6 +442,10 @@ pub struct ListDir;
 impl Tool for ListDir {
     fn name(&self) -> &str {
         "list_dir"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {

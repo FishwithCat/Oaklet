@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
 use crate::architecture::read_capped;
 use crate::shell_env::ApplyEnvironment;
 
@@ -27,6 +27,10 @@ struct Query {
 impl Tool for LikeC4 {
     fn name(&self) -> &str {
         "likec4_mcp"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {
@@ -79,6 +83,13 @@ impl Tool for LikeC4 {
             if ctx.cancel.is_cancelled() {
                 return Err(ToolError::Cancelled);
             }
+            // A planning run may only discover and call read-only sub-tools.
+            let mut request = args;
+            if ctx.access.mode() == ToolAccess::ReadOnly
+                && let Some(request) = request.as_object_mut()
+            {
+                request.insert("readOnly".into(), Value::Bool(true));
+            }
             let node = self.node.as_ref().ok_or(
                 "LikeC4 MCP requires Node.js 22.23.3 or newer. Set OAKLET_NODE if needed."
                     .to_string(),
@@ -102,7 +113,7 @@ impl Tool for LikeC4 {
             let stderr = child.stderr.take().unwrap();
             let work = async {
                 stdin
-                    .write_all(args.to_string().as_bytes())
+                    .write_all(request.to_string().as_bytes())
                     .await
                     .map_err(|error| format!("Could not send LikeC4 MCP request: {error}"))?;
                 drop(stdin);
@@ -183,6 +194,7 @@ mod tests {
         let ctx = ToolContext {
             workspace,
             cancel,
+            access: crate::tools::Access::execute(),
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "run-test".into(),
             window: "main".into(),

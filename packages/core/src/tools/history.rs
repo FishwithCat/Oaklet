@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::store::Store;
 
-use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
 
 const DEFAULT_PAGE: usize = 8;
 const MAX_PAGE: usize = 50;
@@ -138,6 +138,10 @@ impl HistoryRead {
 impl Tool for HistoryRead {
     fn name(&self) -> &str {
         "history_read"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &str {

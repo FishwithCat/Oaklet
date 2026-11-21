@@ -112,12 +112,15 @@ pub(super) fn system_prompt(
     );
     if !model_sources.is_empty() {
         rules.push(format!(
-            "This workspace has LikeC4 architecture sources ({}). After you finish code changes, \
-             update the affected model before your final answer so it matches the code. Read the current model \
-             first and preserve its element and view IDs, style, and manual descriptions; keep the edit minimal \
-             and grounded in the code you changed. Use likec4_mcp to understand existing elements and \
-             relationships, and file tools to edit. If the code change has no architectural effect, leave the \
-             model unchanged and say so; do not create a model when none exists.",
+            "This workspace has LikeC4 architecture sources ({}). Judge the architectural impact \
+             before you edit: adding or removing elements, changing a component's responsibilities, or \
+             changing dependencies means this turn stays read-only and ends with a plan for review. \
+             Read the current model first and preserve its element and view IDs, style, and manual \
+             descriptions. For a direct implementation with no architectural impact, update the \
+             affected model in the same turn so it matches the code, keeping the edit minimal and \
+             grounded in the code you changed. Use likec4_mcp to understand existing elements and \
+             relationships, and file tools to edit. If the code change has no architectural effect, \
+             leave the model unchanged and say so; do not create a model when none exists.",
             model_sources.join(", ")
         ));
     }
@@ -221,7 +224,8 @@ mod tests {
         let sources = vec!["architecture/model.c4".to_string()];
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources, None);
         assert!(prompt.contains("architecture/model.c4"));
-        assert!(prompt.contains("After you finish code changes"));
+        assert!(prompt.contains("Judge the architectural impact"));
+        assert!(prompt.contains("stays read-only and ends with a plan"));
         assert!(prompt.contains("update the affected model"));
 
         let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);

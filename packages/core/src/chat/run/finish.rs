@@ -154,6 +154,9 @@ impl RunContext {
         if self.finished.swap(true, Ordering::SeqCst) {
             return;
         }
+        if status == "done" {
+            self.record_plan();
+        }
 
         // A stopped or failed stream never reaches the assistant-message
         // handoff. Persist what the user already saw instead of letting the
@@ -320,6 +323,23 @@ impl RunContext {
         if status != "stopped" {
             resume_notices(self);
         }
+    }
+
+    /// Persist a pending plan when this turn ended in planning rather than edits.
+    fn record_plan(&self) {
+        if !self.records_plan {
+            return;
+        }
+        let Some(assessment) = self.access().assessment() else {
+            return;
+        };
+        if !assessment.needs_plan() {
+            return;
+        }
+        self.record(EventPayload::Plan {
+            version: self.next_plan_version(),
+            status: store::PlanStatus::Pending,
+        });
     }
 }
 

@@ -12,7 +12,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
 
 /// Keep the data URL below the composer's 8 MB attachment budget after base64.
 const MAX_IMAGE_BYTES: u64 = 5_500_000;
@@ -28,6 +28,10 @@ struct ReadImageArgs {
 impl Tool for ReadImage {
     fn name(&self) -> &str {
         "read_image"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 
     fn description(&self) -> &'static str {
