@@ -506,6 +506,49 @@ export function useAgentSession({
     if (tab?.running) void invoke("session_stop", { sessionId: tab.id });
   }
 
+  /** Start the implementation run bound to one validated plan version. */
+  async function confirmPlan(version: number): Promise<boolean> {
+    const tab = sessionsRef.current[activeTabIdRef.current];
+    if (
+      !tab ||
+      tab.running ||
+      tab.compacting ||
+      compactingIdsRef.current.has(tab.id)
+    ) {
+      return false;
+    }
+    const workspaceAtStart = workspaceRef.current;
+    const previous = tab;
+    putSession({ ...withItems(tab, tab.items), running: true, activeRunId: null });
+    try {
+      const { runId, session } = await invoke<SendResult>(
+        "session_confirm_plan",
+        { sessionId: tab.id, version },
+      );
+      if (workspaceRef.current !== workspaceAtStart) return false;
+      const current = sessionsRef.current[tab.id];
+      if (!current || !current.running) return true;
+      if (!session.running) {
+        putSession(mergeWindow(current, session));
+        return true;
+      }
+      putSession({
+        ...current,
+        title: session.title,
+        turns: session.turns,
+        updatedAt: session.updatedAt,
+        running: true,
+        activeRunId: runId,
+      });
+      return true;
+    } catch (error) {
+      if (workspaceRef.current !== workspaceAtStart) return false;
+      if (!sessionsRef.current[tab.id]) return false;
+      putSession(appendNotice(previous, "error", errorText(error)));
+      return false;
+    }
+  }
+
   function compact() {
     const tab = sessionsRef.current[activeTabIdRef.current];
     if (!tab) return;
@@ -733,6 +776,7 @@ export function useAgentSession({
     selectTab,
     closeTab,
     send,
+    confirmPlan,
     stop,
     compact,
     restore,

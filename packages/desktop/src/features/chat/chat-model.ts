@@ -1,11 +1,13 @@
 import type { ProcessItem } from "./process-model";
 import type { SentAttachment } from "./attachments";
+import type { PlanItem } from "./plan-model";
 import type { RunUsage, StepUsage } from "./session-model";
 
 export type Item = (
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
   | { kind: "assistant"; runId?: string; text: string; streaming: boolean }
   | ProcessItem
+  | PlanItem
   | { kind: "notice"; text: string; tone: "error" | "muted" }
 ) & { seq?: number };
 

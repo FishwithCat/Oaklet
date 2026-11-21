@@ -5,6 +5,8 @@ import type { SentAttachment } from "./attachments";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
+import { PlanCard } from "./PlanCard";
+import { latestPlanVersion } from "./plan-model";
 
 type ImageAttachment = Extract<SentAttachment, { kind: "image" }>;
 
@@ -18,6 +20,8 @@ export function ChatThread({
   compacting,
   activeRunId,
   onApproval,
+  onConfirmPlan,
+  onRevisePlan,
   onOpenFile,
 }: {
   items: Item[];
@@ -25,10 +29,13 @@ export function ChatThread({
   compacting: boolean;
   activeRunId: string | null;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
+  onConfirmPlan: (version: number) => Promise<boolean>;
+  onRevisePlan: (version: number) => void;
   onOpenFile: (href: string) => void;
 }) {
   const [preview, setPreview] = useState<ImageAttachment | null>(null);
   const blocks = toBlocks(items);
+  const latestVersion = latestPlanVersion(items);
   let lastProcessBlock = -1;
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     if (blocks[index]?.kind === "process") {
@@ -140,6 +147,23 @@ export function ChatThread({
                 <MarkdownText text={item.text} onOpenFile={onOpenFile} />
               </div>
             </div>
+          );
+        }
+        if (item.kind === "plan") {
+          return (
+            <PlanCard
+              key={
+                item.seq === undefined
+                  ? `plan-local-${block.index}`
+                  : `plan-${item.seq}`
+              }
+              plan={item}
+              latestVersion={latestVersion}
+              running={running}
+              onConfirm={onConfirmPlan}
+              onRevise={() => onRevisePlan(item.version)}
+              onOpenFile={onOpenFile}
+            />
           );
         }
         if (item.kind !== "notice") return null;

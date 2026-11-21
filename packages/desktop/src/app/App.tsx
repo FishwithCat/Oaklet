@@ -381,6 +381,7 @@ function App() {
           onLoadOlder={session.loadOlder}
           onRetryRestore={session.retryRestore}
           onApproval={session.respondToApproval}
+          onConfirmPlan={session.confirmPlan}
           onOpenFile={openFileLink}
           onSendToTerminal={(text) => {
             setView("terminal");

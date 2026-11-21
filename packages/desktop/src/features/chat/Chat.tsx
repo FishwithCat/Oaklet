@@ -72,6 +72,7 @@ export function Chat({
   onLoadOlder,
   onRetryRestore,
   onApproval,
+  onConfirmPlan,
   onSendToTerminal,
   onOpenFile,
 }: {
@@ -102,6 +103,7 @@ export function Chat({
   onLoadOlder: () => Promise<boolean>;
   onRetryRestore: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
+  onConfirmPlan: (version: number) => Promise<boolean>;
   onSendToTerminal: (text: string) => void;
   onOpenFile: (href: string) => void;
 }) {
@@ -478,6 +480,8 @@ export function Chat({
             compacting={compacting}
             activeRunId={activeRunId}
             onApproval={onApproval}
+            onConfirmPlan={onConfirmPlan}
+            onRevisePlan={() => composerRef.current?.focus()}
             onOpenFile={onOpenFile}
           />
         )}
