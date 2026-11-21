@@ -18,7 +18,7 @@ async function sourcesFor(name) {
   return sources;
 }
 
-function compile(sources) {
+function compile(sources, diff) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [helper], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -39,7 +39,7 @@ function compile(sources) {
         );
       }
     });
-    child.stdin.end(JSON.stringify({ version: 1, sources }));
+    child.stdin.end(JSON.stringify({ version: 1, sources, ...(diff ? { diff } : {}) }));
   });
 }
 
@@ -83,4 +83,99 @@ test("rejects source paths that escape the virtual workspace", async () => {
 
   assert.equal(response.ok, false);
   assert.match(response.error, /Unsafe architecture source path/);
+});
+
+test("validates one native diff draft and returns its summary", async () => {
+  const { response } = await compile(await sourcesFor("valid"), {
+    path: "architecture/.oaklet-plan-1.c4",
+    text: `diff worker 'Add background worker' {
+  description 'Introduce a queue in front of the worker'
+  add {
+    extend api {
+      queue = component 'Queue'
+    }
+    api.web -> api.queue 'Enqueues'
+  }
+}
+`,
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.diff.id, "worker");
+  assert.equal(response.diff.title, "Add background worker");
+  assert.equal(response.diff.description, "Introduce a queue in front of the worker");
+  assert.deepEqual(response.diff.added, { elements: 1, relations: 1 });
+  assert.deepEqual(response.diff.views[0].nodes, {
+    added: 1,
+    removed: 0,
+    modified: 0,
+  });
+  assert.deepEqual(response.overlaps, []);
+});
+
+test("rejects a draft with more than one top-level diff", async () => {
+  const { response } = await compile(await sourcesFor("valid"), {
+    path: "architecture/.oaklet-plan-2.c4",
+    text: `diff first 'First' {
+  add { extend api { first = component 'First' } }
+}
+
+diff second 'Second' {
+  add { extend api { second = component 'Second' } }
+}
+`,
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.draftError, true);
+  assert.match(response.error, /exactly one top-level diff/);
+});
+
+test("rejects a draft whose ID already exists in the model", async () => {
+  const sources = await sourcesFor("valid");
+  sources["architecture/existing.c4"] = `diff worker 'Existing worker' {
+  add { extend api { existing = component 'Existing' } }
+}
+`;
+  const { response } = await compile(sources, {
+    path: "architecture/.oaklet-plan-3.c4",
+    text: `diff worker 'Another worker' {
+  add { extend api { another = component 'Another' } }
+}
+`,
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.draftError, true);
+  assert.match(response.error, /already exists/);
+});
+
+test("reports overlapping drafts as warnings without failing validation", async () => {
+  const sources = await sourcesFor("valid");
+  sources["architecture/existing.c4"] = `diff existing 'Existing removal' {
+  remove { api.worker -> api.store 'Reads and writes' }
+}
+`;
+  const { response } = await compile(sources, {
+    path: "architecture/.oaklet-plan-4.c4",
+    text: `diff worker 'Remove the same relation' {
+  remove { api.worker -> api.store 'Reads and writes' }
+}
+`,
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.diff.id, "worker");
+  assert.equal(response.overlaps.length, 1);
+  assert.match(response.overlaps[0], /^existing: both remove/);
+  assert.ok(response.warnings.some((warning) => /Overlaps with diff/.test(warning.message)));
+});
+
+test("rejects unsafe or colliding draft paths", async () => {
+  const sources = await sourcesFor("valid");
+  for (const path of ["../escape.c4", "/absolute.c4", "architecture\\draft.c4", "architecture/model.c4"]) {
+    const { response } = await compile(sources, { path, text: "diff x 'X' { }\n" });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /Unsafe architecture diff path|collides with a source/);
+  }
 });

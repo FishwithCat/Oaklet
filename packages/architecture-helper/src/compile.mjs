@@ -6,6 +6,10 @@
  *
  *   { "version": 1, "sources": { "architecture/model.c4": "..." } }
  *
+ * A planning draft adds one virtual source and asks for its validated summary:
+ *
+ *   { "version": 1, "sources": { ... }, "diff": { "path": "...", "text": "..." } }
+ *
  * The helper only receives model sources. It never reads a workspace, imports
  * workspace configuration files, or executes workspace JavaScript. `fromSources`
  * builds a virtual workspace in memory and `layoutedModel()` runs Graphviz as
@@ -94,7 +98,131 @@ function validateRequest(request) {
   if (Object.keys(sources).length === 0) {
     throw new Error("The architecture request has no sources.");
   }
-  return sources;
+  return { sources, diff: validateDiff(request.diff, sources) };
+}
+
+function safePath(path) {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    !path.split("/").includes("..")
+  );
+}
+
+function validateDiff(diff, sources) {
+  if (diff === undefined) return null;
+  if (!diff || typeof diff !== "object" || Array.isArray(diff)) {
+    throw new Error("The architecture diff must be an object.");
+  }
+  if (!safePath(diff.path)) {
+    throw new Error(`Unsafe architecture diff path: ${diff.path}`);
+  }
+  if (Object.hasOwn(sources, diff.path)) {
+    throw new Error(`The architecture diff path collides with a source: ${diff.path}`);
+  }
+  if (typeof diff.text !== "string" || diff.text.trim().length === 0) {
+    throw new Error("The architecture diff has no DSL.");
+  }
+  return { path: diff.path, text: diff.text };
+}
+
+function documentFor(likec4, path) {
+  return [...likec4.langium.likec4.shared.workspace.LangiumDocuments.all].find(
+    (document) =>
+      document.uri.path === `${VIRTUAL_ROOT}/${path}` ||
+      document.uri.path.endsWith(`/${path}`),
+  );
+}
+
+function topLevelDiffs(document) {
+  return document?.parseResult?.value?.diffs ?? [];
+}
+
+function richText(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.txt === "string") return value.txt;
+  return null;
+}
+
+function diffSummary(summary) {
+  return {
+    id: summary.id,
+    title: summary.title,
+    description: richText(summary.description),
+    added: summary.added,
+    removed: summary.removed,
+    modified: summary.modified,
+    views: summary.views ?? [],
+  };
+}
+
+async function validateDraft(likec4, diff, diagnostics) {
+  const draftDocument = documentFor(likec4, diff.path);
+  const draftDiffs = topLevelDiffs(draftDocument);
+  if (draftDiffs.length !== 1) {
+    return {
+      ok: false,
+      error: `A plan draft must contain exactly one top-level diff; found ${draftDiffs.length}.`,
+      diagnostics,
+      draftError: true,
+    };
+  }
+
+  const id = draftDiffs[0].name;
+  const existing = [];
+  for (const document of likec4.langium.likec4.shared.workspace.LangiumDocuments.all) {
+    if (document === draftDocument) continue;
+    for (const other of topLevelDiffs(document)) existing.push(other.name);
+  }
+  if (existing.includes(id)) {
+    return {
+      ok: false,
+      error: `A diff with ID "${id}" already exists in this model.`,
+      diagnostics,
+      draftError: true,
+    };
+  }
+
+  const summaries = await likec4.modelDiffs.list();
+  const summary = summaries.find((candidate) => candidate.id === id);
+  if (!summary) {
+    return {
+      ok: false,
+      error: `LikeC4 did not report a diff with ID "${id}".`,
+      diagnostics,
+      draftError: true,
+    };
+  }
+
+  const check = likec4.modelDiffs.checkBeforeApply(id);
+  const warnings = likec4.getWarnings().map(diagnosticFrom);
+  if (check.errors.length > 0) {
+    return {
+      ok: false,
+      error: "The LikeC4 diff has errors.",
+      diagnostics: [
+        ...diagnostics,
+        ...check.errors.map((message) => ({
+          message,
+          file: diff.path,
+          line: null,
+          column: null,
+        })),
+      ],
+      warnings,
+      overlaps: check.overlaps,
+      draftError: true,
+    };
+  }
+
+  return {
+    ok: true,
+    diff: diffSummary(summary),
+    warnings,
+    overlaps: check.overlaps,
+  };
 }
 
 function respond(payload) {
@@ -121,9 +249,10 @@ let responded = false;
 async function main() {
   let likec4;
   try {
-    const sources = validateRequest(await readRequest());
+    const { sources, diff } = validateRequest(await readRequest());
+    const allSources = diff ? { ...sources, [diff.path]: diff.text } : sources;
     const { fromSources } = await import("@likec4/language-services/node");
-    likec4 = await fromSources(sources, {
+    likec4 = await fromSources(allSources, {
       graphviz: "wasm",
       printErrors: false,
       throwIfInvalid: false,
@@ -135,12 +264,25 @@ async function main() {
       .slice(0, MAX_DIAGNOSTICS)
       .map(diagnosticFrom);
     if (diagnostics.length > 0) {
+      const draftError =
+        diff !== null &&
+        diagnostics.every((diagnostic) => diagnostic.file === diff.path);
       respond({
         ok: false,
-        error: "The LikeC4 model has errors.",
+        error: diff
+          ? draftError
+            ? "The LikeC4 diff has errors."
+            : "The LikeC4 model has errors."
+          : "The LikeC4 model has errors.",
         diagnostics,
         views: [],
+        draftError,
       });
+      return;
+    }
+
+    if (diff) {
+      respond(await validateDraft(likec4, diff, diagnostics));
       return;
     }
 
