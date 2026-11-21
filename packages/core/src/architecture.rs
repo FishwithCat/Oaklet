@@ -26,7 +26,7 @@ use compiler::run_helper;
 use discovery::{digest_sources, discover_models, normalize_root, read_sources};
 use runtime::{runtime_status, runtime_status_for};
 
-pub(crate) use compiler::read_capped;
+pub(crate) use compiler::{HelperResponse, read_capped, run_helper_watch};
 pub use discovery::prompt_model_sources;
 pub(crate) use runtime::{find_helper, find_node};
 
@@ -34,6 +34,7 @@ pub const DEFAULT_MODEL_PATH: &str = "architecture/model.c4";
 
 const MAX_DIAGNOSTICS: usize = 50;
 const MAX_DIAGNOSTIC_CHARS: usize = 2_000;
+pub(crate) const MAX_SOURCE_FILE_BYTES: u64 = 1_000_000;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +53,22 @@ pub struct ModelRoot {
     pub sources: Vec<String>,
     pub config: Option<String>,
     pub unsupported_config: Option<String>,
+}
+
+/// The model a planning run should validate against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanningScope {
+    pub model_root: String,
+    pub include_ignored: bool,
+}
+
+/// Current sources of the selected model plus the digest they produced.
+#[derive(Debug)]
+pub(crate) struct PlanningModel {
+    pub(crate) root: String,
+    pub(crate) sources: std::collections::BTreeMap<String, String>,
+    pub(crate) digest: String,
+    pub(crate) warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,6 +146,8 @@ struct LoadBase {
 pub struct ArchitectureCache {
     cached: HashMap<(String, String), CachedModel>,
     loads: HashMap<String, LoadSlot>,
+    /// Last model root loaded in the Architecture panel for each workspace.
+    selected: HashMap<String, PlanningScope>,
     generation: u64,
 }
 
@@ -194,6 +213,13 @@ impl LoadTicket {
     }
 }
 
+impl ArchitectureCache {
+    /// The model currently selected in the Architecture panel, if any.
+    pub(crate) fn selection(&self, workspace: &str) -> Option<PlanningScope> {
+        self.selected.get(workspace).cloned()
+    }
+}
+
 impl Drop for LoadTicket {
     fn drop(&mut self) {
         if let Ok(mut cache) = self.shared.architecture.lock()
@@ -215,6 +241,7 @@ pub fn cancel_workspace(state: &crate::AppState, workspace: &Path) {
             slot.cancel.store(true, Ordering::SeqCst);
         }
         cache.cached.retain(|(cached, _), _| cached != &workspace);
+        cache.selected.remove(&workspace);
     }
 }
 
@@ -224,6 +251,7 @@ pub fn cancel_all(state: &crate::AppState) {
         for (_, slot) in cache.loads.drain() {
             slot.cancel.store(true, Ordering::SeqCst);
         }
+        cache.selected.clear();
     }
 }
 
@@ -277,6 +305,15 @@ pub async fn load(
     .map_err(|error| format!("Could not read the architecture model: {error}"))??;
     let digest = digest_sources(&source_map);
     ticket.require_current()?;
+    if let Ok(mut cache) = shared.architecture.lock() {
+        cache.selected.insert(
+            workspace_text.clone(),
+            PlanningScope {
+                model_root: model.root.clone(),
+                include_ignored,
+            },
+        );
+    }
 
     let cached_match = {
         let cache = shared
@@ -426,6 +463,56 @@ pub async fn load(
     }
 }
 
+/// Resolve one model for a planning run and read the exact sources a draft will
+/// be validated against.
+pub(crate) fn planning_model(
+    workspace: &Workspace,
+    requested: Option<&PlanningScope>,
+) -> Result<PlanningModel, String> {
+    let include_ignored = requested.is_some_and(|scope| scope.include_ignored);
+    let (models, warnings) = discover_models(workspace, include_ignored)?;
+    if models.is_empty() {
+        return Err("No LikeC4 architecture model was found in this workspace.".into());
+    }
+
+    let requested_root = requested.map(|scope| normalize_root(&scope.model_root));
+    let model = match requested_root.as_deref() {
+        Some(root) => models
+            .iter()
+            .find(|model| model.root == root)
+            .ok_or_else(|| {
+                format!(
+                    "The selected architecture model root was not found: {root}. Available models: {}.",
+                    model_roots(&models)
+                )
+            })?,
+        None if models.len() == 1 => &models[0],
+        None => {
+            return Err(format!(
+                "This workspace has multiple LikeC4 models ({}). Ask the user to choose one in the Architecture panel, then retry.",
+                model_roots(&models)
+            ));
+        }
+    };
+
+    let (sources, _) = read_sources(workspace, model)?;
+    let digest = digest_sources(&sources);
+    Ok(PlanningModel {
+        root: model.root.clone(),
+        sources,
+        digest,
+        warnings,
+    })
+}
+
+fn model_roots(models: &[ModelRoot]) -> String {
+    models
+        .iter()
+        .map(|model| format!("`{}`", model.root))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn fallback_result(
     base: LoadBase,
     cached: Option<CachedModel>,
@@ -501,6 +588,7 @@ pub(crate) async fn architecture_load(
 mod tests {
     use super::runtime::helper_ready;
     use super::*;
+    use crate::tools::test_support::temp_root;
 
     fn cached_model(workspace: &str, root: &str) -> CachedModel {
         CachedModel {
@@ -529,6 +617,38 @@ mod tests {
         assert!(cached_for(&cache, "/workspace", "architecture").is_some());
         assert!(cached_for(&cache, "/workspace", "docs").is_none());
         assert!(cached_for(&cache, "/other", "architecture").is_none());
+    }
+
+    #[test]
+    fn planning_uses_the_selected_model_and_rejects_unknown_roots() {
+        let root = temp_root("planning-scope");
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        std::fs::write(root.join("one/likec4.config.json"), r#"{"name":"one"}"#).unwrap();
+        std::fs::write(root.join("one/model.c4"), "model { }").unwrap();
+        std::fs::write(root.join("two/likec4.config.json"), r#"{"name":"two"}"#).unwrap();
+        std::fs::write(root.join("two/model.c4"), "model { }").unwrap();
+        let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
+
+        assert!(planning_model(&workspace, None).is_err());
+        let scope = PlanningScope {
+            model_root: "./two/".into(),
+            include_ignored: false,
+        };
+        let model = planning_model(&workspace, Some(&scope)).unwrap();
+        assert_eq!(model.root, "two");
+        assert_eq!(model.sources.len(), 2);
+        assert_eq!(model.digest.len(), 16);
+
+        let missing = PlanningScope {
+            model_root: "missing".into(),
+            include_ignored: false,
+        };
+        let error = planning_model(&workspace, Some(&missing)).unwrap_err();
+        assert!(error.contains("was not found"));
+        assert!(error.contains("`one`"));
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

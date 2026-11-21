@@ -11,14 +11,13 @@ use std::path::{Path, PathBuf};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 
-use super::{ModelRoot, SourceInfo};
+use super::{MAX_SOURCE_FILE_BYTES, ModelRoot, SourceInfo};
 use crate::tools::Workspace;
 
 const MAX_WALK_ENTRIES: usize = 50_000;
 const MAX_MODEL_FILES: usize = 500;
 const MAX_PROMPT_MODEL_SOURCES: usize = 5;
 const MAX_SOURCE_FILES: usize = 200;
-const MAX_SOURCE_FILE_BYTES: u64 = 1_000_000;
 const MAX_SOURCE_BYTES: u64 = 4_000_000;
 
 const EXCLUDED_DIRECTORIES: &[&str] = &[

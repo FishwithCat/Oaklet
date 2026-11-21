@@ -119,9 +119,19 @@ pub(super) fn system_prompt(
              descriptions. For a direct implementation with no architectural impact, update the \
              affected model in the same turn so it matches the code, keeping the edit minimal and \
              grounded in the code you changed. Use likec4_mcp to understand existing elements and \
-             relationships, and file tools to edit. If the code change has no architectural effect, \
-             leave the model unchanged and say so; do not create a model when none exists.",
+             relationships, and file tools to edit. Before presenting an architectural plan, \
+             validate its complete native diff with validate_architecture_diff; only describe it as \
+             verified after the tool reports success. If the code change has no architectural \
+             effect, leave the model unchanged and say so; do not create a model when none exists.",
             model_sources.join(", ")
+        ));
+    }
+    if let Some(scope) = tools.planning_scope() {
+        rules.push(format!(
+            "Architecture planning is scoped to the LikeC4 model root `{}`. Query that model with \
+             likec4_mcp before planning, and validate the complete draft with \
+             validate_architecture_diff.",
+            scope.model_root
         ));
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
@@ -227,9 +237,22 @@ mod tests {
         assert!(prompt.contains("Judge the architectural impact"));
         assert!(prompt.contains("stays read-only and ends with a plan"));
         assert!(prompt.contains("update the affected model"));
+        assert!(prompt.contains("validate_architecture_diff"));
 
         let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(!without_sources.contains("LikeC4 architecture sources"));
+    }
+
+    #[test]
+    fn system_prompt_names_the_selected_architecture_model() {
+        let mut tools = ToolRegistry::new();
+        tools.set_planning_scope(Some(crate::architecture::PlanningScope {
+            model_root: "architecture".into(),
+            include_ignored: false,
+        }));
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert!(prompt.contains("model root `architecture`"));
+        assert!(prompt.contains("validate_architecture_diff"));
     }
 
     #[test]

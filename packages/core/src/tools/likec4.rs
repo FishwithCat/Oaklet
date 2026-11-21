@@ -195,6 +195,7 @@ mod tests {
             workspace,
             cancel,
             access: crate::tools::Access::execute(),
+            planning: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "run-test".into(),
             window: "main".into(),

@@ -3,6 +3,7 @@ mod finish;
 mod stream;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +42,16 @@ pub(super) fn start_run(
 ) -> Result<(String, Arc<Mutex<SessionView>>), String> {
     let store = state.chat.store.clone();
     let run_id = state.next_id();
+    let planning = {
+        let workspace = std::fs::canonicalize(&config.workspace)
+            .unwrap_or_else(|_| PathBuf::from(&config.workspace));
+        let workspace = workspace.to_string_lossy().into_owned();
+        state
+            .architecture
+            .lock()
+            .ok()
+            .and_then(|cache| cache.selection(&workspace))
+    };
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
@@ -108,6 +119,7 @@ pub(super) fn start_run(
         compaction_sizes: Arc::new(Mutex::new(None)),
         usage: Arc::new(Mutex::new(store::RunUsage::default())),
         access,
+        planning,
         next_plan_version,
         records_plan: trigger == RunTrigger::User,
     };
@@ -283,6 +295,8 @@ pub struct RunContext {
     usage: Arc<Mutex<store::RunUsage>>,
     /// Capability gate shared with the tool registry.
     access: Arc<Access>,
+    /// Architecture model selected when the run started.
+    planning: Option<crate::architecture::PlanningScope>,
     /// Version the next plan recorded by this run will carry.
     next_plan_version: u64,
     /// Background-notice turns never create a plan awaiting review.
@@ -343,6 +357,10 @@ impl RunContext {
 
     pub fn access(&self) -> &Arc<Access> {
         &self.access
+    }
+
+    pub fn planning_scope(&self) -> Option<&crate::architecture::PlanningScope> {
+        self.planning.as_ref()
     }
 
     pub fn next_plan_version(&self) -> u64 {
@@ -482,6 +500,7 @@ impl RunContext {
             compaction_sizes: Arc::new(Mutex::new(None)),
             usage: Arc::new(Mutex::new(store::RunUsage::default())),
             access: access_for(RunTrigger::User, started.plan.pending),
+            planning: None,
             next_plan_version: started.plan.latest.unwrap_or(0) + 1,
             records_plan: true,
         }

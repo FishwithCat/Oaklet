@@ -20,16 +20,24 @@ const COMPILER_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct HelperResponse {
-    pub(super) ok: bool,
+pub(crate) struct HelperResponse {
+    pub(crate) ok: bool,
     #[serde(default)]
-    pub(super) model: Option<Value>,
+    pub(crate) model: Option<Value>,
     #[serde(default)]
-    pub(super) views: Vec<ViewInfo>,
+    pub(crate) views: Vec<ViewInfo>,
     #[serde(default)]
-    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
     #[serde(default)]
-    pub(super) error: Option<String>,
+    pub(crate) warnings: Vec<Diagnostic>,
+    #[serde(default)]
+    pub(crate) overlaps: Vec<String>,
+    #[serde(default)]
+    pub(crate) diff: Option<Value>,
+    #[serde(default)]
+    pub(crate) draft_error: bool,
+    #[serde(default)]
+    pub(crate) error: Option<String>,
 }
 
 pub(super) async fn run_helper(
@@ -38,14 +46,62 @@ pub(super) async fn run_helper(
     request: &Value,
     cancel: Arc<AtomicBool>,
 ) -> Result<HelperResponse, String> {
-    run_helper_with_timeout(node, helper, request, cancel, COMPILER_TIMEOUT).await
+    run_helper_inner(
+        node,
+        helper,
+        request,
+        HelperCancel::Flag(cancel),
+        COMPILER_TIMEOUT,
+    )
+    .await
 }
 
+pub(crate) async fn run_helper_watch(
+    node: &Path,
+    helper: &Path,
+    request: &Value,
+    cancel: crate::tools::Cancel,
+) -> Result<HelperResponse, String> {
+    run_helper_inner(
+        node,
+        helper,
+        request,
+        HelperCancel::Watch(cancel),
+        COMPILER_TIMEOUT,
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn run_helper_with_timeout(
     node: &Path,
     helper: &Path,
     request: &Value,
     cancel: Arc<AtomicBool>,
+    timeout: Duration,
+) -> Result<HelperResponse, String> {
+    run_helper_inner(node, helper, request, HelperCancel::Flag(cancel), timeout).await
+}
+
+enum HelperCancel {
+    Flag(Arc<AtomicBool>),
+    Watch(crate::tools::Cancel),
+}
+
+impl HelperCancel {
+    async fn cancelled(&self) {
+        match self {
+            Self::Flag(flag) => wait_cancelled(flag.clone()).await,
+            Self::Watch(cancel) => cancel.cancelled().await,
+        }
+    }
+}
+
+async fn run_helper_inner(
+    node: &Path,
+    helper: &Path,
+    request: &Value,
+    cancel: HelperCancel,
     timeout: Duration,
 ) -> Result<HelperResponse, String> {
     let script = helper.join("src").join("compile.mjs");
@@ -101,7 +157,7 @@ async fn run_helper_with_timeout(
     };
 
     let outcome = tokio::select! {
-        _ = wait_cancelled(cancel) => {
+        _ = cancel.cancelled() => {
             return Err("Architecture loading was cancelled.".into());
         }
         result = tokio::time::timeout(timeout, work) => {

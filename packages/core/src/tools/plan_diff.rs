@@ -1,0 +1,732 @@
+//! Validate a native LikeC4 `diff` draft against the selected model.
+//!
+//! The draft is compiled as one extra in-memory source file. Nothing is written
+//! to the workspace; a successful result carries the baseline digest that the
+//! confirmation step must match before starting implementation.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
+use crate::architecture::{self, Diagnostic, MAX_SOURCE_FILE_BYTES, run_helper_watch};
+
+static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
+
+pub struct ValidateDiff {
+    pub node: Option<PathBuf>,
+    pub helper: Option<PathBuf>,
+    /// Digest of the last verified draft in this run.
+    verified: Mutex<Option<String>>,
+}
+
+impl ValidateDiff {
+    pub fn new(node: Option<PathBuf>, helper: Option<PathBuf>) -> Self {
+        Self {
+            node,
+            helper,
+            verified: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Args {
+    dsl: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Validation {
+    status: &'static str,
+    valid: bool,
+    model_root: String,
+    source_digest: String,
+    diff_id: Option<String>,
+    dsl: String,
+    diff: Option<DiffSummary>,
+    diagnostics: Vec<Diagnostic>,
+    warnings: Vec<Diagnostic>,
+    overlaps: Vec<String>,
+    error: Option<String>,
+    baseline_changed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiffSummary {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    added: ChangeCounts,
+    removed: ChangeCounts,
+    modified: ModifiedCounts,
+    #[serde(default)]
+    views: Vec<DiffView>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChangeCounts {
+    elements: u64,
+    relations: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ModifiedCounts {
+    elements: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiffView {
+    id: String,
+    title: String,
+    nodes: ViewCounts,
+    edges: ViewCounts,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ViewCounts {
+    added: u64,
+    removed: u64,
+    modified: u64,
+}
+
+impl Tool for ValidateDiff {
+    fn name(&self) -> &str {
+        "validate_architecture_diff"
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
+    }
+
+    fn description(&self) -> &'static str {
+        "Validate a complete native LikeC4 `diff` DSL draft against the selected architecture model. The backend adds it as a virtual source file and returns the model root, baseline sourceDigest, diff ID and summary, affected views, diagnostics, and overlap warnings. No workspace file is changed."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "dsl": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The complete draft, including one top-level `diff <id> '<title>' { ... }` declaration."
+                }
+            },
+            "required": ["dsl"],
+            "additionalProperties": false
+        })
+    }
+
+    fn guidance(&self) -> &'static str {
+        "Before presenting an architectural plan, validate its complete native diff with validate_architecture_diff. Query the selected model first, reference real element IDs and source paths, and only call a diff verified after `status` is \"verified\". If multiple models exist and none is selected, ask the user to choose one in the Architecture panel. Fix diagnostics and validate again; overlap warnings do not block review. When `status` is \"unavailable\", keep a text plan and state the reason. When `baselineChanged` is true, query the current model before presenting the plan."
+    }
+
+    fn summary(&self, _args: &Value) -> String {
+        "validate plan diff".into()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        ctx: &'a ToolContext,
+        args: Value,
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move {
+            let args: Args = parse_args(args)?;
+            if args.dsl.trim().is_empty() {
+                return Err(ToolError::InvalidArguments(
+                    "The architecture diff DSL is empty.".into(),
+                ));
+            }
+            if args.dsl.len() as u64 > MAX_SOURCE_FILE_BYTES {
+                return Err(ToolError::Failed(format!(
+                    "The diff is {} bytes; a plan draft must be at most {MAX_SOURCE_FILE_BYTES} bytes.",
+                    args.dsl.len()
+                )));
+            }
+            if ctx.cancel.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+
+            let model = match load_model(ctx).await? {
+                Ok(model) => model,
+                Err(error) => {
+                    return Ok(unavailable(
+                        ctx.planning
+                            .as_ref()
+                            .map(|scope| scope.model_root.as_str())
+                            .unwrap_or(""),
+                        "",
+                        args.dsl,
+                        error,
+                        Vec::new(),
+                    ));
+                }
+            };
+
+            let Some(node) = self.node.as_ref() else {
+                return Ok(unavailable(
+                    &model.root,
+                    &model.digest,
+                    args.dsl,
+                    "LikeC4 validation requires Node.js 22.23.3 or newer. Set OAKLET_NODE if needed.".into(),
+                    model.warnings,
+                ));
+            };
+            let Some(helper) = self.helper.as_ref() else {
+                return Ok(unavailable(
+                    &model.root,
+                    &model.digest,
+                    args.dsl,
+                    "The LikeC4 compiler helper is missing. Reinstall Oaklet or set OAKLET_ARCHITECTURE_HELPER.".into(),
+                    model.warnings,
+                ));
+            };
+
+            let draft = draft_path(&model.root, &model.sources);
+            let request = json!({
+                "version": 1,
+                "sources": model.sources,
+                "diff": { "path": draft, "text": args.dsl },
+            });
+            let response = run_helper_watch(node, helper, &request, ctx.cancel.clone()).await;
+            let mut response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    return Ok(unavailable(
+                        &model.root,
+                        &model.digest,
+                        args.dsl,
+                        error,
+                        model.warnings,
+                    ));
+                }
+            };
+
+            let mut warnings = std::mem::take(&mut response.warnings);
+            let model_warnings = model.warnings;
+            warnings.extend(model_warnings.iter().cloned().map(|message| Diagnostic {
+                message,
+                file: None,
+                line: None,
+                column: None,
+            }));
+            warnings.truncate(50);
+
+            if !response.ok {
+                return Ok(unavailable_or_invalid(
+                    &model.root,
+                    &model.digest,
+                    args.dsl,
+                    response,
+                    warnings,
+                ));
+            }
+            let Some(diff) = response.diff else {
+                return Ok(unavailable(
+                    &model.root,
+                    &model.digest,
+                    args.dsl,
+                    "LikeC4 did not return a diff summary.".into(),
+                    model_warnings,
+                ));
+            };
+            let diff: DiffSummary = match serde_json::from_value(diff) {
+                Ok(diff) => diff,
+                Err(error) => {
+                    return Ok(unavailable(
+                        &model.root,
+                        &model.digest,
+                        args.dsl,
+                        format!("Could not read the LikeC4 diff summary: {error}"),
+                        model_warnings,
+                    ));
+                }
+            };
+
+            let baseline_changed = {
+                let mut verified = self
+                    .verified
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let changed = verified
+                    .as_deref()
+                    .is_some_and(|digest| digest != model.digest);
+                *verified = Some(model.digest.clone());
+                changed
+            };
+            if baseline_changed {
+                warnings.push(Diagnostic {
+                    message: "Architecture sources changed since the previous validation. Query the current model before presenting the plan.".into(),
+                    file: None,
+                    line: None,
+                    column: None,
+                });
+            }
+
+            Ok(ToolOutput::text(encode(Validation {
+                status: "verified",
+                valid: true,
+                model_root: model.root,
+                source_digest: model.digest,
+                diff_id: Some(diff.id.clone()),
+                dsl: args.dsl,
+                diff: Some(diff),
+                diagnostics: Vec::new(),
+                warnings,
+                overlaps: response.overlaps,
+                error: None,
+                baseline_changed,
+            })))
+        })
+    }
+}
+
+async fn load_model(
+    ctx: &ToolContext,
+) -> Result<Result<architecture::PlanningModel, String>, ToolError> {
+    let workspace = ctx.workspace.clone();
+    let planning = ctx.planning.clone();
+    match tokio::task::spawn_blocking(move || {
+        architecture::planning_model(&workspace, planning.as_ref())
+    })
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(error) => Err(ToolError::Failed(format!(
+            "Could not read the architecture model: {error}"
+        ))),
+    }
+}
+
+fn unavailable_or_invalid(
+    root: &str,
+    digest: &str,
+    dsl: String,
+    response: architecture::HelperResponse,
+    warnings: Vec<Diagnostic>,
+) -> ToolOutput {
+    let error = response
+        .error
+        .unwrap_or_else(|| "The draft could not be validated.".into());
+    let diagnostics = response.diagnostics;
+    if response.draft_error {
+        ToolOutput::text(encode(Validation {
+            status: "invalid",
+            valid: false,
+            model_root: root.into(),
+            source_digest: digest.into(),
+            diff_id: None,
+            dsl,
+            diff: None,
+            diagnostics,
+            warnings,
+            overlaps: response.overlaps,
+            error: Some(error),
+            baseline_changed: false,
+        }))
+    } else {
+        ToolOutput::text(encode(Validation {
+            status: "unavailable",
+            valid: false,
+            model_root: root.into(),
+            source_digest: digest.into(),
+            diff_id: None,
+            dsl,
+            diff: None,
+            diagnostics,
+            warnings,
+            overlaps: response.overlaps,
+            error: Some(format!(
+                "The selected architecture model could not be compiled: {error}"
+            )),
+            baseline_changed: false,
+        }))
+    }
+}
+
+fn unavailable(
+    root: &str,
+    digest: &str,
+    dsl: String,
+    error: String,
+    notes: Vec<String>,
+) -> ToolOutput {
+    ToolOutput::text(encode(Validation {
+        status: "unavailable",
+        valid: false,
+        model_root: root.into(),
+        source_digest: digest.into(),
+        diff_id: None,
+        dsl,
+        diff: None,
+        diagnostics: Vec::new(),
+        warnings: notes
+            .into_iter()
+            .map(|message| Diagnostic {
+                message,
+                file: None,
+                line: None,
+                column: None,
+            })
+            .collect(),
+        overlaps: Vec::new(),
+        error: Some(error),
+        baseline_changed: false,
+    }))
+}
+
+fn encode(validation: Validation) -> String {
+    serde_json::to_string_pretty(&validation)
+        .unwrap_or_else(|error| format!("Could not encode the validation result: {error}"))
+}
+
+fn draft_path(root: &str, sources: &BTreeMap<String, String>) -> String {
+    loop {
+        let id = NEXT_DRAFT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = if root == "." {
+            format!(".oaklet-plan-{id}.c4")
+        } else {
+            format!("{root}/.oaklet-plan-{id}.c4")
+        };
+        if !sources.contains_key(&path) {
+            return path;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+
+    use super::*;
+    use crate::architecture::{PlanningScope, find_node};
+    use crate::tools::{Access, CancelHandle, Workspace};
+
+    const WORKER_DRAFT: &str = r#"diff worker 'Add background worker' {
+  add {
+    extend api {
+      queue = component 'Queue'
+    }
+    api.web -> api.queue 'Enqueues'
+  }
+}
+"#;
+
+    fn fixture() -> (PathBuf, PathBuf) {
+        let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../architecture-helper")
+            .canonicalize()
+            .unwrap();
+        let workspace = helper.join("test/fixtures/valid");
+        (helper, workspace)
+    }
+
+    fn tool() -> ValidateDiff {
+        let (helper, _) = fixture();
+        ValidateDiff::new(
+            Some(find_node().expect("Node is required for architecture tests")),
+            Some(helper),
+        )
+    }
+
+    fn planning_context(planning: Option<PlanningScope>) -> (ToolContext, PathBuf, CancelHandle) {
+        let (_, root) = fixture();
+        let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
+        let (handle, cancel) = CancelHandle::new();
+        (
+            ToolContext {
+                workspace,
+                cancel,
+                access: Access::execute(),
+                planning,
+                jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
+                session_id: "plan-diff-test".into(),
+                window: "main".into(),
+                spill_root: root.join("spill"),
+            },
+            root,
+            handle,
+        )
+    }
+
+    fn parse(output: ToolOutput) -> Value {
+        serde_json::from_str(&output).unwrap()
+    }
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn validates_a_diff_against_the_only_model() {
+        let (ctx, _root, _handle) = planning_context(None);
+        let value = parse(
+            tool()
+                .execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "verified", "{value}");
+        assert_eq!(value["valid"], true);
+        assert_eq!(value["modelRoot"], "architecture");
+        assert_eq!(value["diffId"], "worker");
+        assert_eq!(value["diff"]["added"]["elements"], 1);
+        assert_eq!(value["diff"]["added"]["relations"], 1);
+        assert_eq!(value["diff"]["views"][0]["id"], "containers");
+        assert_eq!(value["dsl"], WORKER_DRAFT);
+        assert!(
+            value["sourceDigest"]
+                .as_str()
+                .is_some_and(|d| d.len() == 16)
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_diagnostics_for_an_invalid_diff() {
+        let (ctx, _root, _handle) = planning_context(None);
+        let value = parse(
+            tool()
+                .execute(
+                    &ctx,
+                    json!({ "dsl": "diff broken 'Broken' {\n add { api.web -> api.missing 'Calls' }\n}\n" }),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "invalid", "{value}");
+        assert_eq!(value["valid"], false);
+        assert!(!value["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            value["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("missing")))
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_more_than_one_top_level_diff() {
+        let (ctx, _root, _handle) = planning_context(None);
+        let value = parse(
+            tool()
+                .execute(
+                    &ctx,
+                    json!({ "dsl": "diff a 'A' { add { extend api { q = component 'Q' } } }\ndiff b 'B' { add { extend api { r = component 'R' } } }\n" }),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "invalid", "{value}");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("exactly one"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_multiple_models_and_a_missing_selection() {
+        let root = super::super::test_support::temp_root("plan-diff-multiple");
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        std::fs::write(root.join("one/likec4.config.json"), r#"{"name":"one"}"#).unwrap();
+        std::fs::write(root.join("one/model.c4"), "model { }").unwrap();
+        std::fs::write(root.join("two/likec4.config.json"), r#"{"name":"two"}"#).unwrap();
+        std::fs::write(root.join("two/model.c4"), "model { }").unwrap();
+        let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
+        let (_handle, cancel) = CancelHandle::new();
+        let ctx = ToolContext {
+            workspace,
+            cancel,
+            access: Access::execute(),
+            planning: None,
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
+            session_id: "plan-diff-multiple".into(),
+            window: "main".into(),
+            spill_root: root.join("spill"),
+        };
+        let value = parse(
+            tool()
+                .execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "unavailable");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("multiple LikeC4 models"))
+        );
+
+        let missing = PlanningScope {
+            model_root: "missing".into(),
+            include_ignored: false,
+        };
+        let (_handle, cancel) = CancelHandle::new();
+        let ctx = ToolContext {
+            workspace: Workspace::new(root.to_str().unwrap()).unwrap(),
+            cancel,
+            access: Access::execute(),
+            planning: Some(missing),
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
+            session_id: "plan-diff-missing".into(),
+            window: "main".into(),
+            spill_root: root.join("spill"),
+        };
+        let value = parse(
+            tool()
+                .execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "unavailable");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("was not found"))
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn reports_unavailable_when_the_helper_is_missing() {
+        let (ctx, _root, _handle) = planning_context(None);
+        let tool = ValidateDiff::new(None, None);
+        let value = parse(
+            tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "unavailable");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("Node.js"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_broken_model_is_unavailable_and_keeps_its_diagnostics() {
+        let (helper, _) = fixture();
+        let workspace =
+            Workspace::new(helper.join("test/fixtures/malformed").to_str().unwrap()).unwrap();
+        let (_handle, cancel) = CancelHandle::new();
+        let ctx = ToolContext {
+            workspace,
+            cancel,
+            access: Access::execute(),
+            planning: None,
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
+            session_id: "plan-diff-broken".into(),
+            window: "main".into(),
+            spill_root: std::env::temp_dir().join("oaklet-plan-diff-broken"),
+        };
+        let value = parse(
+            tool()
+                .execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "unavailable", "{value}");
+        assert!(!value["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("could not be compiled"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_a_baseline_change_after_a_source_edit() {
+        let (_, fixture) = fixture();
+        let root = super::super::test_support::temp_root("plan-diff-baseline");
+        copy_tree(&fixture, &root);
+        let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
+        let (_handle, cancel) = CancelHandle::new();
+        let ctx = ToolContext {
+            workspace,
+            cancel,
+            access: Access::execute(),
+            planning: None,
+            jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
+            session_id: "plan-diff-baseline".into(),
+            window: "main".into(),
+            spill_root: root.join("spill"),
+        };
+        let tool = tool();
+        let first = parse(
+            tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(first["baselineChanged"], false);
+
+        let model = root.join("architecture/model.c4");
+        let mut text = fs::read_to_string(&model).unwrap();
+        text.push_str("\n// changed\n");
+        fs::write(&model, text).unwrap();
+
+        let second = parse(
+            tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(second["status"], "verified", "{second}");
+        assert_eq!(second["baselineChanged"], true);
+        assert!(
+            second["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| {
+                    warning["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("changed"))
+                })
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_dsl() {
+        let (ctx, _root, _handle) = planning_context(None);
+        assert!(matches!(
+            tool().execute(&ctx, json!({ "dsl": "  " })).await,
+            Err(ToolError::InvalidArguments(_))
+        ));
+    }
+
+    #[test]
+    fn generated_draft_names_avoid_real_sources() {
+        let mut sources = BTreeMap::new();
+        let first = draft_path("architecture", &sources);
+        sources.insert(first.clone(), String::new());
+        let second = draft_path("architecture", &sources);
+        assert_ne!(first, second);
+        assert!(!sources.contains_key(&second));
+    }
+}

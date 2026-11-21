@@ -26,6 +26,7 @@ mod likec4;
 mod mcp;
 mod patch;
 mod plan;
+mod plan_diff;
 mod search;
 mod shell;
 pub(crate) mod skill;
@@ -427,6 +428,8 @@ pub struct ToolContext {
     pub cancel: Cancel,
     /// Capability gate shared with the run and the tool registry.
     pub access: Arc<Access>,
+    /// Model selected for architecture planning, captured when the run starts.
+    pub planning: Option<crate::architecture::PlanningScope>,
     /// Background jobs owned by the app process, shared across runs.
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session that owns spill files.
@@ -513,6 +516,7 @@ pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     warnings: Vec<String>,
     access: Arc<Access>,
+    planning: Option<crate::architecture::PlanningScope>,
 }
 
 impl ToolRegistry {
@@ -537,10 +541,15 @@ impl ToolRegistry {
                 .push(Box::new(skill::LoadSkill::new(catalog)));
         }
 
+        let node = crate::architecture::find_node();
+        let helper = crate::architecture::find_helper(app);
         registry.tools.push(Box::new(likec4::LikeC4 {
-            node: crate::architecture::find_node(),
-            helper: crate::architecture::find_helper(app),
+            node: node.clone(),
+            helper: helper.clone(),
         }));
+        registry
+            .tools
+            .push(Box::new(plan_diff::ValidateDiff::new(node, helper)));
         let (tools, warnings) = mcp::discover(
             &config.mcp_servers,
             std::path::Path::new(&config.workspace),
@@ -583,6 +592,7 @@ impl ToolRegistry {
             ],
             warnings: Vec::new(),
             access: Access::execute(),
+            planning: None,
         }
     }
 
@@ -593,6 +603,15 @@ impl ToolRegistry {
 
     pub fn access(&self) -> &Arc<Access> {
         &self.access
+    }
+
+    /// Model selected when this run started, used to focus the system prompt.
+    pub fn set_planning_scope(&mut self, planning: Option<crate::architecture::PlanningScope>) {
+        self.planning = planning;
+    }
+
+    pub fn planning_scope(&self) -> Option<&crate::architecture::PlanningScope> {
+        self.planning.as_ref()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -797,6 +816,7 @@ pub(crate) mod test_support {
                 workspace,
                 cancel,
                 access: Access::execute(),
+                planning: None,
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 session_id: "run-test".into(),
                 window: "main".into(),
@@ -979,6 +999,7 @@ mod tests {
             tools: vec![Box::new(Wordy { name, output })],
             warnings: Vec::new(),
             access: Access::execute(),
+            planning: None,
         }
     }
 
@@ -1363,6 +1384,7 @@ mod tests {
             tools: vec![tool],
             warnings: Vec::new(),
             access: Access::execute(),
+            planning: None,
         };
         let (ctx, root, _handle) = context("denied");
         let outcome = registry
@@ -1381,6 +1403,7 @@ mod tests {
             tools: vec![tool],
             warnings: Vec::new(),
             access: Access::execute(),
+            planning: None,
         };
         let (ctx, root, _handle) = context("stopped");
         let outcome = registry
@@ -1398,6 +1421,7 @@ mod tests {
             tools: vec![tool],
             warnings: Vec::new(),
             access: Access::execute(),
+            planning: None,
         };
         let (ctx, root, _handle) = context("timeout");
         let outcome = registry
