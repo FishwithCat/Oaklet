@@ -26,9 +26,9 @@ pub(crate) use events::{checkpoint, is_checkpoint};
 #[cfg(test)]
 pub use types::CompactionRecord;
 pub use types::{
-    CompactionEnd, ContextUsage, Event, EventPayload, NewUserTurn, PlanRecord, PlanState,
-    PlanStatus, PlanValidation, PlanValidationStatus, RunEnd, RunStart, RunUsage, Session,
-    SessionMeta, SessionSummary, SessionWindow, StepUsage,
+    CompactionEnd, ContextUsage, Event, EventPayload, NewUserTurn, PlanDetails, PlanRecord,
+    PlanState, PlanStatus, PlanStep, PlanValidation, PlanValidationStatus, RunEnd, RunStart,
+    RunUsage, Session, SessionMeta, SessionSummary, SessionWindow, StepUsage,
 };
 
 /// Events in one UI window. The model surface never uses this page size.

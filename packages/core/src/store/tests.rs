@@ -275,6 +275,7 @@ fn plan_state_survives_runs_and_advances_versions() {
                 version: 1,
                 status: PlanStatus::Pending,
                 steps: String::new(),
+                details: None,
                 validation: None,
             }],
             compaction: None,
@@ -317,6 +318,20 @@ fn plan_confirmation_consumes_the_latest_version_once() {
         overlaps: vec!["existing".into()],
         error: None,
     };
+    let details = crate::store::PlanDetails {
+        objective: "Add a worker".into(),
+        changes: "Introduce a queue.".into(),
+        steps: vec![crate::store::PlanStep {
+            title: "Add the queue".into(),
+            outcome: "Jobs can be enqueued.".into(),
+            files: Vec::new(),
+            components: vec!["api.queue".into()],
+            depends_on: Vec::new(),
+            verification: "cargo test queue".into(),
+        }],
+        risks: Vec::new(),
+        questions: Vec::new(),
+    };
     store
         .finish_run(&RunEnd {
             session_id: "s1".into(),
@@ -328,6 +343,7 @@ fn plan_confirmation_consumes_the_latest_version_once() {
                 version: 1,
                 status: PlanStatus::Pending,
                 steps: "1. Add the worker.".into(),
+                details: Some(Box::new(details.clone())),
                 validation: Some(Box::new(validation.clone())),
             }],
             compaction: None,
@@ -340,6 +356,7 @@ fn plan_confirmation_consumes_the_latest_version_once() {
     let plan = store.latest_plan("s1").unwrap().unwrap();
     assert_eq!(plan.version, 1);
     assert_eq!(plan.steps, "1. Add the worker.");
+    assert_eq!(plan.details, Some(details.clone()));
     assert_eq!(plan.validation, Some(validation.clone()));
 
     assert!(
@@ -361,6 +378,7 @@ fn plan_confirmation_consumes_the_latest_version_once() {
     let plan = store.latest_plan("s1").unwrap().unwrap();
     assert_eq!(plan.status, PlanStatus::Accepted);
     assert_eq!(plan.steps, "1. Add the worker.");
+    assert_eq!(plan.details, Some(details));
     assert_eq!(plan.validation, Some(validation));
     assert!(
         store

@@ -27,6 +27,8 @@ mod mcp;
 mod patch;
 mod plan;
 mod plan_diff;
+mod plan_present;
+pub(crate) use plan_diff::draft_path;
 mod search;
 mod shell;
 pub(crate) mod skill;
@@ -440,6 +442,8 @@ pub struct ToolContext {
     pub planning: Option<crate::architecture::PlanningScope>,
     /// Latest architecture draft validation produced by this run.
     pub plan_validation: Option<Arc<Mutex<Option<crate::store::PlanValidation>>>>,
+    /// Structured review content submitted with `present_plan`.
+    pub plan_details: Option<Arc<Mutex<Option<crate::store::PlanDetails>>>>,
     /// Background jobs owned by the app process, shared across runs.
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session that owns spill files.
@@ -458,6 +462,20 @@ impl ToolContext {
             return;
         };
         *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(validation.clone());
+        // A new draft supersedes review content the agent wrote for an older one.
+        if let Some(details) = &self.plan_details {
+            *details
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
+    /// Remember the plan review content so run finish can attach it to the plan.
+    pub fn record_plan_details(&self, details: &crate::store::PlanDetails) {
+        let Some(slot) = &self.plan_details else {
+            return;
+        };
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(details.clone());
     }
 
     /// Save oversized output before trimming it, so the full text survives in
@@ -597,6 +615,7 @@ impl ToolRegistry {
         Self {
             tools: vec![
                 Box::new(plan::AssessChange),
+                Box::new(plan_present::PresentPlan),
                 Box::new(fs::ReadFile),
                 Box::new(image::ReadImage),
                 Box::new(fs::WriteFile),
@@ -847,6 +866,7 @@ pub(crate) mod test_support {
                 access: Access::execute(),
                 planning: None,
                 plan_validation: None,
+                plan_details: None,
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 session_id: "run-test".into(),
                 window: "main".into(),
@@ -1209,6 +1229,7 @@ mod tests {
             names,
             vec![
                 "assess_change",
+                "present_plan",
                 "read_file",
                 "read_image",
                 "write_file",

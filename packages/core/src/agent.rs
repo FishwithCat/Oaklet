@@ -80,6 +80,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         access: ctx.access().clone(),
         planning: ctx.planning_scope().cloned(),
         plan_validation: Some(ctx.plan_validation_slot()),
+        plan_details: Some(ctx.plan_details_slot()),
         jobs: ctx.jobs(),
         session_id: ctx.session_id().to_string(),
         window: ctx.window_label().to_string(),

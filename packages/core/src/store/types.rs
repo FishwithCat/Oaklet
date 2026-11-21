@@ -47,6 +47,9 @@ pub enum EventPayload {
         /// compacted session still shows the implementation steps.
         #[serde(default)]
         steps: String,
+        /// Structured review content the agent submitted with `present_plan`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<Box<PlanDetails>>,
         /// Backend validation of the plan's architecture draft, when the agent
         /// used `validate_architecture_diff`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +97,42 @@ pub struct PlanValidation {
     pub error: Option<String>,
 }
 
+/// The reviewable plan the agent presents before confirmation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDetails {
+    /// What the user asked for and why it needs this change.
+    pub objective: String,
+    /// The code and model changes, in natural language.
+    pub changes: String,
+    pub steps: Vec<PlanStep>,
+    /// Risks that could change the implementation decision.
+    #[serde(default)]
+    pub risks: Vec<String>,
+    /// Questions the user should settle before implementation starts.
+    #[serde(default)]
+    pub questions: Vec<String>,
+}
+
+/// One ordered implementation step, with the evidence needed to review it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStep {
+    pub title: String,
+    /// What is true when this step is finished.
+    pub outcome: String,
+    /// Workspace-relative files this step touches.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Architecture element or relation IDs this step implements.
+    #[serde(default)]
+    pub components: Vec<String>,
+    /// One-based numbers of steps that must finish first.
+    #[serde(default)]
+    pub depends_on: Vec<u64>,
+    pub verification: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanValidationStatus {
@@ -108,6 +147,7 @@ pub struct PlanRecord {
     pub version: u64,
     pub status: PlanStatus,
     pub steps: String,
+    pub details: Option<PlanDetails>,
     pub validation: Option<PlanValidation>,
 }
 

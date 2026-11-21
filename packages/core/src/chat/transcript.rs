@@ -152,6 +152,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
             EventPayload::Plan {
                 version,
                 steps,
+                details,
                 validation,
                 ..
             } => {
@@ -176,6 +177,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                     "status": latest_status,
                     "latest": *version == latest_plan,
                     "steps": steps,
+                    "details": details,
                     "validation": validation,
                 }));
             }

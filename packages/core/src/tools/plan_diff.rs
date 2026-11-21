@@ -54,6 +54,8 @@ struct DiffSummary {
     modified: ModifiedCounts,
     #[serde(default)]
     views: Vec<DiffView>,
+    #[serde(default)]
+    changes: Option<Value>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -407,7 +409,7 @@ fn respond(ctx: &ToolContext, plan: PlanValidation, baseline_changed: bool) -> T
     ToolOutput::text(text)
 }
 
-fn draft_path(root: &str, sources: &BTreeMap<String, String>) -> String {
+pub(crate) fn draft_path(root: &str, sources: &BTreeMap<String, String>) -> String {
     loop {
         let id = NEXT_DRAFT_ID.fetch_add(1, Ordering::Relaxed);
         let path = if root == "." {
@@ -470,6 +472,7 @@ mod tests {
                 access: Access::execute(),
                 planning,
                 plan_validation: None,
+                plan_details: None,
                 jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
                 session_id: "plan-diff-test".into(),
                 window: "main".into(),
@@ -606,6 +609,7 @@ mod tests {
             access: Access::execute(),
             planning: None,
             plan_validation: None,
+            plan_details: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-multiple".into(),
             window: "main".into(),
@@ -635,6 +639,7 @@ mod tests {
             access: Access::execute(),
             planning: Some(missing),
             plan_validation: None,
+            plan_details: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-missing".into(),
             window: "main".into(),
@@ -684,6 +689,7 @@ mod tests {
             access: Access::execute(),
             planning: None,
             plan_validation: None,
+            plan_details: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-broken".into(),
             window: "main".into(),
@@ -717,6 +723,7 @@ mod tests {
             access: Access::execute(),
             planning: None,
             plan_validation: None,
+            plan_details: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-baseline".into(),
             window: "main".into(),

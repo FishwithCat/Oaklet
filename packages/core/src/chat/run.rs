@@ -135,6 +135,7 @@ pub(super) fn start_run(
             RunTrigger::User | RunTrigger::Notice => None,
         },
         plan_validation: Arc::new(Mutex::new(None)),
+        plan_details: Arc::new(Mutex::new(None)),
         next_plan_version,
         records_plan: trigger != RunTrigger::Notice,
     };
@@ -316,6 +317,8 @@ pub struct RunContext {
     confirmed_plan: Option<u64>,
     /// Latest draft validation, attached to the plan when the turn finishes.
     plan_validation: Arc<Mutex<Option<store::PlanValidation>>>,
+    /// Structured review content submitted with `present_plan`.
+    plan_details: Arc<Mutex<Option<store::PlanDetails>>>,
     /// Version the next plan recorded by this run will carry.
     next_plan_version: u64,
     /// Background-notice turns never create a plan awaiting review.
@@ -388,6 +391,10 @@ impl RunContext {
 
     pub fn plan_validation_slot(&self) -> Arc<Mutex<Option<store::PlanValidation>>> {
         self.plan_validation.clone()
+    }
+
+    pub fn plan_details_slot(&self) -> Arc<Mutex<Option<store::PlanDetails>>> {
+        self.plan_details.clone()
     }
 
     pub fn next_plan_version(&self) -> u64 {
@@ -530,6 +537,7 @@ impl RunContext {
             planning: None,
             confirmed_plan: None,
             plan_validation: Arc::new(Mutex::new(None)),
+            plan_details: Arc::new(Mutex::new(None)),
             next_plan_version: started.plan.latest.unwrap_or(0) + 1,
             records_plan: true,
         }

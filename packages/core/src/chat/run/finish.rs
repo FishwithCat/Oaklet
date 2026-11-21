@@ -343,10 +343,17 @@ impl RunContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
             .map(Box::new);
+        let details = self
+            .plan_details
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .map(Box::new);
         self.record(EventPayload::Plan {
             version: self.next_plan_version(),
             status: store::PlanStatus::Pending,
             steps,
+            details,
             validation,
         });
     }

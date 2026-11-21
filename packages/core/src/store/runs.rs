@@ -99,6 +99,7 @@ impl Store {
                     version: record.version,
                     status: PlanStatus::Accepted,
                     steps: record.steps,
+                    details: record.details.map(Box::new),
                     validation: record.validation.map(Box::new),
                 }],
                 now,

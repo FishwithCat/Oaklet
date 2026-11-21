@@ -505,6 +505,98 @@ pub(crate) fn planning_model(
     })
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCompare {
+    pub model_root: String,
+    pub source_digest: String,
+    pub view_id: String,
+    /// Layouted model with only the compare view, ready for the diagram.
+    pub model: Value,
+    /// Layouted compare view with `diffStatus` on added, removed, and modified items.
+    pub view: Value,
+}
+
+/// Lay out one affected view for the plan review card.
+///
+/// The saved draft is recompiled against the current sources, and the call is
+/// refused when the model no longer matches the plan's baseline. The desktop
+/// binds the result to the same plan version before rendering it.
+pub(crate) async fn plan_compare(
+    app: &AppHandle,
+    workspace_path: &Path,
+    validation: &crate::store::PlanValidation,
+    view_id: &str,
+) -> Result<PlanCompare, String> {
+    let changed_view = validation
+        .diff
+        .as_ref()
+        .and_then(|diff| diff.get("views"))
+        .and_then(Value::as_array)
+        .is_some_and(|views| {
+            views
+                .iter()
+                .any(|view| view.get("id").and_then(Value::as_str) == Some(view_id))
+        });
+    if !changed_view {
+        return Err("This view is not part of the plan's architecture diff.".into());
+    }
+    if validation.dsl.trim().is_empty() {
+        return Err("This plan has no architecture draft to preview.".into());
+    }
+
+    let workspace = Workspace::new(&workspace_path.to_string_lossy())?;
+    let scope = PlanningScope {
+        model_root: validation.model_root.clone(),
+        include_ignored: validation.include_ignored,
+    };
+    let expected = validation.source_digest.clone();
+    let model =
+        tauri::async_runtime::spawn_blocking(move || planning_model(&workspace, Some(&scope)))
+            .await
+            .map_err(|error| format!("Could not read the architecture model: {error}"))??;
+    if model.digest != expected {
+        return Err(
+            "The architecture model changed after this plan was validated. Ask for an updated plan, then preview the new version."
+                .into(),
+        );
+    }
+
+    let Some(node) = find_node() else {
+        return Err("LikeC4 preview requires Node.js 22.23.3 or newer.".into());
+    };
+    let Some(helper) = find_helper(app) else {
+        return Err("The LikeC4 compiler helper is missing. Reinstall Oaklet.".into());
+    };
+    let model_root = model.root.clone();
+    let draft = crate::tools::draft_path(&model.root, &model.sources);
+    let request = serde_json::json!({
+        "version": 1,
+        "sources": model.sources,
+        "diff": { "path": draft, "text": validation.dsl },
+        "compare": { "viewId": view_id },
+    });
+    let response = run_helper(&node, &helper, &request, Arc::new(AtomicBool::new(false))).await?;
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "LikeC4 could not build the compare view.".into()));
+    }
+    let Some(view) = response.view else {
+        return Err("LikeC4 did not return a compare view.".into());
+    };
+    let Some(model) = response.model else {
+        return Err("LikeC4 did not return the model for the compare view.".into());
+    };
+    Ok(PlanCompare {
+        model_root,
+        source_digest: expected,
+        view_id: view_id.to_string(),
+        model,
+        view,
+    })
+}
+
 fn model_roots(models: &[ModelRoot]) -> String {
     models
         .iter()

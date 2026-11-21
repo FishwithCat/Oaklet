@@ -580,6 +580,7 @@ fn plan_cards_replace_their_duplicate_reply_and_keep_their_place() {
             version,
             status,
             steps: steps.into(),
+            details: None,
             validation: None,
         },
     };
@@ -646,6 +647,7 @@ fn plan_cards_carry_the_backend_validation() {
             version: 1,
             status: store::PlanStatus::Pending,
             steps: "1. Add the worker.".into(),
+            details: None,
             validation: Some(Box::new(validation)),
         },
     }];

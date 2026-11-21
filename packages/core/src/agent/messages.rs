@@ -121,10 +121,12 @@ pub(super) fn system_prompt(
              grounded in the code you changed. Use likec4_mcp to understand existing elements and \
              relationships, and file tools to edit. Before presenting an architectural plan, \
              validate its complete native diff with validate_architecture_diff; only describe it as \
-             verified after the tool reports success. A planning turn's final reply becomes the \
-             plan card, so make it a self-contained ordered list of implementation steps. If the \
-             code change has no architectural effect, leave the model unchanged and say so; do not \
-             create a model when none exists.",
+             verified after the tool reports success. Then call present_plan with the objective, \
+             code and model changes, ordered implementation steps, verification, risks, and open \
+             questions; those fields become the review card. If the tool is unavailable or you \
+             cannot use it, the final reply becomes the plan card, so make it a self-contained \
+             ordered list of implementation steps. If the code change has no architectural effect, \
+             leave the model unchanged and say so; do not create a model when none exists.",
             model_sources.join(", ")
         ));
     }

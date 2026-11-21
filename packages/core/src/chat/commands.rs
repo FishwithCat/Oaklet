@@ -1,6 +1,7 @@
 //! Window-bound chat commands used by the desktop frontend.
 use std::path::Path;
 
+use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
@@ -223,11 +224,124 @@ pub async fn session_confirm_plan(
     Ok(SendResult { run_id, session })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanBaseline {
+    pub version: u64,
+    /// False for a text-only plan, which has no model baseline to compare.
+    pub checked: bool,
+    pub baseline_changed: bool,
+}
+
+/// Report whether a verified plan's architecture baseline is still current.
+#[tauri::command]
+pub async fn session_plan_baseline(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    session_id: String,
+    version: u64,
+) -> Result<PlanBaseline, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let store = state.chat.store.clone();
+    let load_id = session_id.clone();
+    let meta = tauri::async_runtime::spawn_blocking(move || store.session_meta(&load_id))
+        .await
+        .map_err(|error| format!("Could not read the session: {error}"))??
+        .ok_or_else(|| "This session no longer exists.".to_string())?;
+    if Path::new(&meta.workspace) != workspace.as_path() {
+        return Err("This chat belongs to another workspace.".into());
+    }
+
+    let plan = state
+        .chat
+        .store
+        .latest_plan(&session_id)?
+        .ok_or_else(|| "This plan is no longer available.".to_string())?;
+    if plan.version != version {
+        return Err("This plan version is no longer current.".into());
+    }
+    let Some(validation) = plan.validation.filter(|validation| {
+        validation.status == store::PlanValidationStatus::Verified && validation.valid
+    }) else {
+        return Ok(PlanBaseline {
+            version,
+            checked: false,
+            baseline_changed: false,
+        });
+    };
+    Ok(PlanBaseline {
+        version,
+        checked: true,
+        baseline_changed: baseline_changed(&meta.workspace, &validation).await?,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanComparison {
+    pub version: u64,
+    #[serde(flatten)]
+    pub compare: architecture::PlanCompare,
+}
+
+/// Lay out one affected view for a saved plan version.
+#[tauri::command]
+pub async fn session_plan_compare(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    session_id: String,
+    version: u64,
+    view_id: String,
+) -> Result<PlanComparison, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let store = state.chat.store.clone();
+    let load_id = session_id.clone();
+    let meta = tauri::async_runtime::spawn_blocking(move || store.session_meta(&load_id))
+        .await
+        .map_err(|error| format!("Could not read the session: {error}"))??
+        .ok_or_else(|| "This session no longer exists.".to_string())?;
+    if Path::new(&meta.workspace) != workspace.as_path() {
+        return Err("This chat belongs to another workspace.".into());
+    }
+    let plan = state
+        .chat
+        .store
+        .latest_plan(&session_id)?
+        .ok_or_else(|| "This plan is no longer available.".to_string())?;
+    if plan.version != version {
+        return Err("This plan version is no longer current.".into());
+    }
+    let validation = plan
+        .validation
+        .filter(|validation| {
+            validation.status == store::PlanValidationStatus::Verified && validation.valid
+        })
+        .ok_or_else(|| "This plan has no verified architecture preview.".to_string())?;
+    let compare =
+        architecture::plan_compare(&app, Path::new(&meta.workspace), &validation, &view_id).await?;
+    Ok(PlanComparison { version, compare })
+}
+
 /// Re-read the selected model and check that the plan's baseline still holds.
 async fn verify_baseline(
     workspace: &str,
     validation: &store::PlanValidation,
 ) -> Result<(), String> {
+    if baseline_changed(workspace, validation).await? {
+        Err(
+            "The architecture model changed after this plan was validated. Ask for an updated plan, then confirm the new version."
+                .into(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+async fn baseline_changed(
+    workspace: &str,
+    validation: &store::PlanValidation,
+) -> Result<bool, String> {
     let path = workspace.to_string();
     let scope = PlanningScope {
         model_root: validation.model_root.clone(),
@@ -240,21 +354,17 @@ async fn verify_baseline(
     })
     .await
     .map_err(|error| format!("Could not check the architecture model: {error}"))??;
-    if current == expected {
-        Ok(())
-    } else {
-        Err(
-            "The architecture model changed after this plan was validated. Ask for an updated plan, then confirm the new version."
-                .into(),
-        )
-    }
+    Ok(current != expected)
 }
 
 fn confirmation_message(plan: &store::PlanRecord) -> String {
+    let plan_text = match &plan.details {
+        Some(details) => details_message(details),
+        None => plan.steps.trim().to_string(),
+    };
     let mut text = format!(
         "The user confirmed plan version {} from the plan card. Implement it now and follow the plan below.\n\n{}",
-        plan.version,
-        plan.steps.trim()
+        plan.version, plan_text
     );
     if let Some(validation) = &plan.validation
         && validation.status == store::PlanValidationStatus::Verified
@@ -265,6 +375,52 @@ fn confirmation_message(plan: &store::PlanRecord) -> String {
             validation.source_digest,
             validation.dsl.trim()
         ));
+    }
+    text
+}
+
+fn details_message(details: &store::PlanDetails) -> String {
+    let mut text = format!(
+        "Objective:\n{}\n\nChanges:\n{}",
+        details.objective.trim(),
+        details.changes.trim()
+    );
+    text.push_str("\n\nImplementation steps:");
+    for (index, step) in details.steps.iter().enumerate() {
+        text.push_str(&format!("\n{}. {}", index + 1, step.title.trim()));
+        text.push_str(&format!("\n   Outcome: {}", step.outcome.trim()));
+        if !step.files.is_empty() {
+            text.push_str(&format!("\n   Files: {}", step.files.join(", ")));
+        }
+        if !step.components.is_empty() {
+            text.push_str(&format!(
+                "\n   Architecture: {}",
+                step.components.join(", ")
+            ));
+        }
+        if !step.depends_on.is_empty() {
+            text.push_str(&format!(
+                "\n   Depends on: {}",
+                step.depends_on
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        text.push_str(&format!("\n   Verify: {}", step.verification.trim()));
+    }
+    if !details.risks.is_empty() {
+        text.push_str("\n\nRisks:\n");
+        for risk in &details.risks {
+            text.push_str(&format!("- {}\n", risk.trim()));
+        }
+    }
+    if !details.questions.is_empty() {
+        text.push_str("\nOpen questions:\n");
+        for question in &details.questions {
+            text.push_str(&format!("- {}\n", question.trim()));
+        }
     }
     text
 }
@@ -375,6 +531,7 @@ mod tests {
             version: 2,
             status: PlanStatus::Pending,
             steps: "1. Add the worker.".into(),
+            details: None,
             validation,
         }
     }
@@ -407,6 +564,31 @@ mod tests {
         let text = confirmation_message(&plan(None));
         assert!(text.contains("plan version 2"));
         assert!(!text.contains("validated LikeC4 diff"));
+    }
+
+    #[test]
+    fn a_structured_plan_carries_steps_risks_and_questions() {
+        let mut record = plan(None);
+        record.details = Some(store::PlanDetails {
+            objective: "Add a worker".into(),
+            changes: "Route jobs through a queue.".into(),
+            steps: vec![store::PlanStep {
+                title: "Add the queue".into(),
+                outcome: "Jobs can be enqueued.".into(),
+                files: vec!["src/queue.rs".into()],
+                components: vec!["api.queue".into()],
+                depends_on: Vec::new(),
+                verification: "cargo test queue".into(),
+            }],
+            risks: vec!["Delivery is at least once.".into()],
+            questions: vec!["Should retries be bounded?".into()],
+        });
+        let text = confirmation_message(&record);
+        assert!(text.contains("Objective:\nAdd a worker"));
+        assert!(text.contains("1. Add the queue"));
+        assert!(text.contains("Verify: cargo test queue"));
+        assert!(text.contains("Risks:\n- Delivery is at least once."));
+        assert!(text.contains("Open questions:\n- Should retries be bounded?"));
     }
 
     fn copy_tree(from: &Path, to: &Path) {

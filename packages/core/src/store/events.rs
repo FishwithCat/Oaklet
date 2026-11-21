@@ -190,11 +190,13 @@ pub(super) fn latest_plan(
             version,
             status,
             steps,
+            details,
             validation,
         } => Ok(Some(PlanRecord {
             version,
             status,
             steps,
+            details: details.map(|details| *details),
             validation: validation.map(|validation| *validation),
         })),
         _ => Ok(None),

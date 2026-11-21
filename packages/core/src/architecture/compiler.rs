@@ -24,6 +24,9 @@ pub(crate) struct HelperResponse {
     pub(crate) ok: bool,
     #[serde(default)]
     pub(crate) model: Option<Value>,
+    /// One layouted compare view returned for the plan review card.
+    #[serde(default)]
+    pub(crate) view: Option<Value>,
     #[serde(default)]
     pub(crate) views: Vec<ViewInfo>,
     #[serde(default)]

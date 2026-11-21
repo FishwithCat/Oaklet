@@ -248,6 +248,23 @@ async fn a_planning_turn_records_a_pending_plan() {
     *ctx.plan_validation
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(validation.clone());
+    let details = store::PlanDetails {
+        objective: "Add a worker".into(),
+        changes: "Introduce a queue.".into(),
+        steps: vec![store::PlanStep {
+            title: "Add the queue".into(),
+            outcome: "Jobs can be enqueued.".into(),
+            files: vec!["src/queue.rs".into()],
+            components: vec!["api.queue".into()],
+            depends_on: Vec::new(),
+            verification: "cargo test queue".into(),
+        }],
+        risks: vec!["Delivery is at least once.".into()],
+        questions: Vec::new(),
+    };
+    *ctx.plan_details
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(details.clone());
     ctx.record_message(
         json!({"role":"assistant", "content":"1. Add the worker."}),
         None,
@@ -263,15 +280,23 @@ async fn a_planning_turn_records_a_pending_plan() {
                 version,
                 status,
                 steps,
+                details,
                 validation,
-            } => Some((*version, *status, steps.clone(), validation.clone())),
+            } => Some((
+                *version,
+                *status,
+                steps.clone(),
+                details.clone(),
+                validation.clone(),
+            )),
             _ => None,
         })
         .unwrap();
     assert_eq!(plan.0, 1);
     assert_eq!(plan.1, store::PlanStatus::Pending);
     assert_eq!(plan.2, "1. Add the worker.");
-    assert_eq!(plan.3.as_deref(), Some(&validation));
+    assert_eq!(plan.3.as_deref(), Some(&details));
+    assert_eq!(plan.4.as_deref(), Some(&validation));
     assert_eq!(
         store.plan_state("s").unwrap(),
         store::PlanState {
