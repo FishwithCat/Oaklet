@@ -245,6 +245,18 @@ diff second 'Second' {
   assert.match(response.error, /exactly one top-level diff/);
 });
 
+test("rejects model declarations alongside the plan diff", async () => {
+  const { response } = await compile(await sourcesFor("valid"), {
+    path: "architecture/.oaklet-plan-mixed.c4",
+    text: `model { extra = component 'Extra' }
+diff worker { add { extend api { queue = component 'Queue' } } }`,
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.draftError, true);
+  assert.match(response.error, /only contain its top-level diff/);
+});
+
 test("rejects a draft whose ID already exists in the model", async () => {
   const sources = await sourcesFor("valid");
   sources["architecture/existing.c4"] = `diff worker 'Existing worker' {

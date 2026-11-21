@@ -281,6 +281,20 @@ async function validateDraft(likec4, diff, diagnostics) {
     };
   }
 
+  const extraDeclarations = Object.entries(draftDocument.parseResult.value).some(
+    ([key, value]) =>
+      key !== "diffs" && !key.startsWith("$") &&
+      (Array.isArray(value) ? value.length > 0 : value != null),
+  );
+  if (extraDeclarations) {
+    return {
+      ok: false,
+      error: "A plan draft may only contain its top-level diff declaration.",
+      diagnostics,
+      draftError: true,
+    };
+  }
+
   const id = draftDiffs[0].name;
   const existing = [];
   for (const document of likec4.langium.likec4.shared.workspace.LangiumDocuments.all) {
