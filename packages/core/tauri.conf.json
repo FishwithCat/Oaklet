@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm --dir desktop run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --dir desktop run build",
+    "beforeBuildCommand": "pnpm --dir architecture-helper run build && pnpm --dir desktop run build",
     "frontendDist": "../desktop/dist"
   },
   "app": {
@@ -28,9 +28,7 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../architecture-helper/src": "architecture-helper/src",
-      "../architecture-helper/node_modules": "architecture-helper/node_modules",
-      "../architecture-helper/package.json": "architecture-helper/package.json"
+      "../architecture-helper/dist": "architecture-helper"
     },
     "icon": [
       "icons/32x32.png",

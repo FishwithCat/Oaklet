@@ -59,12 +59,12 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm --dir packages/desktop install --frozen-lockfile
-          # esbuild ships one native binary per architecture. Install both
-          # macOS slices so the bundled Architecture helper also runs on Intel
-          # Macs inside the universal app.
-          printf 'packages: []\nsupportedArchitectures:\n  os: [darwin]\n  cpu: [x64, arm64]\n' \
-            > packages/architecture-helper/pnpm-workspace.yaml
           pnpm --dir packages/architecture-helper install --frozen-lockfile
+
+      - name: Build the architecture helper
+        # The helper is bundled to plain JavaScript, independent of the host
+        # architecture, and Tauri embeds only this directory.
+        run: pnpm --dir packages/architecture-helper build
 
       - name: Build app and dmg
         env:

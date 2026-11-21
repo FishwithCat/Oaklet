@@ -125,8 +125,16 @@ fn node_supported(version: &str) -> bool {
 }
 
 pub(super) fn helper_ready(helper: &Path) -> bool {
-    helper.join("src").join("compile.mjs").is_file()
-        && helper
+    let src = helper.join("src");
+    let entries = src.join("compile.mjs").is_file() && src.join("mcp.mjs").is_file();
+    if !entries {
+        return false;
+    }
+
+    // Development checkouts use an installed node_modules tree. Packaged apps
+    // ship the esbuild bundles instead and mark them with bundle.json.
+    helper.join("bundle.json").is_file()
+        || helper
             .join("node_modules")
             .join("@likec4")
             .join("language-services")
@@ -224,7 +232,10 @@ pub(super) fn runtime_status_for(node: Option<&Path>, helper: Option<&Path>) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use crate::tools::test_support::temp_root;
 
     #[test]
     fn runtime_status_explains_missing_runtime() {
@@ -245,5 +256,29 @@ mod tests {
         assert!(!node_supported("v22.23.2"));
         assert!(!node_supported("v22.22.3"));
         assert!(!node_supported("v22.12.0"));
+    }
+
+    #[test]
+    fn helper_ready_accepts_installed_and_bundled_layouts() {
+        let root = temp_root("helper-ready");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/compile.mjs"), "").unwrap();
+        fs::write(root.join("src/mcp.mjs"), "").unwrap();
+
+        // Neither an installed node_modules tree nor a bundle marker yet.
+        assert!(!helper_ready(&root));
+
+        let language_services = root.join("node_modules/@likec4/language-services");
+        fs::create_dir_all(&language_services).unwrap();
+        fs::write(language_services.join("package.json"), "{}").unwrap();
+        assert!(helper_ready(&root));
+
+        fs::remove_dir_all(root.join("node_modules")).unwrap();
+        assert!(!helper_ready(&root));
+
+        fs::write(root.join("bundle.json"), "{}").unwrap();
+        assert!(helper_ready(&root));
+
+        fs::remove_dir_all(&root).ok();
     }
 }

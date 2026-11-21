@@ -41,6 +41,10 @@ cd packages/architecture-helper
 pnpm install
 ```
 
+Run `pnpm build` in `packages/architecture-helper` before `cargo test` or a
+Tauri build. It produces `packages/architecture-helper/dist`, the self-contained
+helper bundle that Tauri embeds as an application resource.
+
 Set `OAKLET_NODE` to a different Node executable, or
 `OAKLET_ARCHITECTURE_HELPER` to a different helper directory, if the defaults do
 not fit. When the runtime or helper is missing, the Architecture view explains
@@ -62,6 +66,7 @@ cargo clippy --all-targets
 
 ```sh
 cd packages/architecture-helper
+pnpm build
 pnpm test
 ```
 
@@ -72,12 +77,12 @@ pnpm test
 
 ### Packaging
 
-Before packaging, make sure `packages/architecture-helper/node_modules` exists;
-Tauri embeds that directory as an application resource. The packaged helper is
-resolved from the app's resource directory, while development builds fall back
-to the helper in the Oaklet checkout. A universal macOS bundle must include both
-`@esbuild/darwin-arm64` and `@esbuild/darwin-x64`; the release workflow installs
-both before packaging.
+Before packaging, run `pnpm --dir packages/architecture-helper build`. Tauri
+embeds only `packages/architecture-helper/dist`; `node_modules` is a build-time
+dependency and is not shipped. The packaged helper is resolved from the app's
+resource directory, while development builds fall back to the helper in the
+Oaklet checkout. The bundle is plain JavaScript, so a universal macOS build does
+not need per-architecture `esbuild` binaries in the shipped app.
 
 ### Releasing (macOS, GitHub Actions)
 
