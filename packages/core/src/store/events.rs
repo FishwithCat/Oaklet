@@ -209,6 +209,7 @@ pub(super) fn plan_state(conn: &Connection, session_id: &str) -> Result<PlanStat
         latest_plan(conn, session_id)?.map_or_else(PlanState::default, |plan| PlanState {
             latest: Some(plan.version),
             pending: plan.status == PlanStatus::Pending,
+            requires_validation: plan.status == PlanStatus::Pending && plan.validation.is_some(),
         }),
     )
 }

@@ -289,6 +289,7 @@ fn plan_state_survives_runs_and_advances_versions() {
         PlanState {
             latest: Some(1),
             pending: true,
+            requires_validation: false,
         }
     );
     let started = store
@@ -373,6 +374,7 @@ fn plan_confirmation_consumes_the_latest_version_once() {
         PlanState {
             latest: Some(1),
             pending: false,
+            requires_validation: false,
         }
     );
     let plan = store.latest_plan("s1").unwrap().unwrap();

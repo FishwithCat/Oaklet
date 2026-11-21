@@ -342,7 +342,16 @@ impl RunContext {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-            .map(Box::new);
+            .or_else(|| {
+                (self.plan_requires_validation
+                    || assessment.impact != crate::tools::ArchitectureImpact::None)
+                    .then(|| store::PlanValidation {
+                        error: Some(
+                            "Validate the architecture diff before implementing this plan.".into(),
+                        ),
+                        ..Default::default()
+                    })
+            });
         let details = self
             .plan_details
             .lock()
@@ -354,7 +363,7 @@ impl RunContext {
             status: store::PlanStatus::Pending,
             steps,
             details,
-            validation,
+            validation: validation.map(Box::new),
         });
     }
 

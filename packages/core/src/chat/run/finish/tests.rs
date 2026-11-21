@@ -302,8 +302,52 @@ async fn a_planning_turn_records_a_pending_plan() {
         store::PlanState {
             latest: Some(1),
             pending: true,
+            requires_validation: true,
         }
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn architecture_plans_and_revisions_cannot_skip_validation() {
+    let (ctx, store, root) = live_run();
+    ctx.access().assess(Assessment {
+        intent: Intent::Implement,
+        impact: ArchitectureImpact::Confirmed,
+    });
+    ctx.record_message(json!({"role":"assistant", "content":"Add a worker."}), None);
+    ctx.finish_done(Vec::new()).await;
+
+    let turn = NewUserTurn {
+        message: user("revise"),
+        display: None,
+        title: None,
+    };
+    let plan = store.latest_plan("s").unwrap().unwrap();
+    assert_eq!(
+        plan.validation.unwrap().status,
+        store::PlanValidationStatus::Required
+    );
+    assert!(store.begin_plan_run("s", "skip", &turn, 1, 3).is_err());
+
+    let started = store.begin_run("s", "revision", &turn, 4).unwrap();
+    let revision = RunContext::without_window(ctx.state.clone(), "s", "revision", started);
+    revision.access().assess(Assessment {
+        intent: Intent::Revise,
+        impact: ArchitectureImpact::None,
+    });
+    revision.record_message(
+        json!({"role":"assistant", "content":"Update the worker steps."}),
+        None,
+    );
+    revision.finish_done(Vec::new()).await;
+    let plan = store.latest_plan("s").unwrap().unwrap();
+    assert_eq!(plan.version, 2);
+    assert_eq!(
+        plan.validation.unwrap().status,
+        store::PlanValidationStatus::Required
+    );
+    assert!(store.begin_plan_run("s", "skip", &turn, 2, 5).is_err());
     std::fs::remove_dir_all(root).ok();
 }
 

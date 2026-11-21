@@ -57,9 +57,10 @@ test("the newest plan version drives which card is actionable", () => {
   assert.equal(latestPlanVersion([first, second]), 2);
   assert.equal(latestPlanVersion([{ kind: "assistant", text: "hi", streaming: false }]), null);
 
-  assert.equal(canConfirmPlan(first, 2, false), false);
-  assert.equal(canConfirmPlan(second, 2, false), true);
-  assert.equal(canConfirmPlan(second, 2, true), false);
+  assert.equal(canConfirmPlan(first, 2, false, true), false);
+  assert.equal(canConfirmPlan(second, 2, false, true), true);
+  assert.equal(canConfirmPlan(second, 2, true, true), false);
+  assert.equal(canConfirmPlan(second, 2, false, false), false);
   assert.deepEqual(planBadge(first, 2), {
     label: "Superseded by v2",
     tone: "muted",
@@ -72,8 +73,12 @@ test("validation state changes the badge and confirmation label", () => {
 
   const invalid = plan({ validation: validation({ status: "invalid", valid: false }) });
   assert.deepEqual(planBadge(invalid, 1), { label: "Not verified", tone: "error" });
-  assert.equal(canConfirmPlan(invalid, 1, false), false);
+  assert.equal(canConfirmPlan(invalid, 1, false, false), false);
   assert.equal(confirmLabel(invalid), "Implement text plan");
+
+  const skipped = plan({ validation: validation({ status: "required", valid: false }) });
+  assert.equal(planBadge(skipped, 1).label, "Validation required");
+  assert.equal(canConfirmPlan(skipped, 1, false, true), false);
 
   const unavailable = plan({
     validation: validation({ status: "unavailable", valid: false }),
@@ -82,12 +87,12 @@ test("validation state changes the badge and confirmation label", () => {
     label: "Could not verify",
     tone: "warning",
   });
-  assert.equal(canConfirmPlan(unavailable, 1, false), true);
+  assert.equal(canConfirmPlan(unavailable, 1, false, false), true);
   assert.equal(confirmLabel(unavailable), "Implement text plan");
 
   const textOnly = plan({ validation: null });
   assert.deepEqual(planBadge(textOnly, 1), { label: "Text plan", tone: "muted" });
-  assert.equal(canConfirmPlan(textOnly, 1, false), true);
+  assert.equal(canConfirmPlan(textOnly, 1, false, false), true);
   assert.equal(confirmLabel(textOnly), "Implement text plan");
 });
 
@@ -97,7 +102,7 @@ test("accepted cards stay visible and cannot start another run", () => {
     label: "Approved",
     tone: "accepted",
   });
-  assert.equal(canConfirmPlan(accepted, 1, false), false);
+  assert.equal(canConfirmPlan(accepted, 1, false, true), false);
 });
 
 test("summaries and affected views come from the upstream diff", () => {

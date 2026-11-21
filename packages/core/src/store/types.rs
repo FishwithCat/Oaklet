@@ -68,7 +68,7 @@ pub enum PlanStatus {
 }
 
 /// Outcome of validating a plan's LikeC4 draft against the selected model.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanValidation {
     pub status: PlanValidationStatus,
@@ -133,9 +133,11 @@ pub struct PlanStep {
     pub verification: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanValidationStatus {
+    #[default]
+    Required,
     Verified,
     Invalid,
     Unavailable,
@@ -151,11 +153,25 @@ pub struct PlanRecord {
     pub validation: Option<PlanValidation>,
 }
 
+impl PlanRecord {
+    pub fn validation_for_confirmation(&self) -> Result<Option<&PlanValidation>, String> {
+        match &self.validation {
+            None => Ok(None),
+            Some(validation) => match validation.status {
+                PlanValidationStatus::Verified if validation.valid => Ok(Some(validation)),
+                PlanValidationStatus::Unavailable => Ok(None),
+                _ => Err("This plan's architecture draft has not been verified. Revise the plan before implementing it.".into()),
+            },
+        }
+    }
+}
+
 /// The newest plan version, and whether it still needs review.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PlanState {
     pub latest: Option<u64>,
     pub pending: bool,
+    pub requires_validation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

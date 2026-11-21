@@ -174,6 +174,7 @@ pub async fn session_confirm_plan(
         return Err(format!("Workspace is unavailable: {}", meta.workspace));
     }
 
+    let (cancel_handle, cancel) = CancelHandle::new();
     let plan = session_store
         .latest_plan(&session_id)?
         .ok_or_else(|| "This plan is no longer awaiting confirmation.".to_string())?;
@@ -181,14 +182,8 @@ pub async fn session_confirm_plan(
         return Err("This plan version is no longer awaiting confirmation.".into());
     }
 
-    if let Some(validation) = &plan.validation {
-        if validation.status != store::PlanValidationStatus::Verified || !validation.valid {
-            return Err(
-                "This plan's architecture draft has not been verified. Revise the plan before implementing it."
-                    .into(),
-            );
-        }
-        verify_baseline(&meta.workspace, validation).await?;
+    if let Some(validation) = plan.validation_for_confirmation()? {
+        verify_confirmation(&app, &meta.workspace, validation, cancel.clone()).await?;
     }
 
     let text = confirmation_message(&plan);
@@ -204,7 +199,6 @@ pub async fn session_confirm_plan(
         .clone();
     config.workspace = meta.workspace.clone();
 
-    let (cancel_handle, cancel) = CancelHandle::new();
     let (run_id, view) = start_run(
         &app,
         state.inner(),
@@ -222,6 +216,38 @@ pub async fn session_confirm_plan(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     Ok(SendResult { run_id, session })
+}
+
+async fn verify_confirmation(
+    app: &AppHandle,
+    workspace: &str,
+    validation: &store::PlanValidation,
+    cancel: crate::tools::Cancel,
+) -> Result<(), String> {
+    let model = verify_baseline(workspace, validation).await?;
+    let node = architecture::find_node()
+        .ok_or("LikeC4 requires Node.js to recheck this architecture draft.")?;
+    let helper = architecture::find_helper(app)
+        .ok_or("The LikeC4 compiler helper is missing. Reinstall Oaklet.")?;
+    let draft = crate::tools::draft_path(&model.root, &model.sources);
+    let request = json!({
+        "version": 1,
+        "sources": model.sources,
+        "diff": { "path": draft, "text": validation.dsl },
+    });
+    let result = architecture::run_helper_watch(&node, &helper, &request, cancel).await?;
+    if !result.ok {
+        return Err(format!(
+            "Revise the architecture draft before implementing this plan. {}",
+            result
+                .error
+                .as_deref()
+                .unwrap_or("LikeC4 could not verify the draft.")
+        ));
+    }
+    // The source files can change while the compiler runs.
+    verify_baseline(workspace, validation).await?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -327,14 +353,15 @@ pub async fn session_plan_compare(
 async fn verify_baseline(
     workspace: &str,
     validation: &store::PlanValidation,
-) -> Result<(), String> {
-    if baseline_changed(workspace, validation).await? {
+) -> Result<architecture::PlanningModel, String> {
+    let model = load_baseline(workspace, validation).await?;
+    if model.digest != validation.source_digest {
         Err(
             "The architecture model changed after this plan was validated. Ask for an updated plan, then confirm the new version."
                 .into(),
         )
     } else {
-        Ok(())
+        Ok(model)
     }
 }
 
@@ -342,19 +369,24 @@ async fn baseline_changed(
     workspace: &str,
     validation: &store::PlanValidation,
 ) -> Result<bool, String> {
+    Ok(load_baseline(workspace, validation).await?.digest != validation.source_digest)
+}
+
+async fn load_baseline(
+    workspace: &str,
+    validation: &store::PlanValidation,
+) -> Result<architecture::PlanningModel, String> {
     let path = workspace.to_string();
     let scope = PlanningScope {
         model_root: validation.model_root.clone(),
         include_ignored: validation.include_ignored,
     };
-    let expected = validation.source_digest.clone();
-    let current = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let workspace = Workspace::new(&path)?;
-        architecture::planning_model(&workspace, Some(&scope)).map(|model| model.digest)
+        architecture::planning_model(&workspace, Some(&scope))
     })
     .await
-    .map_err(|error| format!("Could not check the architecture model: {error}"))??;
-    Ok(current != expected)
+    .map_err(|error| format!("Could not check the architecture model: {error}"))?
 }
 
 fn confirmation_message(plan: &store::PlanRecord) -> String {
@@ -368,6 +400,7 @@ fn confirmation_message(plan: &store::PlanRecord) -> String {
     );
     if let Some(validation) = &plan.validation
         && validation.status == store::PlanValidationStatus::Verified
+        && validation.valid
     {
         text.push_str(&format!(
             "\n\nArchitecture model `{}` (baseline `{}`). Apply this validated LikeC4 diff and keep the architecture sources consistent with the code you change:\n\n```likec4\n{}\n```",
@@ -375,6 +408,8 @@ fn confirmation_message(plan: &store::PlanRecord) -> String {
             validation.source_digest,
             validation.dsl.trim()
         ));
+    } else {
+        text.push_str("\n\nThe user confirmed only these implementation steps. Treat any unverified architecture draft in the conversation as reference and do not apply it.");
     }
     text
 }
@@ -561,9 +596,28 @@ mod tests {
 
     #[test]
     fn a_text_plan_has_no_unverified_diff() {
-        let text = confirmation_message(&plan(None));
+        let mut record = plan(Some(PlanValidation {
+            status: PlanValidationStatus::Unavailable,
+            valid: false,
+            model_root: String::new(),
+            include_ignored: false,
+            source_digest: String::new(),
+            diff_id: None,
+            dsl: "diff unreviewed {}".into(),
+            diff: None,
+            diagnostics: Vec::new(),
+            warnings: Vec::new(),
+            overlaps: Vec::new(),
+            error: Some("No LikeC4 model was found.".into()),
+        }));
+        assert!(record.validation_for_confirmation().unwrap().is_none());
+        let text = confirmation_message(&record);
         assert!(text.contains("plan version 2"));
-        assert!(!text.contains("validated LikeC4 diff"));
+        assert!(text.contains("1. Add the worker."));
+        assert!(!text.contains("diff unreviewed"));
+
+        record.validation.as_mut().unwrap().status = PlanValidationStatus::Invalid;
+        assert!(record.validation_for_confirmation().is_err());
     }
 
     #[test]

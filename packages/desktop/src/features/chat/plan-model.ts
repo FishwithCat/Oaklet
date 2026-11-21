@@ -74,7 +74,7 @@ export type PlanDiagnostic = {
 };
 
 export type PlanValidation = {
-  status: "verified" | "invalid" | "unavailable";
+  status: "required" | "verified" | "invalid" | "unavailable";
   valid: boolean;
   modelRoot: string;
   includeIgnored: boolean;
@@ -163,6 +163,9 @@ export function planBadge(
   if (plan.validation?.status === "invalid") {
     return { label: "Not verified", tone: "error" };
   }
+  if (plan.validation?.status === "required") {
+    return { label: "Validation required", tone: "warning" };
+  }
   if (plan.validation?.status === "unavailable") {
     return { label: "Could not verify", tone: "warning" };
   }
@@ -177,13 +180,18 @@ export function canConfirmPlan(
   plan: PlanItem,
   latestVersion: number | null,
   running: boolean,
+  baselineCurrent: boolean,
 ): boolean {
   if (running || plan.status !== "pending") return false;
   if (latestVersion !== null && plan.version !== latestVersion) return false;
-  return plan.validation?.status !== "invalid";
+  if (plan.validation?.status === "verified") {
+    return plan.validation.valid && baselineCurrent;
+  }
+  return !plan.validation || plan.validation.status === "unavailable";
 }
 
 export function confirmLabel(plan: PlanItem): string {
+  if (plan.validation?.status === "required") return "Validate before implementing";
   return plan.validation?.status === "verified"
     ? "Implement plan"
     : "Implement text plan";

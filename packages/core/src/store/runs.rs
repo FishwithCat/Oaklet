@@ -75,6 +75,7 @@ impl Store {
             if record.version != version || record.status != PlanStatus::Pending {
                 return Err("This plan version is no longer awaiting confirmation.".into());
             }
+            record.validation_for_confirmation()?;
             Some(record)
         } else {
             None

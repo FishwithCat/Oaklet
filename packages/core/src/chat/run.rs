@@ -58,7 +58,7 @@ pub(super) fn start_run(
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
-    let (view, start_seq, messages, access, next_plan_version) = {
+    let (view, start_seq, messages, access, plan_state) = {
         let mut live = state.chat.live();
         if live.closing.contains(window)
             || live
@@ -109,8 +109,7 @@ pub(super) fn start_run(
             },
         );
         let access = access_for(trigger, started.plan.pending);
-        let next_plan_version = started.plan.latest.unwrap_or(0) + 1;
-        (view, started.start_seq, messages, access, next_plan_version)
+        (view, started.start_seq, messages, access, started.plan)
     };
 
     let ctx = RunContext {
@@ -136,7 +135,8 @@ pub(super) fn start_run(
         },
         plan_validation: Arc::new(Mutex::new(None)),
         plan_details: Arc::new(Mutex::new(None)),
-        next_plan_version,
+        next_plan_version: plan_state.latest.unwrap_or(0) + 1,
+        plan_requires_validation: plan_state.requires_validation,
         records_plan: trigger != RunTrigger::Notice,
     };
     let recovery_ctx = ctx.clone();
@@ -321,6 +321,7 @@ pub struct RunContext {
     plan_details: Arc<Mutex<Option<store::PlanDetails>>>,
     /// Version the next plan recorded by this run will carry.
     next_plan_version: u64,
+    plan_requires_validation: bool,
     /// Background-notice turns never create a plan awaiting review.
     records_plan: bool,
 }
@@ -539,6 +540,7 @@ impl RunContext {
             plan_validation: Arc::new(Mutex::new(None)),
             plan_details: Arc::new(Mutex::new(None)),
             next_plan_version: started.plan.latest.unwrap_or(0) + 1,
+            plan_requires_validation: started.plan.requires_validation,
             records_plan: true,
         }
     }

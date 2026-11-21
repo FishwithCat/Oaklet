@@ -141,7 +141,7 @@ pub(super) fn system_prompt(
     if let Some(version) = tools.approved_plan() {
         rules.push(format!(
             "The user approved plan version {version} from the plan card. This run may edit from \
-             the first step: implement the approved plan and its architecture diff, and do not \
+             the first step: implement the approved plan and any architecture diff included in the confirmation, and do not \
              re-open planning for that same change. If implementation reveals a new architectural \
              change beyond the approved plan, stop writing and report it."
         ));

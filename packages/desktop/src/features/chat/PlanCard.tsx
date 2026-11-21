@@ -159,7 +159,7 @@ export function PlanCard({
     () => new Set(),
   );
   const [baseline, setBaseline] = useState({
-    checking: false,
+    checked: false,
     stale: false,
     error: "",
   });
@@ -186,38 +186,41 @@ export function PlanCard({
     plan.version === latestVersion &&
     validation?.status === "verified";
   const confirmable =
-    canConfirmPlan(plan, latestVersion, running) &&
-    !confirming &&
-    !baseline.checking &&
-    !baseline.stale;
+    canConfirmPlan(plan, latestVersion, running, baseline.checked && !baseline.stale && !baseline.error) &&
+    !confirming;
 
   useEffect(() => {
-    if (!currentPending) {
-      setBaseline({ checking: false, stale: false, error: "" });
-      return;
-    }
+    if (!currentPending) return;
     let cancelled = false;
-    setBaseline({ checking: true, stale: false, error: "" });
-    onCheckBaseline(plan.version)
-      .then((result) => {
-        if (cancelled || result.version !== plan.version) return;
-        setBaseline({
-          checking: false,
-          stale: result.baselineChanged,
-          error: "",
-        });
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setBaseline({
-            checking: false,
-            stale: false,
-            error: errorText(error),
-          });
+    let checking = false;
+    let stale = false;
+    let timer: number | undefined;
+    async function check() {
+      if (cancelled || checking || stale || document.hidden) return;
+      window.clearTimeout(timer);
+      checking = true;
+      try {
+        const result = await onCheckBaseline(plan.version);
+        if (result.version !== plan.version || !result.checked) {
+          throw new Error("Could not verify this plan's architecture baseline.");
         }
-      });
+        stale = result.baselineChanged;
+        if (!cancelled) setBaseline({ checked: true, stale, error: "" });
+      } catch (error) {
+        if (!cancelled) setBaseline({ checked: true, stale: false, error: errorText(error) });
+      } finally {
+        checking = false;
+        if (!cancelled && !stale) timer = window.setTimeout(check, 3000);
+      }
+    }
+    void check();
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
     };
   }, [
     currentPending,
@@ -373,7 +376,7 @@ export function PlanCard({
             >
               {confirming
                 ? "Starting…"
-                : baseline.checking
+                : currentPending && !baseline.checked
                   ? "Checking model…"
                   : confirmLabel(plan)}
             </button>
