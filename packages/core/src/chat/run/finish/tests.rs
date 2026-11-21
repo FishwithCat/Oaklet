@@ -231,17 +231,47 @@ async fn a_planning_turn_records_a_pending_plan() {
         intent: Intent::Evaluate,
         impact: ArchitectureImpact::Confirmed,
     });
-    ctx.record_message(json!({"role":"assistant", "content":"plan"}), None);
+    let validation = store::PlanValidation {
+        status: store::PlanValidationStatus::Verified,
+        valid: true,
+        model_root: "architecture".into(),
+        include_ignored: false,
+        source_digest: "abc".into(),
+        diff_id: Some("worker".into()),
+        dsl: "diff worker 'Worker' {}".into(),
+        diff: None,
+        diagnostics: Vec::new(),
+        warnings: Vec::new(),
+        overlaps: Vec::new(),
+        error: None,
+    };
+    *ctx.plan_validation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(validation.clone());
+    ctx.record_message(
+        json!({"role":"assistant", "content":"1. Add the worker."}),
+        None,
+    );
     ctx.finish_done(Vec::new()).await;
 
     let session = store.get_session("s").unwrap().unwrap();
-    assert!(session.events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::Plan {
-            version: 1,
-            status: store::PlanStatus::Pending,
-        }
-    )));
+    let plan = session
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Plan {
+                version,
+                status,
+                steps,
+                validation,
+            } => Some((*version, *status, steps.clone(), validation.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(plan.0, 1);
+    assert_eq!(plan.1, store::PlanStatus::Pending);
+    assert_eq!(plan.2, "1. Add the worker.");
+    assert_eq!(plan.3.as_deref(), Some(&validation));
     assert_eq!(
         store.plan_state("s").unwrap(),
         store::PlanState {

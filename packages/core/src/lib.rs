@@ -46,6 +46,7 @@ pub fn run() {
             chat::commands::session_list,
             chat::commands::session_get,
             chat::commands::session_send,
+            chat::commands::session_confirm_plan,
             chat::commands::session_stop,
             chat::commands::session_compact,
             chat::commands::session_compact_cancel,

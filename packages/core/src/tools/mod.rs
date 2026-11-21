@@ -267,6 +267,12 @@ impl Access {
         Self::new(ToolAccess::Execute, false)
     }
 
+    /// Full access for a run the user confirmed from a plan card. It is locked
+    /// so a later assessment can never close the tools the confirmation opened.
+    pub fn approved() -> Arc<Self> {
+        Self::new(ToolAccess::Execute, true)
+    }
+
     pub fn mode(&self) -> ToolAccess {
         self.lock().mode
     }
@@ -283,7 +289,9 @@ impl Access {
     pub fn assess(&self, assessment: Assessment) -> ToolAccess {
         let mut state = self.lock();
         state.assessment = Some(assessment);
-        state.mode = if !state.locked && assessment.opens_execution() {
+        state.mode = if (state.mode == ToolAccess::Execute && state.locked)
+            || (!state.locked && assessment.opens_execution())
+        {
             ToolAccess::Execute
         } else {
             ToolAccess::ReadOnly
@@ -430,6 +438,8 @@ pub struct ToolContext {
     pub access: Arc<Access>,
     /// Model selected for architecture planning, captured when the run starts.
     pub planning: Option<crate::architecture::PlanningScope>,
+    /// Latest architecture draft validation produced by this run.
+    pub plan_validation: Option<Arc<Mutex<Option<crate::store::PlanValidation>>>>,
     /// Background jobs owned by the app process, shared across runs.
     pub jobs: std::sync::Arc<jobs::JobRegistry>,
     /// Session that owns spill files.
@@ -441,6 +451,15 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// Remember the latest draft validation so run finish can attach it to the
+    /// plan event even after compaction drops the tool message from history.
+    pub fn record_plan_validation(&self, validation: &crate::store::PlanValidation) {
+        let Some(slot) = &self.plan_validation else {
+            return;
+        };
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(validation.clone());
+    }
+
     /// Save oversized output before trimming it, so the full text survives in
     /// a file the model can page through. A failed write keeps the old marker.
     fn bound_output(&self, tool: &str, call_id: &str, text: String) -> String {
@@ -517,6 +536,7 @@ pub struct ToolRegistry {
     warnings: Vec<String>,
     access: Arc<Access>,
     planning: Option<crate::architecture::PlanningScope>,
+    approved_plan: Option<u64>,
 }
 
 impl ToolRegistry {
@@ -593,6 +613,7 @@ impl ToolRegistry {
             warnings: Vec::new(),
             access: Access::execute(),
             planning: None,
+            approved_plan: None,
         }
     }
 
@@ -612,6 +633,14 @@ impl ToolRegistry {
 
     pub fn planning_scope(&self) -> Option<&crate::architecture::PlanningScope> {
         self.planning.as_ref()
+    }
+
+    pub fn set_approved_plan(&mut self, version: Option<u64>) {
+        self.approved_plan = version;
+    }
+
+    pub fn approved_plan(&self) -> Option<u64> {
+        self.approved_plan
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
@@ -817,6 +846,7 @@ pub(crate) mod test_support {
                 cancel,
                 access: Access::execute(),
                 planning: None,
+                plan_validation: None,
                 jobs: std::sync::Arc::new(jobs::JobRegistry::new()),
                 session_id: "run-test".into(),
                 window: "main".into(),
@@ -1000,6 +1030,7 @@ mod tests {
             warnings: Vec::new(),
             access: Access::execute(),
             planning: None,
+            approved_plan: None,
         }
     }
 
@@ -1385,6 +1416,7 @@ mod tests {
             warnings: Vec::new(),
             access: Access::execute(),
             planning: None,
+            approved_plan: None,
         };
         let (ctx, root, _handle) = context("denied");
         let outcome = registry
@@ -1404,6 +1436,7 @@ mod tests {
             warnings: Vec::new(),
             access: Access::execute(),
             planning: None,
+            approved_plan: None,
         };
         let (ctx, root, _handle) = context("stopped");
         let outcome = registry
@@ -1422,6 +1455,7 @@ mod tests {
             warnings: Vec::new(),
             access: Access::execute(),
             planning: None,
+            approved_plan: None,
         };
         let (ctx, root, _handle) = context("timeout");
         let outcome = registry

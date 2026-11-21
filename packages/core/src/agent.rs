@@ -67,6 +67,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
     let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config, &cancel).await;
     tools.set_access(ctx.access().clone());
     tools.set_planning_scope(ctx.planning_scope().cloned());
+    tools.set_approved_plan(ctx.confirmed_plan());
     if cancel.is_cancelled() {
         crate::tools::shutdown_workspace(workspace.root());
         ctx.finish_stopped(strip_system(&input)).await;
@@ -78,6 +79,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         cancel: cancel.clone(),
         access: ctx.access().clone(),
         planning: ctx.planning_scope().cloned(),
+        plan_validation: Some(ctx.plan_validation_slot()),
         jobs: ctx.jobs(),
         session_id: ctx.session_id().to_string(),
         window: ctx.window_label().to_string(),

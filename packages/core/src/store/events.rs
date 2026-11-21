@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use super::{Event, EventPayload, PlanState, PlanStatus, StepUsage};
+use super::{Event, EventPayload, PlanRecord, PlanState, PlanStatus, StepUsage};
 
 pub(super) fn decode_event(seq: i64, raw: &str, created_at: i64) -> Result<Event, String> {
     let payload = serde_json::from_str(raw)
@@ -67,6 +67,7 @@ pub(super) fn align_page(events: &mut Vec<Event>) {
             EventPayload::Notice { .. }
                 | EventPayload::Compaction { .. }
                 | EventPayload::Context { .. }
+                | EventPayload::Plan { .. }
         )
     {
         start -= 1;
@@ -167,8 +168,11 @@ pub(super) fn read_last_step(
     .map_err(|error| format!("Could not read run usage: {error}"))
 }
 
-/// The newest plan and whether it is still awaiting review.
-pub(super) fn plan_state(conn: &Connection, session_id: &str) -> Result<PlanState, String> {
+/// The newest plan version with the payload confirmation needs.
+pub(super) fn latest_plan(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<PlanRecord>, String> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT payload FROM session_events WHERE session_id = ?1 \
@@ -179,15 +183,32 @@ pub(super) fn plan_state(conn: &Connection, session_id: &str) -> Result<PlanStat
         .optional()
         .map_err(|error| format!("Could not read the plan: {error}"))?;
     let Some(raw) = raw else {
-        return Ok(PlanState::default());
+        return Ok(None);
     };
     match decode_event(0, &raw, 0)?.payload {
-        EventPayload::Plan { version, status } => Ok(PlanState {
-            latest: Some(version),
-            pending: status == PlanStatus::Pending,
-        }),
-        _ => Ok(PlanState::default()),
+        EventPayload::Plan {
+            version,
+            status,
+            steps,
+            validation,
+        } => Ok(Some(PlanRecord {
+            version,
+            status,
+            steps,
+            validation: validation.map(|validation| *validation),
+        })),
+        _ => Ok(None),
     }
+}
+
+/// The newest plan and whether it is still awaiting review.
+pub(super) fn plan_state(conn: &Connection, session_id: &str) -> Result<PlanState, String> {
+    Ok(
+        latest_plan(conn, session_id)?.map_or_else(PlanState::default, |plan| PlanState {
+            latest: Some(plan.version),
+            pending: plan.status == PlanStatus::Pending,
+        }),
+    )
 }
 
 pub(super) fn append_events(

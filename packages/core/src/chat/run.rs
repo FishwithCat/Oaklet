@@ -24,6 +24,9 @@ use crate::{SharedState, context};
 pub(super) enum RunTrigger {
     User,
     Notice,
+    /// The user confirmed a plan card; the run consumes that version and may
+    /// edit from its first step.
+    Plan(u64),
 }
 
 /// Register a run for an already-built user turn and spawn the agent loop. The
@@ -76,7 +79,14 @@ pub(super) fn start_run(
         if trigger == RunTrigger::Notice && plan.pending {
             return Err("A plan is waiting for review.".into());
         }
-        let started = store.begin_run(session_id, &run_id, &turn, store::now_ms())?;
+        let started = match trigger {
+            RunTrigger::Plan(version) => {
+                store.begin_plan_run(session_id, &run_id, &turn, version, store::now_ms())?
+            }
+            RunTrigger::User | RunTrigger::Notice => {
+                store.begin_run(session_id, &run_id, &turn, store::now_ms())?
+            }
+        };
         // `prior_messages` is the surface before this user turn, read in the
         // same transaction that appended it. Trim an incomplete tool block
         // before adding the new turn so the request stays valid.
@@ -120,8 +130,13 @@ pub(super) fn start_run(
         usage: Arc::new(Mutex::new(store::RunUsage::default())),
         access,
         planning,
+        confirmed_plan: match trigger {
+            RunTrigger::Plan(version) => Some(version),
+            RunTrigger::User | RunTrigger::Notice => None,
+        },
+        plan_validation: Arc::new(Mutex::new(None)),
         next_plan_version,
-        records_plan: trigger == RunTrigger::User,
+        records_plan: trigger != RunTrigger::Notice,
     };
     let recovery_ctx = ctx.clone();
     let recovery_messages = messages.clone();
@@ -297,6 +312,10 @@ pub struct RunContext {
     access: Arc<Access>,
     /// Architecture model selected when the run started.
     planning: Option<crate::architecture::PlanningScope>,
+    /// Plan version the user approved for this run, if any.
+    confirmed_plan: Option<u64>,
+    /// Latest draft validation, attached to the plan when the turn finishes.
+    plan_validation: Arc<Mutex<Option<store::PlanValidation>>>,
     /// Version the next plan recorded by this run will carry.
     next_plan_version: u64,
     /// Background-notice turns never create a plan awaiting review.
@@ -361,6 +380,14 @@ impl RunContext {
 
     pub fn planning_scope(&self) -> Option<&crate::architecture::PlanningScope> {
         self.planning.as_ref()
+    }
+
+    pub fn confirmed_plan(&self) -> Option<u64> {
+        self.confirmed_plan
+    }
+
+    pub fn plan_validation_slot(&self) -> Arc<Mutex<Option<store::PlanValidation>>> {
+        self.plan_validation.clone()
     }
 
     pub fn next_plan_version(&self) -> u64 {
@@ -501,6 +528,8 @@ impl RunContext {
             usage: Arc::new(Mutex::new(store::RunUsage::default())),
             access: access_for(RunTrigger::User, started.plan.pending),
             planning: None,
+            confirmed_plan: None,
+            plan_validation: Arc::new(Mutex::new(None)),
             next_plan_version: started.plan.latest.unwrap_or(0) + 1,
             records_plan: true,
         }
@@ -518,10 +547,11 @@ impl RunContext {
 /// Background notices and reviewed plans lock the gate; a plain user turn only
 /// starts read-only so `assess_change` can classify it.
 fn access_for(trigger: RunTrigger, pending_plan: bool) -> Arc<Access> {
-    if trigger == RunTrigger::Notice || pending_plan {
-        Access::locked_read_only()
-    } else {
-        Access::read_only()
+    match trigger {
+        RunTrigger::Plan(_) => Access::approved(),
+        RunTrigger::Notice => Access::locked_read_only(),
+        RunTrigger::User if pending_plan => Access::locked_read_only(),
+        RunTrigger::User => Access::read_only(),
     }
 }
 
@@ -623,5 +653,16 @@ mod tests {
                 ToolAccess::ReadOnly
             );
         }
+
+        let approved = access_for(RunTrigger::Plan(1), true);
+        assert!(approved.is_locked());
+        assert_eq!(approved.mode(), ToolAccess::Execute);
+        assert_eq!(
+            approved.assess(Assessment {
+                intent: Intent::Implement,
+                impact: ArchitectureImpact::Confirmed,
+            }),
+            ToolAccess::Execute
+        );
     }
 }

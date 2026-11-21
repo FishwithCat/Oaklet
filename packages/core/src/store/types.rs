@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use super::projection;
 use crate::agent::Usage;
+use crate::architecture::Diagnostic;
 
 /// One append-only transcript entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,7 +40,18 @@ pub enum EventPayload {
     },
     /// An implementation plan waiting for the user's decision. Only the newest
     /// version is actionable; a later version supersedes earlier ones.
-    Plan { version: u64, status: PlanStatus },
+    Plan {
+        version: u64,
+        status: PlanStatus,
+        /// The assistant's final plan text, kept with the card so a restored or
+        /// compacted session still shows the implementation steps.
+        #[serde(default)]
+        steps: String,
+        /// Backend validation of the plan's architecture draft, when the agent
+        /// used `validate_architecture_diff`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        validation: Option<Box<PlanValidation>>,
+    },
 }
 
 /// Lifecycle of a persisted plan.
@@ -48,6 +60,55 @@ pub enum EventPayload {
 pub enum PlanStatus {
     /// Waiting for the user to confirm or revise it.
     Pending,
+    /// The user confirmed this version and a run consumed it.
+    Accepted,
+}
+
+/// Outcome of validating a plan's LikeC4 draft against the selected model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanValidation {
+    pub status: PlanValidationStatus,
+    pub valid: bool,
+    #[serde(default)]
+    pub model_root: String,
+    #[serde(default)]
+    pub include_ignored: bool,
+    #[serde(default)]
+    pub source_digest: String,
+    #[serde(default)]
+    pub diff_id: Option<String>,
+    #[serde(default)]
+    pub dsl: String,
+    /// The upstream diff summary, kept as JSON so the card can render counts
+    /// and affected views without another helper run.
+    #[serde(default)]
+    pub diff: Option<Value>,
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
+    #[serde(default)]
+    pub warnings: Vec<Diagnostic>,
+    #[serde(default)]
+    pub overlaps: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanValidationStatus {
+    Verified,
+    Invalid,
+    Unavailable,
+}
+
+/// One persisted plan version, with everything confirmation needs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanRecord {
+    pub version: u64,
+    pub status: PlanStatus,
+    pub steps: String,
+    pub validation: Option<PlanValidation>,
 }
 
 /// The newest plan version, and whether it still needs review.

@@ -126,15 +126,59 @@ fn display_str<'a>(display: Option<&'a Value>, key: &str) -> &'a str {
 /// mutates the same shape only while tokens stream; the saved view replaces it
 /// with this projection when the run ends.
 fn project_events(events: &[Event]) -> Vec<Value> {
-    let mut items = Vec::new();
+    let mut items: Vec<Value> = Vec::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();
+    // One card per version, rendered where the version first appeared and
+    // carrying its newest status. A later accepted marker repeats the payload
+    // so the card keeps its place above the confirmation turn.
+    let mut plan_events: HashMap<u64, (i64, store::PlanStatus)> = HashMap::new();
+    let mut latest_plan = 0;
+    for event in events {
+        if let EventPayload::Plan {
+            version, status, ..
+        } = event.payload
+        {
+            plan_events
+                .entry(version)
+                .and_modify(|(_, latest)| *latest = status)
+                .or_insert((event.seq, status));
+            latest_plan = latest_plan.max(version);
+        }
+    }
 
     for event in events {
         match &event.payload {
             EventPayload::ToolTrim { .. } => {}
-            // Rendered as the plan card in a later step; the assistant reply
-            // above it already shows the plan text.
-            EventPayload::Plan { .. } => {}
+            EventPayload::Plan {
+                version,
+                steps,
+                validation,
+                ..
+            } => {
+                let Some((first_seq, latest_status)) = plan_events.get(version) else {
+                    continue;
+                };
+                if *first_seq != event.seq {
+                    continue;
+                }
+                // The card renders the same final text, so keep it from being
+                // shown twice in the transcript.
+                if let Some(last) = items.last()
+                    && last.get("kind").and_then(Value::as_str) == Some("assistant")
+                    && last.get("text").and_then(Value::as_str) == Some(steps.as_str())
+                {
+                    items.pop();
+                }
+                items.push(json!({
+                    "kind": "plan",
+                    "seq": event.seq,
+                    "version": version,
+                    "status": latest_status,
+                    "latest": *version == latest_plan,
+                    "steps": steps,
+                    "validation": validation,
+                }));
+            }
             EventPayload::Notice { tone, text } => items.push(json!({
                 "kind": "notice",
                 "seq": event.seq,

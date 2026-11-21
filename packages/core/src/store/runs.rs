@@ -3,9 +3,11 @@
 use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 
-use super::events::{append_events, next_seq, plan_state, read_from, read_last_step};
+use super::events::{append_events, latest_plan, next_seq, plan_state, read_from, read_last_step};
 use super::projection::{save_surface, surface_messages_with};
-use super::{EventPayload, NewUserTurn, PAGE_EVENTS, RunEnd, RunStart, SessionWindow, Store};
+use super::{
+    EventPayload, NewUserTurn, PAGE_EVENTS, PlanStatus, RunEnd, RunStart, SessionWindow, Store,
+};
 
 impl Store {
     /// Append the user turn and register the run atomically, so a crash cannot
@@ -15,6 +17,30 @@ impl Store {
         session_id: &str,
         run_id: &str,
         turn: &NewUserTurn,
+        now: i64,
+    ) -> Result<RunStart, String> {
+        self.begin_run_inner(session_id, run_id, turn, None, now)
+    }
+
+    /// Start a run that consumes one pending plan version. The version check,
+    /// user turn, and accepted marker commit together.
+    pub fn begin_plan_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        turn: &NewUserTurn,
+        version: u64,
+        now: i64,
+    ) -> Result<RunStart, String> {
+        self.begin_run_inner(session_id, run_id, turn, Some(version), now)
+    }
+
+    fn begin_run_inner(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        turn: &NewUserTurn,
+        confirm_plan: Option<u64>,
         now: i64,
     ) -> Result<RunStart, String> {
         let mut conn = self.connection()?;
@@ -42,6 +68,17 @@ impl Store {
         let prior_messages = surface_messages_with(&tx, session_id)?
             .ok_or_else(|| "This session no longer exists.".to_string())?;
         let plan = plan_state(&tx, session_id)?;
+        let confirmed = if let Some(version) = confirm_plan {
+            let Some(record) = latest_plan(&tx, session_id)? else {
+                return Err("This plan is no longer awaiting confirmation.".into());
+            };
+            if record.version != version || record.status != PlanStatus::Pending {
+                return Err("This plan version is no longer awaiting confirmation.".into());
+            }
+            Some(record)
+        } else {
+            None
+        };
         let start_seq = next_seq(&tx, session_id)?;
         append_events(
             &tx,
@@ -52,6 +89,21 @@ impl Store {
             }],
             now,
         )?;
+        if let Some(record) = confirmed {
+            // Consume the version in the same transaction that starts the run,
+            // so two confirmation clicks cannot both start an implementation.
+            append_events(
+                &tx,
+                session_id,
+                &[EventPayload::Plan {
+                    version: record.version,
+                    status: PlanStatus::Accepted,
+                    steps: record.steps,
+                    validation: record.validation.map(Box::new),
+                }],
+                now,
+            )?;
+        }
         tx.execute(
             "UPDATE sessions SET title = ?2, turns = turns + 1, updated_at = ?3 WHERE id = ?1",
             params![session_id, title, now],

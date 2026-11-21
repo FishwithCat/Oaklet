@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
 use crate::architecture::{self, Diagnostic, MAX_SOURCE_FILE_BYTES, run_helper_watch};
+use crate::store::{PlanValidation, PlanValidationStatus};
 
 static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -41,24 +42,7 @@ struct Args {
     dsl: String,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Validation {
-    status: &'static str,
-    valid: bool,
-    model_root: String,
-    source_digest: String,
-    diff_id: Option<String>,
-    dsl: String,
-    diff: Option<DiffSummary>,
-    diagnostics: Vec<Diagnostic>,
-    warnings: Vec<Diagnostic>,
-    overlaps: Vec<String>,
-    error: Option<String>,
-    baseline_changed: bool,
-}
-
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiffSummary {
     id: String,
@@ -72,18 +56,18 @@ struct DiffSummary {
     views: Vec<DiffView>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ChangeCounts {
     elements: u64,
     relations: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ModifiedCounts {
     elements: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct DiffView {
     id: String,
     title: String,
@@ -91,11 +75,19 @@ struct DiffView {
     edges: ViewCounts,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ViewCounts {
     added: u64,
     removed: u64,
     modified: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Validation {
+    #[serde(flatten)]
+    plan: PlanValidation,
+    baseline_changed: bool,
 }
 
 impl Tool for ValidateDiff {
@@ -155,40 +147,50 @@ impl Tool for ValidateDiff {
             if ctx.cancel.is_cancelled() {
                 return Err(ToolError::Cancelled);
             }
+            let include_ignored = ctx
+                .planning
+                .as_ref()
+                .is_some_and(|scope| scope.include_ignored);
 
             let model = match load_model(ctx).await? {
                 Ok(model) => model,
                 Err(error) => {
-                    return Ok(unavailable(
+                    let plan = unavailable(
                         ctx.planning
                             .as_ref()
                             .map(|scope| scope.model_root.as_str())
                             .unwrap_or(""),
+                        include_ignored,
                         "",
                         args.dsl,
                         error,
                         Vec::new(),
-                    ));
+                    );
+                    return Ok(respond(ctx, plan, false));
                 }
             };
 
             let Some(node) = self.node.as_ref() else {
-                return Ok(unavailable(
+                let plan = unavailable(
                     &model.root,
+                    include_ignored,
                     &model.digest,
                     args.dsl,
                     "LikeC4 validation requires Node.js 22.23.3 or newer. Set OAKLET_NODE if needed.".into(),
                     model.warnings,
-                ));
+                );
+                return Ok(respond(ctx, plan, false));
             };
             let Some(helper) = self.helper.as_ref() else {
-                return Ok(unavailable(
+                let plan = unavailable(
                     &model.root,
+                    include_ignored,
                     &model.digest,
                     args.dsl,
                     "The LikeC4 compiler helper is missing. Reinstall Oaklet or set OAKLET_ARCHITECTURE_HELPER.".into(),
                     model.warnings,
-                ));
+                );
+                return Ok(respond(ctx, plan, false));
             };
 
             let draft = draft_path(&model.root, &model.sources);
@@ -201,13 +203,15 @@ impl Tool for ValidateDiff {
             let mut response = match response {
                 Ok(response) => response,
                 Err(error) => {
-                    return Ok(unavailable(
+                    let plan = unavailable(
                         &model.root,
+                        include_ignored,
                         &model.digest,
                         args.dsl,
                         error,
                         model.warnings,
-                    ));
+                    );
+                    return Ok(respond(ctx, plan, false));
                 }
             };
 
@@ -222,33 +226,39 @@ impl Tool for ValidateDiff {
             warnings.truncate(50);
 
             if !response.ok {
-                return Ok(unavailable_or_invalid(
+                let plan = unavailable_or_invalid(
                     &model.root,
+                    include_ignored,
                     &model.digest,
                     args.dsl,
                     response,
                     warnings,
-                ));
+                );
+                return Ok(respond(ctx, plan, false));
             }
             let Some(diff) = response.diff else {
-                return Ok(unavailable(
+                let plan = unavailable(
                     &model.root,
+                    include_ignored,
                     &model.digest,
                     args.dsl,
                     "LikeC4 did not return a diff summary.".into(),
                     model_warnings,
-                ));
+                );
+                return Ok(respond(ctx, plan, false));
             };
             let diff: DiffSummary = match serde_json::from_value(diff) {
                 Ok(diff) => diff,
                 Err(error) => {
-                    return Ok(unavailable(
+                    let plan = unavailable(
                         &model.root,
+                        include_ignored,
                         &model.digest,
                         args.dsl,
                         format!("Could not read the LikeC4 diff summary: {error}"),
                         model_warnings,
-                    ));
+                    );
+                    return Ok(respond(ctx, plan, false));
                 }
             };
 
@@ -272,20 +282,21 @@ impl Tool for ValidateDiff {
                 });
             }
 
-            Ok(ToolOutput::text(encode(Validation {
-                status: "verified",
+            let plan = PlanValidation {
+                status: PlanValidationStatus::Verified,
                 valid: true,
                 model_root: model.root,
+                include_ignored,
                 source_digest: model.digest,
                 diff_id: Some(diff.id.clone()),
                 dsl: args.dsl,
-                diff: Some(diff),
+                diff: serde_json::to_value(diff).ok(),
                 diagnostics: Vec::new(),
                 warnings,
                 overlaps: response.overlaps,
                 error: None,
-                baseline_changed,
-            })))
+            };
+            Ok(respond(ctx, plan, baseline_changed))
         })
     }
 }
@@ -309,20 +320,22 @@ async fn load_model(
 
 fn unavailable_or_invalid(
     root: &str,
+    include_ignored: bool,
     digest: &str,
     dsl: String,
     response: architecture::HelperResponse,
     warnings: Vec<Diagnostic>,
-) -> ToolOutput {
+) -> PlanValidation {
     let error = response
         .error
         .unwrap_or_else(|| "The draft could not be validated.".into());
     let diagnostics = response.diagnostics;
     if response.draft_error {
-        ToolOutput::text(encode(Validation {
-            status: "invalid",
+        PlanValidation {
+            status: PlanValidationStatus::Invalid,
             valid: false,
             model_root: root.into(),
+            include_ignored,
             source_digest: digest.into(),
             diff_id: None,
             dsl,
@@ -331,13 +344,13 @@ fn unavailable_or_invalid(
             warnings,
             overlaps: response.overlaps,
             error: Some(error),
-            baseline_changed: false,
-        }))
+        }
     } else {
-        ToolOutput::text(encode(Validation {
-            status: "unavailable",
+        PlanValidation {
+            status: PlanValidationStatus::Unavailable,
             valid: false,
             model_root: root.into(),
+            include_ignored,
             source_digest: digest.into(),
             diff_id: None,
             dsl,
@@ -348,22 +361,23 @@ fn unavailable_or_invalid(
             error: Some(format!(
                 "The selected architecture model could not be compiled: {error}"
             )),
-            baseline_changed: false,
-        }))
+        }
     }
 }
 
 fn unavailable(
     root: &str,
+    include_ignored: bool,
     digest: &str,
     dsl: String,
     error: String,
     notes: Vec<String>,
-) -> ToolOutput {
-    ToolOutput::text(encode(Validation {
-        status: "unavailable",
+) -> PlanValidation {
+    PlanValidation {
+        status: PlanValidationStatus::Unavailable,
         valid: false,
         model_root: root.into(),
+        include_ignored,
         source_digest: digest.into(),
         diff_id: None,
         dsl,
@@ -380,13 +394,17 @@ fn unavailable(
             .collect(),
         overlaps: Vec::new(),
         error: Some(error),
-        baseline_changed: false,
-    }))
+    }
 }
 
-fn encode(validation: Validation) -> String {
-    serde_json::to_string_pretty(&validation)
-        .unwrap_or_else(|error| format!("Could not encode the validation result: {error}"))
+fn respond(ctx: &ToolContext, plan: PlanValidation, baseline_changed: bool) -> ToolOutput {
+    ctx.record_plan_validation(&plan);
+    let text = serde_json::to_string_pretty(&Validation {
+        plan,
+        baseline_changed,
+    })
+    .unwrap_or_else(|error| format!("Could not encode the validation result: {error}"));
+    ToolOutput::text(text)
 }
 
 fn draft_path(root: &str, sources: &BTreeMap<String, String>) -> String {
@@ -451,6 +469,7 @@ mod tests {
                 cancel,
                 access: Access::execute(),
                 planning,
+                plan_validation: None,
                 jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
                 session_id: "plan-diff-test".into(),
                 window: "main".into(),
@@ -499,6 +518,28 @@ mod tests {
             value["sourceDigest"]
                 .as_str()
                 .is_some_and(|d| d.len() == 16)
+        );
+    }
+
+    #[tokio::test]
+    async fn captures_the_latest_validation_for_the_plan_event() {
+        let (mut ctx, _root, _handle) = planning_context(None);
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        ctx.plan_validation = Some(slot.clone());
+        let value = parse(
+            tool()
+                .execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(value["status"], "verified");
+        let captured = slot.lock().unwrap().clone().expect("validation captured");
+        assert_eq!(captured.status, PlanValidationStatus::Verified);
+        assert_eq!(captured.diff_id.as_deref(), Some("worker"));
+        assert!(!captured.include_ignored);
+        assert_eq!(
+            captured.source_digest,
+            value["sourceDigest"].as_str().unwrap()
         );
     }
 
@@ -564,6 +605,7 @@ mod tests {
             cancel,
             access: Access::execute(),
             planning: None,
+            plan_validation: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-multiple".into(),
             window: "main".into(),
@@ -592,6 +634,7 @@ mod tests {
             cancel,
             access: Access::execute(),
             planning: Some(missing),
+            plan_validation: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-missing".into(),
             window: "main".into(),
@@ -640,6 +683,7 @@ mod tests {
             cancel,
             access: Access::execute(),
             planning: None,
+            plan_validation: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-broken".into(),
             window: "main".into(),
@@ -672,6 +716,7 @@ mod tests {
             cancel,
             access: Access::execute(),
             planning: None,
+            plan_validation: None,
             jobs: std::sync::Arc::new(crate::tools::jobs::JobRegistry::new()),
             session_id: "plan-diff-baseline".into(),
             window: "main".into(),

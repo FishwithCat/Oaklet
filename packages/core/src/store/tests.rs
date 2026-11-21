@@ -3,8 +3,8 @@
 use serde_json::json;
 
 use super::{
-    ContextUsage, EventPayload, NewUserTurn, PlanState, PlanStatus, RunEnd, RunUsage, StepUsage,
-    Store, has_table, is_checkpoint,
+    ContextUsage, EventPayload, NewUserTurn, PlanState, PlanStatus, PlanValidation,
+    PlanValidationStatus, RunEnd, RunUsage, StepUsage, Store, has_table, is_checkpoint,
 };
 use crate::agent::Usage;
 
@@ -274,6 +274,8 @@ fn plan_state_survives_runs_and_advances_versions() {
             appended: vec![EventPayload::Plan {
                 version: 1,
                 status: PlanStatus::Pending,
+                steps: String::new(),
+                validation: None,
             }],
             compaction: None,
             context: None,
@@ -293,6 +295,78 @@ fn plan_state_survives_runs_and_advances_versions() {
         .unwrap();
     assert_eq!(started.plan.latest, Some(1));
     assert!(started.plan.pending);
+}
+
+#[test]
+fn plan_confirmation_consumes_the_latest_version_once() {
+    let store = store();
+    store.create_session("s1", "/tmp/a", 1).unwrap();
+    let started = store.begin_run("s1", "r1", &turn("plan", None), 2).unwrap();
+    let validation = PlanValidation {
+        status: PlanValidationStatus::Verified,
+        valid: true,
+        model_root: "architecture".into(),
+        include_ignored: false,
+        source_digest: "abc123".into(),
+        diff_id: Some("worker".into()),
+        dsl: "diff worker 'Add worker' { add { extend api { worker = component 'Worker' } } }"
+            .into(),
+        diff: Some(json!({ "id": "worker", "title": "Add worker" })),
+        diagnostics: Vec::new(),
+        warnings: Vec::new(),
+        overlaps: vec!["existing".into()],
+        error: None,
+    };
+    store
+        .finish_run(&RunEnd {
+            session_id: "s1".into(),
+            run_id: "r1".into(),
+            start_seq: started.start_seq,
+            status: "done",
+            finished_at: 3,
+            appended: vec![EventPayload::Plan {
+                version: 1,
+                status: PlanStatus::Pending,
+                steps: "1. Add the worker.".into(),
+                validation: Some(Box::new(validation.clone())),
+            }],
+            compaction: None,
+            context: None,
+            usage: Default::default(),
+            error: None,
+        })
+        .unwrap();
+
+    let plan = store.latest_plan("s1").unwrap().unwrap();
+    assert_eq!(plan.version, 1);
+    assert_eq!(plan.steps, "1. Add the worker.");
+    assert_eq!(plan.validation, Some(validation.clone()));
+
+    assert!(
+        store
+            .begin_plan_run("s1", "stale", &turn("old", None), 0, 4)
+            .is_err()
+    );
+    let started = store
+        .begin_plan_run("s1", "r2", &turn("implement", None), 1, 4)
+        .unwrap();
+    assert!(started.plan.pending);
+    assert_eq!(
+        store.plan_state("s1").unwrap(),
+        PlanState {
+            latest: Some(1),
+            pending: false,
+        }
+    );
+    let plan = store.latest_plan("s1").unwrap().unwrap();
+    assert_eq!(plan.status, PlanStatus::Accepted);
+    assert_eq!(plan.steps, "1. Add the worker.");
+    assert_eq!(plan.validation, Some(validation));
+    assert!(
+        store
+            .begin_plan_run("s1", "r3", &turn("again", None), 1, 5)
+            .is_err()
+    );
 }
 
 #[test]

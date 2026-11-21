@@ -336,10 +336,59 @@ impl RunContext {
         if !assessment.needs_plan() {
             return;
         }
+        let steps = self.last_assistant_text();
+        let validation = self
+            .plan_validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .map(Box::new);
         self.record(EventPayload::Plan {
             version: self.next_plan_version(),
             status: store::PlanStatus::Pending,
+            steps,
+            validation,
         });
+    }
+
+    /// The final assistant reply becomes the card's implementation steps.
+    fn last_assistant_text(&self) -> String {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending
+            .iter()
+            .rev()
+            .find_map(|payload| match payload {
+                EventPayload::Message { message, display }
+                    if message.get("role").and_then(Value::as_str) == Some("assistant")
+                        && !display
+                            .as_ref()
+                            .and_then(|display| display.get("hidden"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false) =>
+                {
+                    message_text(message.get("content"))
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn message_text(content: Option<&Value>) -> Option<String> {
+    match content {
+        Some(Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(Value::Array(parts)) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
     }
 }
 

@@ -96,7 +96,7 @@ pub struct ViewInfo {
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostic {
     #[serde(default)]

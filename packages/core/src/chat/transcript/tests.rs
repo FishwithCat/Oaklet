@@ -570,3 +570,93 @@ fn leading_checkpoint_text_stays_visible_in_strings_and_content_parts() {
         assert_eq!(surface_messages(&events), [message]);
     }
 }
+
+#[test]
+fn plan_cards_replace_their_duplicate_reply_and_keep_their_place() {
+    let plan_event = |seq, version, status, steps: &str| Event {
+        seq,
+        created_at: 0,
+        payload: EventPayload::Plan {
+            version,
+            status,
+            steps: steps.into(),
+            validation: None,
+        },
+    };
+    let message = |seq, role: &str, text: &str| Event {
+        seq,
+        created_at: 0,
+        payload: EventPayload::Message {
+            message: json!({ "role": role, "content": text }),
+            display: None,
+        },
+    };
+    let events = vec![
+        message(1, "assistant", "1. Add the worker."),
+        plan_event(2, 1, store::PlanStatus::Pending, "1. Add the worker."),
+        message(3, "user", "Implement plan v1"),
+        plan_event(4, 1, store::PlanStatus::Accepted, "1. Add the worker."),
+        message(5, "assistant", "1. Add the queue."),
+        plan_event(6, 2, store::PlanStatus::Pending, "1. Add the queue."),
+    ];
+
+    let items = project_events(&events);
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["kind"], "plan");
+    assert_eq!(items[0]["version"], 1);
+    assert_eq!(items[0]["status"], "accepted");
+    assert_eq!(items[0]["latest"], false);
+    assert_eq!(items[0]["seq"], 2);
+    assert_eq!(items[1]["kind"], "user");
+    assert_eq!(items[1]["text"], "Implement plan v1");
+    assert_eq!(items[2]["kind"], "plan");
+    assert_eq!(items[2]["version"], 2);
+    assert_eq!(items[2]["status"], "pending");
+    assert_eq!(items[2]["latest"], true);
+    assert_eq!(items[2]["steps"], "1. Add the queue.");
+}
+
+#[test]
+fn plan_cards_carry_the_backend_validation() {
+    let validation = store::PlanValidation {
+        status: store::PlanValidationStatus::Verified,
+        valid: true,
+        model_root: "architecture".into(),
+        include_ignored: false,
+        source_digest: "abc123".into(),
+        diff_id: Some("worker".into()),
+        dsl: "diff worker 'Worker' {}".into(),
+        diff: Some(json!({
+            "id": "worker",
+            "title": "Worker",
+            "added": { "elements": 1, "relations": 1 },
+            "removed": { "elements": 0, "relations": 0 },
+            "modified": { "elements": 0 },
+            "views": [],
+        })),
+        diagnostics: Vec::new(),
+        warnings: Vec::new(),
+        overlaps: vec!["existing".into()],
+        error: None,
+    };
+    let events = vec![Event {
+        seq: 1,
+        created_at: 0,
+        payload: EventPayload::Plan {
+            version: 1,
+            status: store::PlanStatus::Pending,
+            steps: "1. Add the worker.".into(),
+            validation: Some(Box::new(validation)),
+        },
+    }];
+
+    let items = project_events(&events);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["kind"], "plan");
+    assert_eq!(items[0]["validation"]["status"], "verified");
+    assert_eq!(items[0]["validation"]["modelRoot"], "architecture");
+    assert_eq!(items[0]["validation"]["includeIgnored"], false);
+    assert_eq!(items[0]["validation"]["diffId"], "worker");
+    assert_eq!(items[0]["validation"]["overlaps"][0], "existing");
+    assert_eq!(items[0]["validation"]["dsl"], "diff worker 'Worker' {}");
+}

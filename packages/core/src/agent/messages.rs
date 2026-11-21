@@ -121,8 +121,10 @@ pub(super) fn system_prompt(
              grounded in the code you changed. Use likec4_mcp to understand existing elements and \
              relationships, and file tools to edit. Before presenting an architectural plan, \
              validate its complete native diff with validate_architecture_diff; only describe it as \
-             verified after the tool reports success. If the code change has no architectural \
-             effect, leave the model unchanged and say so; do not create a model when none exists.",
+             verified after the tool reports success. A planning turn's final reply becomes the \
+             plan card, so make it a self-contained ordered list of implementation steps. If the \
+             code change has no architectural effect, leave the model unchanged and say so; do not \
+             create a model when none exists.",
             model_sources.join(", ")
         ));
     }
@@ -132,6 +134,14 @@ pub(super) fn system_prompt(
              likec4_mcp before planning, and validate the complete draft with \
              validate_architecture_diff.",
             scope.model_root
+        ));
+    }
+    if let Some(version) = tools.approved_plan() {
+        rules.push(format!(
+            "The user approved plan version {version} from the plan card. This run may edit from \
+             the first step: implement the approved plan and its architecture diff, and do not \
+             re-open planning for that same change. If implementation reveals a new architectural \
+             change beyond the approved plan, stop writing and report it."
         ));
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
@@ -253,6 +263,16 @@ mod tests {
         let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("model root `architecture`"));
         assert!(prompt.contains("validate_architecture_diff"));
+    }
+
+    #[test]
+    fn system_prompt_opens_the_tools_for_an_approved_plan() {
+        let mut tools = ToolRegistry::new();
+        tools.set_approved_plan(Some(3));
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert!(prompt.contains("approved plan version 3"));
+        assert!(prompt.contains("may edit from the first step"));
+        assert!(prompt.contains("stop writing and report it"));
     }
 
     #[test]
