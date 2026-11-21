@@ -7,7 +7,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{
+    PLAN_BASELINE_CHANGED, Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args,
+};
 use crate::architecture::read_capped;
 use crate::shell_env::ApplyEnvironment;
 
@@ -95,6 +97,10 @@ impl Tool for LikeC4 {
                     .to_string(),
             )?;
             let helper = self.helper.as_ref().ok_or("LikeC4 MCP helper is missing. Install architecture-helper dependencies or reinstall Oaklet.".to_string())?;
+            let track_baseline = query.tool.is_some() && ctx.access.mode() == ToolAccess::ReadOnly;
+            if track_baseline {
+                check_plan_baseline(ctx).await?;
+            }
             let mut command = tokio::process::Command::new(node);
             command
                 .arg(helper.join("src/mcp.mjs"))
@@ -138,10 +144,27 @@ impl Tool for LikeC4 {
             };
             tokio::select! {
                 _ = ctx.cancel.cancelled() => Err(ToolError::Cancelled),
-                result = work => result.map(ToolOutput::text).map_err(ToolError::Failed),
+                result = work => {
+                    let result = result.map_err(ToolError::Failed)?;
+                    if track_baseline {
+                        check_plan_baseline(ctx).await?;
+                    }
+                    Ok(ToolOutput::text(result))
+                }
             }
         })
     }
+}
+
+async fn check_plan_baseline(ctx: &ToolContext) -> Result<(), ToolError> {
+    let model = super::plan_diff::load_model(ctx).await?.ok();
+    if ctx
+        .access
+        .plan_baseline_changed(model.as_ref().map(|model| model.digest.as_str()))
+    {
+        return Err(ToolError::Failed(PLAN_BASELINE_CHANGED.into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

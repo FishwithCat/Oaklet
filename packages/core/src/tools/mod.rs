@@ -236,11 +236,14 @@ pub struct Access {
     state: Mutex<AccessState>,
 }
 
-#[derive(Clone, Copy)]
+pub(crate) const PLAN_BASELINE_CHANGED: &str = "Architecture sources changed during planning. Start a new planning turn and query the current model before validating the draft.";
+
 struct AccessState {
     mode: ToolAccess,
     locked: bool,
     assessment: Option<Assessment>,
+    plan_baseline: Option<String>,
+    plan_baseline_stale: bool,
 }
 
 impl Access {
@@ -250,6 +253,8 @@ impl Access {
                 mode,
                 locked,
                 assessment: None,
+                plan_baseline: None,
+                plan_baseline_stale: false,
             }),
         })
     }
@@ -285,6 +290,20 @@ impl Access {
 
     pub fn assessment(&self) -> Option<Assessment> {
         self.lock().assessment
+    }
+
+    fn plan_baseline_changed(&self, digest: Option<&str>) -> bool {
+        let mut state = self.lock();
+        if let Some(original) = state.plan_baseline.as_deref() {
+            state.plan_baseline_stale |= Some(original) != digest;
+        } else {
+            state.plan_baseline = digest.map(str::to_owned);
+        }
+        state.plan_baseline_stale
+    }
+
+    pub(crate) fn plan_baseline_stale(&self) -> bool {
+        self.lock().plan_baseline_stale
     }
 
     /// Record the model's classification and return the mode it activates.

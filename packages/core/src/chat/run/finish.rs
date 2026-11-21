@@ -337,7 +337,7 @@ impl RunContext {
             return;
         }
         let steps = self.last_assistant_text();
-        let validation = self
+        let mut validation = self
             .plan_validation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -352,6 +352,12 @@ impl RunContext {
                         ..Default::default()
                     })
             });
+        if self.access().plan_baseline_stale() {
+            let validation = validation.get_or_insert_with(store::PlanValidation::default);
+            validation.status = store::PlanValidationStatus::Invalid;
+            validation.valid = false;
+            validation.error = Some(crate::tools::PLAN_BASELINE_CHANGED.into());
+        }
         let details = self
             .plan_details
             .lock()

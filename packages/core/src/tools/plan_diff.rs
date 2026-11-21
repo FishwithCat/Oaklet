@@ -6,14 +6,15 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{
+    PLAN_BASELINE_CHANGED, Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args,
+};
 use crate::architecture::{self, Diagnostic, MAX_SOURCE_FILE_BYTES, run_helper_watch};
 use crate::store::{PlanValidation, PlanValidationStatus};
 
@@ -22,17 +23,11 @@ static NEXT_DRAFT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct ValidateDiff {
     pub node: Option<PathBuf>,
     pub helper: Option<PathBuf>,
-    /// Digest of the last verified draft in this run.
-    verified: Mutex<Option<String>>,
 }
 
 impl ValidateDiff {
     pub fn new(node: Option<PathBuf>, helper: Option<PathBuf>) -> Self {
-        Self {
-            node,
-            helper,
-            verified: Mutex::new(None),
-        }
+        Self { node, helper }
     }
 }
 
@@ -121,7 +116,7 @@ impl Tool for ValidateDiff {
     }
 
     fn guidance(&self) -> &'static str {
-        "Before presenting an architectural plan, validate its complete native diff with validate_architecture_diff. Query the selected model first, reference real element IDs and source paths, and only call a diff verified after `status` is \"verified\". If multiple models exist and none is selected, ask the user to choose one in the Architecture panel. Fix diagnostics and validate again; overlap warnings do not block review. When `status` is \"unavailable\", keep a text plan and state the reason. When `baselineChanged` is true, query the current model before presenting the plan."
+        "Before presenting an architectural plan, validate its complete native diff with validate_architecture_diff. Query the selected model first, reference real element IDs and source paths, and only call a diff verified after `status` is \"verified\". If multiple models exist and none is selected, ask the user to choose one in the Architecture panel. Fix diagnostics and validate again; overlap warnings do not block review. When `status` is \"unavailable\", keep a text plan and state the reason. When `baselineChanged` is true, explain that a new planning turn is needed."
     }
 
     fn summary(&self, _args: &Value) -> String {
@@ -154,7 +149,21 @@ impl Tool for ValidateDiff {
                 .as_ref()
                 .is_some_and(|scope| scope.include_ignored);
 
-            let model = match load_model(ctx).await? {
+            let model = load_model(ctx).await?;
+            if ctx
+                .access
+                .plan_baseline_changed(model.as_ref().ok().map(|model| model.digest.as_str()))
+            {
+                let plan = PlanValidation {
+                    status: PlanValidationStatus::Invalid,
+                    dsl: args.dsl,
+                    error: Some(PLAN_BASELINE_CHANGED.into()),
+                    ..Default::default()
+                };
+                return Ok(respond(ctx, plan, true));
+            }
+
+            let model = match model {
                 Ok(model) => model,
                 Err(error) => {
                     let plan = unavailable(
@@ -264,26 +273,6 @@ impl Tool for ValidateDiff {
                 }
             };
 
-            let baseline_changed = {
-                let mut verified = self
-                    .verified
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let changed = verified
-                    .as_deref()
-                    .is_some_and(|digest| digest != model.digest);
-                *verified = Some(model.digest.clone());
-                changed
-            };
-            if baseline_changed {
-                warnings.push(Diagnostic {
-                    message: "Architecture sources changed since the previous validation. Query the current model before presenting the plan.".into(),
-                    file: None,
-                    line: None,
-                    column: None,
-                });
-            }
-
             let plan = PlanValidation {
                 status: PlanValidationStatus::Verified,
                 valid: true,
@@ -298,12 +287,12 @@ impl Tool for ValidateDiff {
                 overlaps: response.overlaps,
                 error: None,
             };
-            Ok(respond(ctx, plan, baseline_changed))
+            Ok(respond(ctx, plan, false))
         })
     }
 }
 
-async fn load_model(
+pub(super) async fn load_model(
     ctx: &ToolContext,
 ) -> Result<Result<architecture::PlanningModel, String>, ToolError> {
     let workspace = ctx.workspace.clone();
@@ -711,16 +700,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_a_baseline_change_after_a_source_edit() {
+    async fn rejects_a_draft_after_sources_change_between_query_and_validation() {
         let (_, fixture) = fixture();
         let root = super::super::test_support::temp_root("plan-diff-baseline");
         copy_tree(&fixture, &root);
         let workspace = Workspace::new(root.to_str().unwrap()).unwrap();
         let (_handle, cancel) = CancelHandle::new();
-        let ctx = ToolContext {
+        let mut ctx = ToolContext {
             workspace,
             cancel,
-            access: Access::execute(),
+            access: Access::read_only(),
             planning: None,
             plan_validation: None,
             plan_details: None,
@@ -730,36 +719,45 @@ mod tests {
             spill_root: root.join("spill"),
         };
         let tool = tool();
-        let first = parse(
-            tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
-                .await
-                .unwrap(),
-        );
-        assert_eq!(first["baselineChanged"], false);
+        let query = super::super::likec4::LikeC4 {
+            node: tool.node.clone(),
+            helper: tool.helper.clone(),
+        };
+        query
+            .execute(&ctx, json!({ "tool": "list-projects" }))
+            .await
+            .unwrap();
 
         let model = root.join("architecture/model.c4");
         let mut text = fs::read_to_string(&model).unwrap();
         text.push_str("\n// changed\n");
         fs::write(&model, text).unwrap();
 
-        let second = parse(
+        // A later query cannot replace the baseline of the first one.
+        assert!(matches!(
+            query.execute(&ctx, json!({ "tool": "list-projects" })).await,
+            Err(ToolError::Failed(message)) if message == PLAN_BASELINE_CHANGED
+        ));
+        let stale = parse(
             tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
                 .await
                 .unwrap(),
         );
-        assert_eq!(second["status"], "verified", "{second}");
-        assert_eq!(second["baselineChanged"], true);
-        assert!(
-            second["warnings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|warning| {
-                    warning["message"]
-                        .as_str()
-                        .is_some_and(|message| message.contains("changed"))
-                })
+        assert_eq!(stale["status"], "invalid", "{stale}");
+        assert_eq!(stale["baselineChanged"], true);
+
+        ctx.access = Access::read_only();
+        query
+            .execute(&ctx, json!({ "tool": "list-projects" }))
+            .await
+            .unwrap();
+        let updated = parse(
+            tool.execute(&ctx, json!({ "dsl": WORKER_DRAFT }))
+                .await
+                .unwrap(),
         );
+        assert_eq!(updated["status"], "verified", "{updated}");
+        assert_eq!(updated["baselineChanged"], false);
         std::fs::remove_dir_all(root).ok();
     }
 
