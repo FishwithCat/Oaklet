@@ -545,7 +545,13 @@ export function useAgentSession({
     } catch (error) {
       if (workspaceRef.current !== workspaceAtStart) return false;
       if (!sessionsRef.current[tab.id]) return false;
-      putSession(appendNotice(previous, "error", errorText(error)));
+      const message = errorText(error);
+      const stopped = message === "Stopped.";
+      putSession(appendNotice(
+        previous,
+        stopped ? "muted" : "error",
+        stopped ? "Plan confirmation stopped." : message,
+      ));
       return false;
     }
   }

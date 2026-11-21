@@ -10,7 +10,7 @@ use super::manual_compaction::{CompactionSlot, compact_session};
 use super::run::{RunTrigger, start_run};
 use super::transcript::view_from_session;
 use super::{
-    CompactResult, CompactionHandle, IncomingAttachment, SendResult, SessionSummary, SessionView,
+    CompactResult, IncomingAttachment, SendResult, SessionOperation, SessionSummary, SessionView,
     resolve_approvals,
 };
 use crate::SharedState;
@@ -159,11 +159,8 @@ pub async fn session_confirm_plan(
 ) -> Result<SendResult, String> {
     let window_workspace = workspace_for_window(&state, window.label())?;
     let session_store = state.chat.store.clone();
-    let lookup = session_store.clone();
-    let load_id = session_id.clone();
-    let meta = tauri::async_runtime::spawn_blocking(move || lookup.session_meta(&load_id))
-        .await
-        .map_err(|error| format!("Could not read the session: {error}"))??
+    let meta = session_store
+        .session_meta(&session_id)?
         .ok_or_else(|| "This session no longer exists.".to_string())?;
     if Path::new(&meta.workspace) != window_workspace.as_path() {
         return Err(
@@ -175,6 +172,10 @@ pub async fn session_confirm_plan(
     }
 
     let (cancel_handle, cancel) = CancelHandle::new();
+    let _confirmation =
+        state
+            .chat
+            .reserve_plan_confirmation(&session_id, window.label(), cancel_handle.clone())?;
     let plan = session_store
         .latest_plan(&session_id)?
         .ok_or_else(|| "This plan is no longer awaiting confirmation.".to_string())?;
@@ -183,7 +184,11 @@ pub async fn session_confirm_plan(
     }
 
     if let Some(validation) = plan.validation_for_confirmation()? {
-        verify_confirmation(&app, &meta.workspace, validation, cancel.clone()).await?;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err("Stopped.".into()),
+            result = verify_confirmation(&app, &meta.workspace, validation, cancel.clone()) => result?,
+        }
     }
 
     let text = confirmation_message(&plan);
@@ -462,13 +467,9 @@ fn details_message(details: &store::PlanDetails) -> String {
 
 #[tauri::command]
 pub fn session_stop(window: WebviewWindow, state: State<'_, SharedState>, session_id: String) {
-    if let Some(handle) = state.chat.live().compacting.get(&session_id)
-        && handle.window == window.label()
-    {
-        handle.cancel();
-    }
     let run_id = {
         let live = state.chat.live();
+        live.stop_session_operations(&session_id, window.label());
         let mut found = None;
         for (id, handle) in live.runs.iter() {
             if handle.session_id == session_id && handle.window == window.label() {
@@ -512,13 +513,14 @@ pub async fn session_compact(
         }
         if live.compacting.contains_key(&session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
+            || live.confirming.contains_key(&session_id)
         {
             return Err("Stop the run before compacting this chat.".into());
         }
         let (handle, cancel) = CancelHandle::new();
         live.compacting.insert(
             session_id.clone(),
-            CompactionHandle {
+            SessionOperation {
                 window: window.label().to_string(),
                 cancel: handle,
             },

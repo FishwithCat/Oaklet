@@ -53,6 +53,7 @@ pub(crate) fn job_settled(
         let busy = pending
             || live.runs.values().any(|run| run.session_id == session_id)
             || live.compacting.contains_key(&session_id)
+            || live.confirming.contains_key(&session_id)
             || live.closing.contains(&window)
             || live
                 .unsaved

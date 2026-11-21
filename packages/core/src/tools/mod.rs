@@ -533,6 +533,7 @@ pub struct Cancel {
 }
 
 /// Owner-side handle that flips a [`Cancel`].
+#[derive(Clone)]
 pub struct CancelHandle {
     sender: watch::Sender<bool>,
 }

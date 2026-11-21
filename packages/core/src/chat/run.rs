@@ -60,6 +60,10 @@ pub(super) fn start_run(
     // both start a run for the same session.
     let (view, start_seq, messages, access, plan_state) = {
         let mut live = state.chat.live();
+        let confirming_plan = matches!(trigger, RunTrigger::Plan(_));
+        if confirming_plan {
+            live.check_plan_confirmation(session_id, window, &cancel)?;
+        }
         if live.closing.contains(window)
             || live
                 .unsaved
@@ -70,6 +74,7 @@ pub(super) fn start_run(
         }
         if live.compacting.contains_key(session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
+            || (!confirming_plan && live.confirming.contains_key(session_id))
         {
             return Err("This chat is already working.".into());
         }

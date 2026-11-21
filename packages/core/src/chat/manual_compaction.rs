@@ -158,7 +158,7 @@ async fn load_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::CompactionHandle;
+    use crate::chat::SessionOperation;
     use crate::tools::CancelHandle;
 
     #[test]
@@ -167,7 +167,7 @@ mod tests {
         let (handle, _cancel) = CancelHandle::new();
         state.live().compacting.insert(
             "s1".into(),
-            CompactionHandle {
+            SessionOperation {
                 window: "main".into(),
                 cancel: handle,
             },

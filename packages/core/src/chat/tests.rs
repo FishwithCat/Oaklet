@@ -2,6 +2,36 @@ use super::transcript::view_from_session;
 use super::*;
 use crate::store::EventPayload;
 
+#[test]
+fn stopping_a_confirmation_prevents_the_handoff_to_implementation() {
+    let chat = ChatState::in_memory();
+    let (handle, cancel) = CancelHandle::new();
+    let confirmation = chat
+        .reserve_plan_confirmation("s1", "main", handle.clone())
+        .unwrap();
+    assert!(chat.window_busy("main"));
+    assert!(
+        chat.reserve_plan_confirmation("s1", "main", handle)
+            .is_err()
+    );
+    assert!(
+        chat.live()
+            .check_plan_confirmation("s1", "main", &cancel)
+            .is_ok()
+    );
+    chat.live().stop_session_operations("s1", "other");
+    assert!(!cancel.is_cancelled());
+    chat.live().stop_session_operations("s1", "main");
+    assert_eq!(
+        chat.live()
+            .check_plan_confirmation("s1", "main", &cancel)
+            .unwrap_err(),
+        "Stopped."
+    );
+    drop(confirmation);
+    assert!(!chat.window_busy("main"));
+}
+
 #[tokio::test]
 async fn draining_waits_for_cancelled_compaction_to_settle() {
     let state = ChatState::in_memory();
@@ -9,7 +39,7 @@ async fn draining_waits_for_cancelled_compaction_to_settle() {
     let (handle, cancel) = CancelHandle::new();
     state.live().compacting.insert(
         "s1".into(),
-        super::CompactionHandle {
+        super::SessionOperation {
             window: "main".into(),
             cancel: handle,
         },

@@ -99,13 +99,63 @@ enum Tone {
 #[derive(Default)]
 struct ChatLive {
     runs: HashMap<String, RunHandle>,
-    compacting: HashMap<String, CompactionHandle>,
+    compacting: HashMap<String, SessionOperation>,
+    confirming: HashMap<String, SessionOperation>,
     closing: HashSet<String>,
     unsaved: HashMap<String, (String, Arc<RunEnd>)>,
     /// Job notices waiting for a busy session's next step.
     notices: HashMap<String, Vec<JobNotice>>,
     /// Wakes opened by job notices since the session's last user message.
     wakes: HashMap<String, u32>,
+}
+
+impl ChatLive {
+    fn check_plan_confirmation(
+        &self,
+        session_id: &str,
+        window: &str,
+        cancel: &crate::tools::Cancel,
+    ) -> Result<(), String> {
+        if cancel.is_cancelled() {
+            return Err("Stopped.".into());
+        }
+        if self
+            .confirming
+            .get(session_id)
+            .is_none_or(|handle| handle.window != window)
+        {
+            return Err("This plan confirmation is no longer active.".into());
+        }
+        Ok(())
+    }
+
+    fn stop_session_operations(&self, session_id: &str, window: &str) {
+        for handle in [
+            self.compacting.get(session_id),
+            self.confirming.get(session_id),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|handle| handle.window == window)
+        {
+            handle.cancel();
+        }
+    }
+
+    fn operations(&self) -> impl Iterator<Item = &SessionOperation> {
+        self.compacting.values().chain(self.confirming.values())
+    }
+}
+
+struct PlanConfirmation<'a> {
+    chat: &'a ChatState,
+    session_id: &'a str,
+}
+
+impl Drop for PlanConfirmation<'_> {
+    fn drop(&mut self) {
+        self.chat.live().confirming.remove(self.session_id);
+    }
 }
 
 struct RunHandle {
@@ -115,12 +165,12 @@ struct RunHandle {
     view: Arc<Mutex<SessionView>>,
 }
 
-struct CompactionHandle {
+struct SessionOperation {
     window: String,
     cancel: CancelHandle,
 }
 
-impl CompactionHandle {
+impl SessionOperation {
     fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -174,6 +224,33 @@ impl ChatState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn reserve_plan_confirmation<'a>(
+        &'a self,
+        session_id: &'a str,
+        window: &str,
+        cancel: CancelHandle,
+    ) -> Result<PlanConfirmation<'a>, String> {
+        let mut live = self.live();
+        if live.closing.contains(window)
+            || live.confirming.contains_key(session_id)
+            || live.compacting.contains_key(session_id)
+            || live.runs.values().any(|run| run.session_id == session_id)
+        {
+            return Err("This chat is already working or its window is closing.".into());
+        }
+        live.confirming.insert(
+            session_id.to_string(),
+            SessionOperation {
+                window: window.to_string(),
+                cancel,
+            },
+        );
+        Ok(PlanConfirmation {
+            chat: self,
+            session_id,
+        })
+    }
+
     /// Take the job notices queued while a run of this session was busy.
     pub fn take_notices(&self, session_id: &str) -> Vec<JobNotice> {
         self.live().notices.remove(session_id).unwrap_or_default()
@@ -183,10 +260,7 @@ impl ChatState {
     pub fn window_busy(&self, window: &str) -> bool {
         let live = self.live();
         live.runs.values().any(|run| run.window == window)
-            || live
-                .compacting
-                .values()
-                .any(|handle| handle.window == window)
+            || live.operations().any(|handle| handle.window == window)
     }
 
     /// Wait for cancelled work to finish saving, retrying any earlier failed writes.
@@ -198,8 +272,7 @@ impl ChatState {
                     .values()
                     .any(|run| window.is_none_or(|label| run.window == label))
                     || live
-                        .compacting
-                        .values()
+                        .operations()
                         .any(|handle| window.is_none_or(|label| handle.window == label))
             };
             if !busy {
@@ -276,7 +349,7 @@ pub fn stop_all(state: &AppState) {
                 run_id.clone()
             })
             .collect::<Vec<_>>();
-        for handle in live.compacting.values() {
+        for handle in live.operations() {
             handle.cancel();
         }
         run_ids
@@ -300,11 +373,7 @@ pub fn stop_window(state: &AppState, label: &str) {
                 run_id.clone()
             })
             .collect();
-        for handle in live
-            .compacting
-            .values()
-            .filter(|handle| handle.window == label)
-        {
+        for handle in live.operations().filter(|handle| handle.window == label) {
             handle.cancel();
         }
         run_ids
