@@ -5,6 +5,7 @@ import { LikeC4Model } from "@likec4/core/model";
 import type { LayoutedView } from "@likec4/core/types";
 import { LikeC4ModelProvider, LikeC4View } from "@likec4/diagram";
 import { errorText } from "../../shared/error-text";
+import { HIDDEN_DIAGRAM_CHROME } from "../../shared/likec4-chrome";
 import { useResolvedTheme } from "../settings/theme";
 import {
   COMPARE_MODES,
@@ -201,6 +202,7 @@ export function PlanCompare({
               className="plan-compare-diagram"
             >
               <style>{`
+                ${HIDDEN_DIAGRAM_CHROME}
                 .react-flow__node.likec4-diff-added::after,
                 .react-flow__node.likec4-diff-modified::after,
                 .react-flow__node.likec4-diff-removed::after {

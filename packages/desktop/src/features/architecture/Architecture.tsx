@@ -10,6 +10,7 @@ import type { LayoutedLikeC4ModelData } from "@likec4/core";
 import { LikeC4Model } from "@likec4/core/model";
 import { LikeC4ModelProvider, LikeC4View } from "@likec4/diagram";
 import { errorText } from "../../shared/error-text";
+import { HIDDEN_DIAGRAM_CHROME } from "../../shared/likec4-chrome";
 import { ArchitectureDropdown } from "./ArchitectureDropdown";
 import {
   ArchitectureBanners,
@@ -228,12 +229,7 @@ export default function Architecture({
               enableNotes
               className="arch-diagram"
             >
-              {/* shortcut: LikeC4 1.60 needs styles inside its shadow root; recheck logo/breadcrumb slots on upgrade. */}
-              <style>{`
-                [data-panel="navigation"] > div:nth-child(-n + 2) {
-                  display: none;
-                }
-              `}</style>
+              <style>{HIDDEN_DIAGRAM_CHROME}</style>
             </LikeC4View>
           </LikeC4ModelProvider>
         </div>
