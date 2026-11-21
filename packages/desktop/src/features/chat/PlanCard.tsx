@@ -391,6 +391,12 @@ export function PlanCard({
                 Fix the diagnostics above, then validate the draft again.
               </span>
             )}
+            {plan.validation?.status === "required" && (
+              <span className="plan-hint">
+                Ask the agent to validate this draft in the chat. The next plan
+                version can be implemented once it passes.
+              </span>
+            )}
           </div>
         )}
         {canShowDetails && (

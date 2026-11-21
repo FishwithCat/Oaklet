@@ -191,7 +191,7 @@ export function canConfirmPlan(
 }
 
 export function confirmLabel(plan: PlanItem): string {
-  if (plan.validation?.status === "required") return "Validate before implementing";
+  if (plan.validation?.status === "required") return "Validation pending";
   return plan.validation?.status === "verified"
     ? "Implement plan"
     : "Implement text plan";

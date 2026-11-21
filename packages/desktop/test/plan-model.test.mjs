@@ -79,6 +79,7 @@ test("validation state changes the badge and confirmation label", () => {
   const skipped = plan({ validation: validation({ status: "required", valid: false }) });
   assert.equal(planBadge(skipped, 1).label, "Validation required");
   assert.equal(canConfirmPlan(skipped, 1, false, true), false);
+  assert.equal(confirmLabel(skipped), "Validation pending");
 
   const unavailable = plan({
     validation: validation({ status: "unavailable", valid: false }),
