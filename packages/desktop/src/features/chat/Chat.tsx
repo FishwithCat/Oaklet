@@ -106,9 +106,10 @@ export function Chat({
   onLoadOlder: () => Promise<boolean>;
   onRetryRestore: () => void;
   onApproval: (item: ToolItem, choice: ApprovalChoice) => void;
-  onConfirmPlan: (version: number) => Promise<boolean>;
-  onCheckPlanBaseline: (version: number) => Promise<PlanBaseline>;
+  onConfirmPlan: (sessionId: string, version: number) => Promise<boolean>;
+  onCheckPlanBaseline: (sessionId: string, version: number) => Promise<PlanBaseline>;
   onLoadPlanCompare: (
+    sessionId: string,
     version: number,
     viewId: string,
   ) => Promise<PlanCompareData>;
@@ -483,15 +484,16 @@ export function Chat({
           empty
         ) : (
           <ChatThread
+            sessionId={activeTabId}
             items={items}
             running={running}
             compacting={compacting}
             activeRunId={activeRunId}
             onApproval={onApproval}
-            onConfirmPlan={onConfirmPlan}
+            onConfirmPlan={(version) => onConfirmPlan(activeTabId, version)}
             onRevisePlan={() => composerRef.current?.focus()}
-            onCheckPlanBaseline={onCheckPlanBaseline}
-            onLoadPlanCompare={onLoadPlanCompare}
+            onCheckPlanBaseline={(version) => onCheckPlanBaseline(activeTabId, version)}
+            onLoadPlanCompare={(version, viewId) => onLoadPlanCompare(activeTabId, version, viewId)}
             onOpenFile={onOpenFile}
           />
         )}

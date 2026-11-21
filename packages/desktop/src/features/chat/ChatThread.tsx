@@ -19,6 +19,7 @@ function isImage(attachment: SentAttachment): attachment is ImageAttachment {
 }
 
 export function ChatThread({
+  sessionId,
   items,
   running,
   compacting,
@@ -30,6 +31,7 @@ export function ChatThread({
   onLoadPlanCompare,
   onOpenFile,
 }: {
+  sessionId: string;
   items: Item[];
   running: boolean;
   compacting: boolean;
@@ -165,8 +167,8 @@ export function ChatThread({
             <PlanCard
               key={
                 item.seq === undefined
-                  ? `plan-local-${block.index}`
-                  : `plan-${item.seq}`
+                  ? `${sessionId}:plan-local-${block.index}`
+                  : `${sessionId}:plan-${item.seq}`
               }
               plan={item}
               latestVersion={latestVersion}

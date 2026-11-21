@@ -508,8 +508,8 @@ export function useAgentSession({
   }
 
   /** Start the implementation run bound to one validated plan version. */
-  async function confirmPlan(version: number): Promise<boolean> {
-    const tab = sessionsRef.current[activeTabIdRef.current];
+  async function confirmPlan(sessionId: string, version: number): Promise<boolean> {
+    const tab = sessionsRef.current[sessionId];
     if (
       !tab ||
       tab.running ||
@@ -551,28 +551,21 @@ export function useAgentSession({
   }
 
   /** Check a verified plan against the current architecture sources. */
-  function checkPlanBaseline(version: number): Promise<PlanBaseline> {
-    const tab = sessionsRef.current[activeTabIdRef.current];
-    if (!tab) {
-      return Promise.reject(new Error("This chat is no longer open."));
-    }
+  function checkPlanBaseline(sessionId: string, version: number): Promise<PlanBaseline> {
     return invoke<PlanBaseline>("session_plan_baseline", {
-      sessionId: tab.id,
+      sessionId,
       version,
     });
   }
 
   /** Load one affected view's compare layout for a saved plan version. */
   function loadPlanCompare(
+    sessionId: string,
     version: number,
     viewId: string,
   ): Promise<PlanCompareData> {
-    const tab = sessionsRef.current[activeTabIdRef.current];
-    if (!tab) {
-      return Promise.reject(new Error("This chat is no longer open."));
-    }
     return invoke<PlanCompareData>("session_plan_compare", {
-      sessionId: tab.id,
+      sessionId,
       version,
       viewId,
     });
