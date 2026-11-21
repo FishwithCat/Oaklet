@@ -110,34 +110,6 @@ pub(super) fn system_prompt(
             .iter()
             .map(|warning| format!("MCP warning: {warning}")),
     );
-    if !model_sources.is_empty() {
-        rules.push(format!(
-            "This workspace has LikeC4 architecture sources ({}). Judge the architectural impact \
-             before you edit: adding or removing elements, changing a component's responsibilities, or \
-             changing dependencies means this turn stays read-only and ends with a plan for review. \
-             Read the current model first and preserve its element and view IDs, style, and manual \
-             descriptions. For a direct implementation with no architectural impact, update the \
-             affected model in the same turn so it matches the code, keeping the edit minimal and \
-             grounded in the code you changed. Use likec4_mcp to understand existing elements and \
-             relationships, and file tools to edit. Before presenting an architectural plan, \
-             validate its complete native diff with validate_architecture_diff; only describe it as \
-             verified after the tool reports success. Then call present_plan with the objective, \
-             code and model changes, ordered implementation steps, verification, risks, and open \
-             questions; those fields become the review card. If the tool is unavailable or you \
-             cannot use it, the final reply becomes the plan card, so make it a self-contained \
-             ordered list of implementation steps. If the code change has no architectural effect, \
-             leave the model unchanged and say so; do not create a model when none exists.",
-            model_sources.join(", ")
-        ));
-    }
-    if let Some(scope) = tools.planning_scope() {
-        rules.push(format!(
-            "Architecture planning is scoped to the LikeC4 model root `{}`. Query that model with \
-             likec4_mcp before planning, and validate the complete draft with \
-             validate_architecture_diff.",
-            scope.model_root
-        ));
-    }
     if let Some(version) = tools.approved_plan() {
         rules.push(format!(
             "The user approved plan version {version} from the plan card. This run may edit from \
@@ -146,6 +118,34 @@ pub(super) fn system_prompt(
              change beyond the approved plan, stop writing and report it using assess_change \
              with intent=revise and architecture_impact=possible or confirmed. List any changes \
              already made, then prepare the remaining work for a new review."
+        ));
+    } else if tools.access().planning_only() {
+        let model = tools
+            .planning_scope()
+            .map(|scope| format!("root `{}`", scope.model_root))
+            .unwrap_or_else(|| "in the workspace".to_string());
+        rules.push(format!(
+            "This is an architecture planning turn: the user started it with @arch, or it revises \
+             a plan already under review. It stays read-only until the user confirms the plan card. \
+             Query the LikeC4 model {model} with likec4_mcp before planning, reference real element \
+             IDs and source paths, and validate the complete native diff with \
+             validate_architecture_diff; only call it verified after the tool reports success. \
+             Then call present_plan with the objective, code and model changes, ordered \
+             implementation steps, verification, risks, and open questions; those fields become \
+             the review card. If LikeC4 is unavailable or the request has no architectural effect, \
+             present a text plan and state why. Do not edit files, and do not ask whether to plan: \
+             the mention already chose planning."
+        ));
+    } else if !model_sources.is_empty() {
+        rules.push(format!(
+            "This workspace has LikeC4 architecture sources ({}). This is a normal execution turn: \
+             make the requested change, and update the model like any other source file when the \
+             change affects it. Architecture review is opt-in: only a message the user starts with \
+             @arch opens read-only planning. Never call present_plan or validate_architecture_diff \
+             here. If the request is a substantial architecture change, finish the requested work \
+             and tell the user they can send it with @arch to review a validated model diff before \
+             implementation. Do not create a model when none exists.",
+            model_sources.join(", ")
         ));
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
@@ -248,10 +248,9 @@ mod tests {
         let sources = vec!["architecture/model.c4".to_string()];
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources, None);
         assert!(prompt.contains("architecture/model.c4"));
-        assert!(prompt.contains("Judge the architectural impact"));
-        assert!(prompt.contains("stays read-only and ends with a plan"));
-        assert!(prompt.contains("update the affected model"));
-        assert!(prompt.contains("validate_architecture_diff"));
+        assert!(prompt.contains("normal execution turn"));
+        assert!(prompt.contains("@arch"));
+        assert!(prompt.contains("Never call present_plan"));
 
         let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(!without_sources.contains("LikeC4 architecture sources"));
@@ -260,6 +259,7 @@ mod tests {
     #[test]
     fn system_prompt_names_the_selected_architecture_model() {
         let mut tools = ToolRegistry::new();
+        tools.set_access(crate::tools::Access::planning());
         tools.set_planning_scope(Some(crate::architecture::PlanningScope {
             model_root: "architecture".into(),
             include_ignored: false,
@@ -267,6 +267,12 @@ mod tests {
         let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("model root `architecture`"));
         assert!(prompt.contains("validate_architecture_diff"));
+
+        let mut without_model = ToolRegistry::new();
+        without_model.set_access(crate::tools::Access::planning());
+        let prompt = system_prompt(&AppConfig::default(), &without_model, &[], None);
+        assert!(prompt.contains("architecture planning turn"));
+        assert!(prompt.contains("present a text plan"));
     }
 
     #[test]

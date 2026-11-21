@@ -52,11 +52,15 @@ impl Tool for AssessChange {
     }
 
     fn guidance(&self) -> &'static str {
-        "Call assess_change before your first edit in every turn. Only intent=implement with architecture_impact=none opens write, patch, shell, and job tools. For an architectural change, evaluate request, or plan revision, stay read-only: investigate with read_file, list_dir, glob, grep, and likec4_mcp, then reply with the plan and wait for review. If the request is ambiguous, use intent=question and ask one short clarifying question. If a write reveals an architectural impact, stop editing, call assess_change again, and list the changes already made."
+        "Call assess_change once at the start of an architecture planning turn. It records the intent and impact for the review card, and planning stays read-only either way. Use intent=evaluate for a change under consideration, revise when updating a plan already under review, and question when you only need to answer. Investigate with read_file, list_dir, glob, grep, and likec4_mcp, then validate the draft and present the plan. If the request is ambiguous, use intent=question and ask one short clarifying question. After the user confirms a plan, a new architectural change revealed during implementation must stop writes and open a new review."
     }
 
     fn access(&self) -> ToolAccess {
         ToolAccess::ReadOnly
+    }
+
+    fn plan_only(&self) -> bool {
+        true
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -124,23 +128,36 @@ mod tests {
     }
 
     #[test]
-    fn only_direct_implementation_opens_execution() {
-        let access = Access::read_only();
+    fn only_an_approved_implementation_opens_execution() {
+        let access = Access::approved();
         assert_eq!(
             assess(&access, Intent::Implement, ArchitectureImpact::None),
             ToolAccess::Execute
         );
 
-        for (intent, impact) in [
-            (Intent::Implement, ArchitectureImpact::Possible),
-            (Intent::Implement, ArchitectureImpact::Confirmed),
-            (Intent::Evaluate, ArchitectureImpact::None),
-            (Intent::Revise, ArchitectureImpact::None),
-            (Intent::Question, ArchitectureImpact::None),
-        ] {
-            let access = Access::read_only();
-            assert_eq!(assess(&access, intent, impact), ToolAccess::ReadOnly);
+        for impact in [ArchitectureImpact::Possible, ArchitectureImpact::Confirmed] {
+            let access = Access::approved();
+            assert_eq!(
+                assess(&access, Intent::Implement, impact),
+                ToolAccess::ReadOnly
+            );
         }
+    }
+
+    #[test]
+    fn planning_access_never_opens_execution() {
+        let access = Access::planning();
+        assert_eq!(
+            assess(&access, Intent::Implement, ArchitectureImpact::None),
+            ToolAccess::ReadOnly
+        );
+        // An @arch turn still ends at the review card.
+        assert!(access.assessment().is_some_and(Assessment::needs_plan));
+        assert_eq!(
+            assess(&access, Intent::Question, ArchitectureImpact::None),
+            ToolAccess::ReadOnly
+        );
+        assert!(!access.assessment().is_some_and(Assessment::needs_plan));
     }
 
     #[test]
@@ -155,7 +172,7 @@ mod tests {
 
     #[test]
     fn implementation_can_fall_back_to_planning() {
-        let access = Access::read_only();
+        let access = Access::approved();
         assert_eq!(
             assess(&access, Intent::Implement, ArchitectureImpact::None),
             ToolAccess::Execute
@@ -171,7 +188,7 @@ mod tests {
     async fn reports_the_mode_and_rejects_unknown_fields() {
         let (ctx, root, _handle) = context("assess");
         let mut ctx = ctx;
-        ctx.access = Access::read_only();
+        ctx.access = Access::approved();
         let output = AssessChange
             .execute(
                 &ctx,
@@ -185,7 +202,7 @@ mod tests {
 
         let (ctx, root, _handle) = context("assess-args");
         let mut ctx = ctx;
-        ctx.access = Access::read_only();
+        ctx.access = Access::approved();
         assert!(matches!(
             AssessChange
                 .execute(

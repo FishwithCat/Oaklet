@@ -228,10 +228,10 @@ impl Assessment {
 
 /// Per-run capability gate.
 ///
-/// Every run starts read-only. The model classifies the turn with
-/// `assess_change`, and only a direct implementation with no architectural
-/// impact opens the execution tools. A run started while a plan awaits review,
-/// or by a background notice, is locked and can never open them.
+/// A normal turn executes like the agent always has. A turn started with
+/// `@arch` is planning-only: the model classifies it with `assess_change`, but
+/// execution stays closed until the user confirms the plan card. A run started
+/// by a background notice is locked and can never open execution either.
 pub struct Access {
     state: Mutex<AccessState>,
 }
@@ -241,6 +241,11 @@ pub(crate) const PLAN_BASELINE_CHANGED: &str = "Architecture sources changed dur
 struct AccessState {
     mode: ToolAccess,
     locked: bool,
+    /// Architecture planning runs never open execution, even after the model
+    /// classifies the turn as a direct implementation.
+    planning_only: bool,
+    /// Whether the run may use the plan-only tools.
+    plan_tools: bool,
     assessment: Option<Assessment>,
     plan_baseline: Option<String>,
     plan_baseline_stale: bool,
@@ -248,11 +253,13 @@ struct AccessState {
 }
 
 impl Access {
-    fn new(mode: ToolAccess, locked: bool) -> Arc<Self> {
+    fn new(mode: ToolAccess, locked: bool, planning_only: bool, plan_tools: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(AccessState {
                 mode,
                 locked,
+                planning_only,
+                plan_tools,
                 assessment: None,
                 plan_baseline: None,
                 plan_baseline_stale: false,
@@ -261,25 +268,25 @@ impl Access {
         })
     }
 
-    /// A normal turn: read-only until the model classifies it.
-    pub fn read_only() -> Arc<Self> {
-        Self::new(ToolAccess::ReadOnly, false)
-    }
-
     /// A turn that can never write, such as a background-notice wake.
     pub fn locked_read_only() -> Arc<Self> {
-        Self::new(ToolAccess::ReadOnly, true)
+        Self::new(ToolAccess::ReadOnly, true, false, false)
     }
 
     /// Full access, used by callers outside the chat flow such as compaction.
     pub fn execute() -> Arc<Self> {
-        Self::new(ToolAccess::Execute, false)
+        Self::new(ToolAccess::Execute, false, false, false)
+    }
+
+    /// An `@arch` turn: read-only until the user confirms the plan card.
+    pub fn planning() -> Arc<Self> {
+        Self::new(ToolAccess::ReadOnly, false, true, true)
     }
 
     /// Begin implementing a reviewed plan. A new planning assessment can
     /// revoke execution, which then requires another reviewed plan.
     pub fn approved() -> Arc<Self> {
-        Self::new(ToolAccess::Execute, true)
+        Self::new(ToolAccess::Execute, true, false, true)
     }
 
     pub fn mode(&self) -> ToolAccess {
@@ -288,6 +295,14 @@ impl Access {
 
     pub fn is_locked(&self) -> bool {
         self.lock().locked
+    }
+
+    pub fn planning_only(&self) -> bool {
+        self.lock().planning_only
+    }
+
+    pub fn plan_tools(&self) -> bool {
+        self.lock().plan_tools
     }
 
     pub fn assessment(&self) -> Option<Assessment> {
@@ -311,6 +326,17 @@ impl Access {
     /// Record the model's classification and return the mode it activates.
     pub fn assess(&self, assessment: Assessment) -> ToolAccess {
         let mut state = self.lock();
+        if state.planning_only {
+            let mut assessment = assessment;
+            // `@arch` always ends at the review card. Re-label a direct
+            // implementation as an assessment so the turn still records a plan.
+            if assessment.opens_execution() {
+                assessment.intent = Intent::Evaluate;
+            }
+            state.assessment = Some(assessment);
+            state.mode = ToolAccess::ReadOnly;
+            return state.mode;
+        }
         if state.execution_revoked {
             return state.mode;
         }
@@ -365,6 +391,10 @@ pub trait Tool: Send + Sync {
     /// What this tool may do to the workspace. Everything defaults to writing.
     fn access(&self) -> ToolAccess {
         ToolAccess::Execute
+    }
+    /// Plan tools are only offered while an architecture plan is under way.
+    fn plan_only(&self) -> bool {
+        false
     }
     /// Whether this call may overlap with sibling read-only calls. The agent
     /// only groups runs of exact `true`; everything else is a barrier. Opt in
@@ -713,7 +743,7 @@ impl ToolRegistry {
         Value::Array(
             self.tools
                 .iter()
-                .filter(|tool| self.access.mode().allows(tool.access()))
+                .filter(|tool| self.visible(tool.as_ref()))
                 .map(|tool| {
                     json!({
                         "type": "function",
@@ -733,7 +763,7 @@ impl ToolRegistry {
         let mut seen = std::collections::HashSet::new();
         self.tools
             .iter()
-            .filter(|tool| self.access.mode().allows(tool.access()))
+            .filter(|tool| self.visible(tool.as_ref()))
             .map(|tool| tool.guidance())
             .filter(|text| !text.is_empty() && seen.insert(*text))
             .collect()
@@ -754,7 +784,7 @@ impl ToolRegistry {
     /// Pending-call diff preview for tools that edit files.
     pub fn preview_diffs(&self, ctx: &ToolContext, name: &str, args: &Value) -> Vec<FileDiff> {
         self.get(name)
-            .filter(|tool| self.access.mode().allows(tool.access()))
+            .filter(|tool| self.visible(*tool))
             .map(|tool| tool.preview(ctx, args))
             .unwrap_or_default()
     }
@@ -764,6 +794,18 @@ impl ToolRegistry {
     pub fn is_concurrency_safe(&self, name: &str) -> bool {
         self.get(name)
             .is_some_and(|tool| tool.is_concurrency_safe())
+    }
+
+    /// Whether a tool is callable in this run: read-only runs hide writing
+    /// tools, and plan tools only appear for planning or confirmed plan runs.
+    fn visible(&self, tool: &dyn Tool) -> bool {
+        self.access.mode().allows(tool.access()) && (!tool.plan_only() || self.plan_tools_active())
+    }
+
+    /// Plan tools stay hidden in normal execution turns. The scope is absent
+    /// when the workspace has no model, so check the access gate too.
+    fn plan_tools_active(&self) -> bool {
+        self.access.plan_tools() || self.planning.is_some()
     }
 
     /// Look up, ask, run under a deadline, and normalize one call.
@@ -778,10 +820,19 @@ impl ToolRegistry {
         let Some(tool) = self.get(name) else {
             return ToolOutcome::failure(ToolError::Unknown(name.to_string()).to_string());
         };
+        if tool.plan_only() && !self.plan_tools_active() {
+            return ToolOutcome::failure(
+                "Architecture planning is not active. Start the message with @arch to plan a change."
+                    .to_string(),
+            );
+        }
         if !self.access.mode().allows(tool.access()) {
             return ToolOutcome::failure(if self.access.is_locked() {
                 "This turn is read-only because a plan is waiting for review. \
                  Revise the plan instead of editing."
+            } else if self.access.planning_only() {
+                "This turn is read-only architecture planning. Revise the plan and \
+                 wait for the user to confirm the plan card."
             } else {
                 "This turn is read-only until you classify it with assess_change. \
                  Only a direct implementation with no architectural impact opens \
@@ -1258,8 +1309,6 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "assess_change",
-                "present_plan",
                 "read_file",
                 "read_image",
                 "write_file",
@@ -1274,6 +1323,31 @@ mod tests {
                 "job_kill"
             ]
         );
+    }
+
+    #[test]
+    fn plan_tools_appear_only_in_planning_runs() {
+        let mut registry = ToolRegistry::new();
+        let names = |registry: &ToolRegistry| -> Vec<String> {
+            registry
+                .schemas()
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|schema| {
+                    schema
+                        .pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        };
+        assert!(!names(&registry).contains(&"assess_change".to_string()));
+        assert!(!names(&registry).contains(&"present_plan".to_string()));
+
+        registry.set_access(Access::planning());
+        assert!(names(&registry).contains(&"assess_change".to_string()));
+        assert!(names(&registry).contains(&"present_plan".to_string()));
     }
 
     #[test]
@@ -1299,10 +1373,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_only_gate_hides_and_rejects_working_tools() {
-        let (ctx, root, _handle) = context("read-only-gate");
+    async fn planning_gate_hides_writes_and_never_opens_them() {
+        let (ctx, root, _handle) = context("planning-gate");
         let mut registry = ToolRegistry::new();
-        registry.set_access(Access::read_only());
+        registry.set_access(Access::planning());
 
         let names: Vec<String> = registry
             .schemas()
@@ -1348,7 +1422,7 @@ mod tests {
             )
             .await;
         assert!(!outcome.ok);
-        assert!(outcome.output.contains("assess_change"));
+        assert!(outcome.output.contains("read-only architecture planning"));
         assert!(!root.join("notes.txt").exists());
 
         registry.access().assess(Assessment {
@@ -1362,7 +1436,7 @@ mod tests {
             .iter()
             .filter_map(|schema| schema.pointer("/function/name").and_then(Value::as_str))
             .collect();
-        assert!(names.contains(&"write_file"));
+        assert!(!names.contains(&"write_file"));
         let outcome = registry
             .execute(
                 &ctx,
@@ -1372,11 +1446,8 @@ mod tests {
                 json!({ "path": "notes.txt", "content": "saved" }),
             )
             .await;
-        assert!(outcome.ok);
-        assert_eq!(
-            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
-            "saved"
-        );
+        assert!(!outcome.ok);
+        assert!(!root.join("notes.txt").exists());
         std::fs::remove_dir_all(root).ok();
     }
 

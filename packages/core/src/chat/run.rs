@@ -23,6 +23,8 @@ use crate::{SharedState, context};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RunTrigger {
     User,
+    /// The user typed the `@arch` mention: plan only, never edit.
+    Arch,
     Notice,
     /// The user confirmed a plan card; the run consumes that version and may
     /// edit from its first step.
@@ -45,7 +47,7 @@ pub(super) fn start_run(
 ) -> Result<(String, Arc<Mutex<SessionView>>), String> {
     let store = state.chat.store.clone();
     let run_id = state.next_id();
-    let planning = {
+    let selected_model = {
         let workspace = std::fs::canonicalize(&config.workspace)
             .unwrap_or_else(|_| PathBuf::from(&config.workspace));
         let workspace = workspace.to_string_lossy().into_owned();
@@ -58,7 +60,7 @@ pub(super) fn start_run(
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
-    let (view, start_seq, messages, access, plan_state) = {
+    let (view, start_seq, messages, access, plan_state, plan_turn) = {
         let mut live = state.chat.live();
         let confirming_plan = matches!(trigger, RunTrigger::Plan(_));
         if confirming_plan {
@@ -84,11 +86,14 @@ pub(super) fn start_run(
         if trigger == RunTrigger::Notice && plan.pending {
             return Err("A plan is waiting for review.".into());
         }
+        // A plan is under review, or the user typed `@arch`. Confirming a plan
+        // is an implementation run and also needs the model scope.
+        let plan_turn = plans_turn(trigger, plan.pending);
         let started = match trigger {
             RunTrigger::Plan(version) => {
                 store.begin_plan_run(session_id, &run_id, &turn, version, store::now_ms())?
             }
-            RunTrigger::User | RunTrigger::Notice => {
+            RunTrigger::User | RunTrigger::Arch | RunTrigger::Notice => {
                 store.begin_run(session_id, &run_id, &turn, store::now_ms())?
             }
         };
@@ -114,8 +119,16 @@ pub(super) fn start_run(
             },
         );
         let access = access_for(trigger, started.plan.pending);
-        (view, started.start_seq, messages, access, started.plan)
+        (
+            view,
+            started.start_seq,
+            messages,
+            access,
+            started.plan,
+            plan_turn,
+        )
     };
+    let planning = if plan_turn { selected_model } else { None };
 
     let ctx = RunContext {
         app: Some(app.clone()),
@@ -136,13 +149,13 @@ pub(super) fn start_run(
         planning,
         confirmed_plan: match trigger {
             RunTrigger::Plan(version) => Some(version),
-            RunTrigger::User | RunTrigger::Notice => None,
+            RunTrigger::User | RunTrigger::Arch | RunTrigger::Notice => None,
         },
         plan_validation: Arc::new(Mutex::new(None)),
         plan_details: Arc::new(Mutex::new(None)),
         next_plan_version: plan_state.latest.unwrap_or(0) + 1,
         plan_requires_validation: plan_state.requires_validation,
-        records_plan: trigger != RunTrigger::Notice,
+        records_plan: plan_turn,
     };
     let recovery_ctx = ctx.clone();
     let recovery_messages = messages.clone();
@@ -559,14 +572,24 @@ impl RunContext {
     }
 }
 
-/// A plain user turn starts read-only. A reviewed plan starts writable and can
-/// return to planning if the work grows beyond the approved scope.
+/// A plain user turn executes normally. `@arch` and plan revisions are
+/// planning-only; a reviewed plan starts writable and can return to planning if
+/// the work grows beyond the approved scope.
+fn plans_turn(trigger: RunTrigger, pending_plan: bool) -> bool {
+    matches!(trigger, RunTrigger::Arch | RunTrigger::Plan(_))
+        || (trigger == RunTrigger::User && pending_plan)
+}
+
 fn access_for(trigger: RunTrigger, pending_plan: bool) -> Arc<Access> {
     match trigger {
         RunTrigger::Plan(_) => Access::approved(),
         RunTrigger::Notice => Access::locked_read_only(),
-        RunTrigger::User if pending_plan => Access::locked_read_only(),
-        RunTrigger::User => Access::read_only(),
+        RunTrigger::Arch => Access::planning(),
+        // A follow-up on a plan under review keeps the turn read-only even
+        // without the mention, so revisions cannot edit before confirmation.
+        RunTrigger::User if pending_plan => Access::planning(),
+        // Every other user turn behaves like the normal execution flow.
+        RunTrigger::User => Access::execute(),
     }
 }
 
@@ -645,10 +668,16 @@ mod tests {
     }
 
     #[test]
-    fn only_user_turns_without_a_pending_plan_can_open_execution() {
+    fn plain_turns_execute_and_arch_turns_stay_read_only() {
+        assert!(!plans_turn(RunTrigger::User, false));
+        assert!(plans_turn(RunTrigger::Arch, false));
+        assert!(plans_turn(RunTrigger::User, true));
+        assert!(plans_turn(RunTrigger::Plan(1), false));
+        assert!(!plans_turn(RunTrigger::Notice, true));
+
         let access = access_for(RunTrigger::User, false);
         assert!(!access.is_locked());
-        assert_eq!(access.mode(), ToolAccess::ReadOnly);
+        assert_eq!(access.mode(), ToolAccess::Execute);
         assert_eq!(
             access.assess(Assessment {
                 intent: Intent::Implement,
@@ -657,9 +686,11 @@ mod tests {
             ToolAccess::Execute
         );
 
-        for (trigger, pending) in [(RunTrigger::Notice, false), (RunTrigger::User, true)] {
+        for (trigger, pending) in [(RunTrigger::Arch, false), (RunTrigger::User, true)] {
             let access = access_for(trigger, pending);
-            assert!(access.is_locked());
+            assert!(!access.is_locked());
+            assert!(access.planning_only());
+            assert_eq!(access.mode(), ToolAccess::ReadOnly);
             assert_eq!(
                 access.assess(Assessment {
                     intent: Intent::Implement,
@@ -667,7 +698,18 @@ mod tests {
                 }),
                 ToolAccess::ReadOnly
             );
+            assert!(access.assessment().is_some_and(Assessment::needs_plan));
         }
+
+        let notice = access_for(RunTrigger::Notice, false);
+        assert!(notice.is_locked());
+        assert_eq!(
+            notice.assess(Assessment {
+                intent: Intent::Implement,
+                impact: ArchitectureImpact::None,
+            }),
+            ToolAccess::ReadOnly
+        );
 
         let approved = access_for(RunTrigger::Plan(1), true);
         assert!(approved.is_locked());

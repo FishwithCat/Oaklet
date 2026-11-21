@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use super::input::{build_user_turn, session_title};
 use super::manual_compaction::{CompactionSlot, compact_session};
+use super::mentions;
 use super::run::{RunTrigger, start_run};
 use super::transcript::view_from_session;
 use super::{
@@ -113,10 +114,17 @@ pub async fn session_send(
     config.workspace = meta.workspace.clone();
 
     let text = text.trim().to_string();
+    // The user opts into architecture planning by typing the mention; the
+    // backend never infers it from the request.
+    let trigger = if mentions::has(&text, "arch") {
+        RunTrigger::Arch
+    } else {
+        RunTrigger::User
+    };
     let (message, display, attachment_names) =
         build_user_turn(&text, &attachments, &state.spill_root, &session_id)?;
     let title = if meta.turns == 0 {
-        let title = session_title(&text, &attachment_names);
+        let title = session_title(&mentions::strip(&text), &attachment_names);
         (!title.is_empty()).then_some(title)
     } else {
         None
@@ -133,7 +141,7 @@ pub async fn session_send(
         state.inner(),
         window.label(),
         &session_id,
-        RunTrigger::User,
+        trigger,
         config,
         turn,
         cancel,

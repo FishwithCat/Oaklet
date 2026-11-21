@@ -54,6 +54,10 @@ impl Tool for PresentPlan {
         ToolAccess::ReadOnly
     }
 
+    fn plan_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Submit the implementation plan for the review card: the objective, the natural-language code and model changes, ordered steps with expected results and verification, risks, and open questions. Call it once after validating the architecture draft, then reply briefly."
     }

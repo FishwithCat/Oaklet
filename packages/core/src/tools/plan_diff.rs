@@ -96,6 +96,10 @@ impl Tool for ValidateDiff {
         ToolAccess::ReadOnly
     }
 
+    fn plan_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &'static str {
         "Validate a complete native LikeC4 `diff` DSL draft against the selected architecture model. The backend adds it as a virtual source file and returns the model root, baseline sourceDigest, diff ID and summary, affected views, diagnostics, and overlap warnings. No workspace file is changed."
     }
@@ -709,7 +713,7 @@ mod tests {
         let mut ctx = ToolContext {
             workspace,
             cancel,
-            access: Access::read_only(),
+            access: Access::planning(),
             planning: None,
             plan_validation: None,
             plan_details: None,
@@ -746,7 +750,7 @@ mod tests {
         assert_eq!(stale["status"], "invalid", "{stale}");
         assert_eq!(stale["baselineChanged"], true);
 
-        ctx.access = Access::read_only();
+        ctx.access = Access::planning();
         query
             .execute(&ctx, json!({ "tool": "list-projects" }))
             .await

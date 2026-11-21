@@ -22,6 +22,13 @@ import {
   type Attachment,
 } from "./attachments";
 import {
+  activeMention,
+  insertMention,
+  mentionOptions,
+  type ActiveMention,
+  type MentionCommand,
+} from "./mentions";
+import {
   contextTier,
   countUpValue,
   formatContextLabel,
@@ -165,6 +172,8 @@ export function ChatComposer({
   const [helpOpen, setHelpOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [reading, setReading] = useState(false);
+  const [mention, setMention] = useState<ActiveMention | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
@@ -172,6 +181,9 @@ export function ChatComposer({
   const composingRef = useRef(false);
   const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
+  const options = mention ? mentionOptions(mention.query) : [];
+  const activeIndex =
+    options.length === 0 ? 0 : Math.min(mentionIndex, options.length - 1);
   activeTabIdRef.current = activeTabId;
 
   useEffect(() => {
@@ -252,6 +264,34 @@ export function ChatComposer({
     }
   }
 
+  function syncMention(text: string, caret: number | null) {
+    if (composingRef.current || caret === null) {
+      setMention(null);
+      return;
+    }
+    const next = activeMention(text, caret);
+    if (!next || mentionOptions(next.query).length === 0) {
+      setMention(null);
+      return;
+    }
+    setMention(next);
+    setMentionIndex(0);
+  }
+
+  function acceptMention(command: MentionCommand) {
+    if (!mention) return;
+    const inserted = insertMention(value, mention, command.name);
+    onChange(inserted.value);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (!element) return;
+      element.focus();
+      element.setSelectionRange(inserted.caret, inserted.caret);
+      resizeComposer();
+    });
+  }
+
   async function submit() {
     if (compacting || reading || submittingRef.current) return;
     submittingRef.current = true;
@@ -311,15 +351,59 @@ export function ChatComposer({
             {attachmentError}
           </div>
         )}
+        {mention && options.length > 0 && (
+          <div
+            className="mention-menu"
+            id="composer-mentions"
+            role="listbox"
+            aria-label="Commands"
+          >
+            {options.map((option, index) => (
+              <button
+                key={option.name}
+                type="button"
+                role="option"
+                id={`composer-mention-${option.name}`}
+                aria-selected={index === activeIndex}
+                className={`mention-option${
+                  index === activeIndex ? " active" : ""
+                }`}
+                // Keep the textarea focused so selecting does not blur first.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => acceptMention(option)}
+              >
+                <span className="mention-name">@{option.name}</span>
+                <span className="mention-description">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           rows={1}
           value={value}
           placeholder="Ask Oaklet to build, fix, or explain something..."
+          aria-autocomplete="list"
+          aria-controls={mention ? "composer-mentions" : undefined}
+          aria-expanded={mention !== null && options.length > 0}
+          aria-activedescendant={
+            mention && options.length > 0
+              ? `composer-mention-${options[activeIndex]?.name}`
+              : undefined
+          }
           onChange={(event) => {
             onChange(event.target.value);
             resizeComposer();
+            syncMention(event.target.value, event.target.selectionStart);
           }}
+          onSelect={(event) =>
+            syncMention(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+            )
+          }
           onPaste={pasteFiles}
           onCompositionStart={() => {
             composingRef.current = true;
@@ -333,8 +417,39 @@ export function ChatComposer({
           }}
           onBlur={() => {
             composingRef.current = false;
+            setMention(null);
           }}
           onKeyDown={(event) => {
+            if (
+              mention &&
+              options.length > 0 &&
+              !event.nativeEvent.isComposing &&
+              !composingRef.current
+            ) {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const step = event.key === "ArrowDown" ? 1 : -1;
+                setMentionIndex(
+                  (index) =>
+                    (index + step + options.length) % options.length,
+                );
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setMention(null);
+                return;
+              }
+              if (
+                event.key === "Enter" ||
+                (event.key === "Tab" && !event.shiftKey)
+              ) {
+                event.preventDefault();
+                const option = options[activeIndex] ?? options[0];
+                if (option) acceptMention(option);
+                return;
+              }
+            }
             if (!isSendEnter(event.nativeEvent, composingRef.current)) return;
             event.preventDefault();
             void submit();

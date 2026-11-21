@@ -8,6 +8,7 @@
 pub(crate) mod commands;
 mod input;
 mod manual_compaction;
+mod mentions;
 mod notices;
 mod run;
 mod transcript;
