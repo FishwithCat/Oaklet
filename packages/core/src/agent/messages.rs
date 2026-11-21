@@ -143,7 +143,9 @@ pub(super) fn system_prompt(
             "The user approved plan version {version} from the plan card. This run may edit from \
              the first step: implement the approved plan and any architecture diff included in the confirmation, and do not \
              re-open planning for that same change. If implementation reveals a new architectural \
-             change beyond the approved plan, stop writing and report it."
+             change beyond the approved plan, stop writing and report it using assess_change \
+             with intent=revise and architecture_impact=possible or confirmed. List any changes \
+             already made, then prepare the remaining work for a new review."
         ));
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());

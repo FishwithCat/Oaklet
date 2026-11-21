@@ -244,6 +244,7 @@ struct AccessState {
     assessment: Option<Assessment>,
     plan_baseline: Option<String>,
     plan_baseline_stale: bool,
+    execution_revoked: bool,
 }
 
 impl Access {
@@ -255,6 +256,7 @@ impl Access {
                 assessment: None,
                 plan_baseline: None,
                 plan_baseline_stale: false,
+                execution_revoked: false,
             }),
         })
     }
@@ -274,8 +276,8 @@ impl Access {
         Self::new(ToolAccess::Execute, false)
     }
 
-    /// Full access for a run the user confirmed from a plan card. It is locked
-    /// so a later assessment can never close the tools the confirmation opened.
+    /// Begin implementing a reviewed plan. A new planning assessment can
+    /// revoke execution, which then requires another reviewed plan.
     pub fn approved() -> Arc<Self> {
         Self::new(ToolAccess::Execute, true)
     }
@@ -309,14 +311,23 @@ impl Access {
     /// Record the model's classification and return the mode it activates.
     pub fn assess(&self, assessment: Assessment) -> ToolAccess {
         let mut state = self.lock();
+        if state.execution_revoked {
+            return state.mode;
+        }
         state.assessment = Some(assessment);
-        state.mode = if (state.mode == ToolAccess::Execute && state.locked)
-            || (!state.locked && assessment.opens_execution())
-        {
-            ToolAccess::Execute
-        } else {
-            ToolAccess::ReadOnly
-        };
+        if state.mode == ToolAccess::Execute && assessment.needs_plan() {
+            state.mode = ToolAccess::ReadOnly;
+            state.locked = true;
+            state.execution_revoked = true;
+            state.plan_baseline = None;
+            state.plan_baseline_stale = false;
+        } else if !state.locked {
+            state.mode = if assessment.opens_execution() {
+                ToolAccess::Execute
+            } else {
+                ToolAccess::ReadOnly
+            };
+        }
         state.mode
     }
 
@@ -476,11 +487,10 @@ pub struct ToolContext {
 impl ToolContext {
     /// Remember the latest draft validation so run finish can attach it to the
     /// plan event even after compaction drops the tool message from history.
-    pub fn record_plan_validation(&self, validation: &crate::store::PlanValidation) {
-        let Some(slot) = &self.plan_validation else {
-            return;
-        };
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(validation.clone());
+    fn record_plan_validation(&self, validation: Option<&crate::store::PlanValidation>) {
+        if let Some(slot) = &self.plan_validation {
+            *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = validation.cloned();
+        }
         // A new draft supersedes review content the agent wrote for an older one.
         if let Some(details) = &self.plan_details {
             *details
@@ -1386,6 +1396,37 @@ mod tests {
             .await;
         assert!(!outcome.ok);
         assert!(outcome.output.contains("waiting for review"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn newly_discovered_architecture_work_revokes_writes_for_an_approved_run() {
+        let (mut ctx, root, _handle) = context("approved-scope-change");
+        ctx.access = Access::approved();
+        let mut registry = ToolRegistry::new();
+        registry.set_access(ctx.access.clone());
+        let assessment = registry
+            .execute(
+                &ctx,
+                &Allow,
+                "assess_change",
+                "reassess",
+                json!({ "intent": "revise", "architecture_impact": "confirmed" }),
+            )
+            .await;
+        assert!(assessment.ok);
+        assert!(assessment.output.contains("Execution was paused"));
+        let write = registry
+            .execute(
+                &ctx,
+                &Allow,
+                "write_file",
+                "write",
+                json!({ "path": "out-of-scope.txt", "content": "denied" }),
+            )
+            .await;
+        assert!(!write.ok);
+        assert!(!root.join("out-of-scope.txt").exists());
         std::fs::remove_dir_all(root).ok();
     }
 

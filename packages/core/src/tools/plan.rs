@@ -80,12 +80,17 @@ impl Tool for AssessChange {
                 intent: arguments.intent,
                 impact: arguments.architecture_impact,
             };
+            let previous = ctx.access.mode();
             let mode = ctx.access.assess(assessment);
             let text = if mode == ToolAccess::Execute {
-                "Classification recorded. This turn is a direct implementation with no architectural \
-                 impact, so write, patch, shell, and background-job tools are open. If a change \
-                 turns out to add or remove architecture elements or dependencies, call \
+                "Classification recorded. You may use write, patch, shell, and background-job tools. \
+                 If implementation reveals architecture work outside the current authorization, call \
                  assess_change again before the next write."
+                    .to_string()
+            } else if previous == ToolAccess::Execute && assessment.needs_plan() {
+                ctx.record_plan_validation(None);
+                "Execution was paused. List the changes already made, then investigate and prepare \
+                 a new plan and validated architecture draft for the remaining work. Wait for review."
                     .to_string()
             } else if ctx.access.is_locked() {
                 "Classification recorded. This turn stays read-only because a plan is already \

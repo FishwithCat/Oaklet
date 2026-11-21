@@ -559,8 +559,8 @@ impl RunContext {
     }
 }
 
-/// Background notices and reviewed plans lock the gate; a plain user turn only
-/// starts read-only so `assess_change` can classify it.
+/// A plain user turn starts read-only. A reviewed plan starts writable and can
+/// return to planning if the work grows beyond the approved scope.
 fn access_for(trigger: RunTrigger, pending_plan: bool) -> Arc<Access> {
     match trigger {
         RunTrigger::Plan(_) => Access::approved(),
@@ -677,7 +677,15 @@ mod tests {
                 intent: Intent::Implement,
                 impact: ArchitectureImpact::Confirmed,
             }),
-            ToolAccess::Execute
+            ToolAccess::ReadOnly
         );
+        assert_eq!(
+            approved.assess(Assessment {
+                intent: Intent::Implement,
+                impact: ArchitectureImpact::None
+            }),
+            ToolAccess::ReadOnly
+        );
+        assert!(approved.assessment().is_some_and(Assessment::needs_plan));
     }
 }

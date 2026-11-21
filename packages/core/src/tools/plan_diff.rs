@@ -389,7 +389,7 @@ fn unavailable(
 }
 
 fn respond(ctx: &ToolContext, plan: PlanValidation, baseline_changed: bool) -> ToolOutput {
-    ctx.record_plan_validation(&plan);
+    ctx.record_plan_validation(Some(&plan));
     let text = serde_json::to_string_pretty(&Validation {
         plan,
         baseline_changed,
