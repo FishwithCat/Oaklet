@@ -12,7 +12,7 @@ For how to use the app, see [README.md](README.md).
 
 ## Requirements
 
-- Node.js 22.12 or newer; the architecture helper needs 22.22.3 or newer
+- Node.js 22.12 or newer; the architecture helper needs 22.23.3 or newer
 - pnpm 10
 - A Rust toolchain and the Tauri 2 prerequisites for your platform
 - Git, for the commit hooks and source-control view

@@ -332,7 +332,7 @@ pub async fn load(
             base,
             cached_match,
             Vec::new(),
-            Some("Node.js was not found. Install Node.js 22.22.3 or newer.".into()),
+            Some("Node.js was not found. Install Node.js 22.23.3 or newer.".into()),
         ));
     };
     let Some(helper) = helper else {

@@ -244,7 +244,7 @@ export function ArchitectureStatus({
         <h2>LikeC4 preview is unavailable</h2>
         <p>{discovery.runtime.message}</p>
         <p className="arch-small">
-          Install Node.js 22.22.3 or newer, or point OAKLET_NODE at it, then
+          Install Node.js 22.23.3 or newer, or point OAKLET_NODE at it, then
           refresh.
         </p>
         <button type="button" onClick={refresh}>

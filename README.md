@@ -34,7 +34,7 @@ Or clear the quarantine flag from Terminal:
 xattr -dr com.apple.quarantine /Applications/Oaklet.app
 ```
 
-The Architecture view and the `likec4_mcp` tool need Node.js 22.22.3 or newer.
+The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3 or newer.
 Oaklet finds it on `PATH`, in common install locations, or via `OAKLET_NODE`;
 the rest of Oaklet works without it.
 

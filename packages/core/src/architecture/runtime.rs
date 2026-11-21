@@ -121,7 +121,7 @@ fn node_supported(version: &str) -> bool {
     let major: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
     let minor: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
     let patch: u64 = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
-    (major, minor, patch) >= (22, 22, 3)
+    (major, minor, patch) >= (22, 23, 3)
 }
 
 pub(super) fn helper_ready(helper: &Path) -> bool {
@@ -180,7 +180,7 @@ pub(super) fn runtime_status_for(node: Option<&Path>, helper: Option<&Path>) -> 
             node_version: None,
             helper,
             message:
-                "Node.js was not found. Install Node.js 22.22.3 or newer, or set OAKLET_NODE to the executable."
+                "Node.js was not found. Install Node.js 22.23.3 or newer, or set OAKLET_NODE to the executable."
                     .into(),
         };
     };
@@ -199,7 +199,7 @@ pub(super) fn runtime_status_for(node: Option<&Path>, helper: Option<&Path>) -> 
             node: Some(node.to_string_lossy().into_owned()),
             node_version: Some(version.clone()),
             helper,
-            message: format!("Node.js {version} is too old. Install Node.js 22.22.3 or newer."),
+            message: format!("Node.js {version} is too old. Install Node.js 22.23.3 or newer."),
         };
     }
     let Some(helper) = helper else {
@@ -239,10 +239,11 @@ mod tests {
 
     #[test]
     fn node_version_gate_matches_the_helper_requirement() {
-        assert!(node_supported("v22.22.3"));
-        assert!(node_supported("v22.23.0"));
+        assert!(node_supported("v22.23.3"));
+        assert!(node_supported("v22.23.4"));
         assert!(node_supported("v26.13.0"));
-        assert!(!node_supported("v22.22.2"));
+        assert!(!node_supported("v22.23.2"));
+        assert!(!node_supported("v22.22.3"));
         assert!(!node_supported("v22.12.0"));
     }
 }
