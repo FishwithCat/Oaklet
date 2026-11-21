@@ -4,6 +4,10 @@ import { filterCompareView } from "@likec4/core/compute-view";
 import { LikeC4Model } from "@likec4/core/model";
 import type { LayoutedView } from "@likec4/core/types";
 import { LikeC4ModelProvider, LikeC4View } from "@likec4/diagram";
+import {
+  FullscreenExitRegular,
+  FullscreenRegular,
+} from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
 import { HIDDEN_DIAGRAM_CHROME } from "../../shared/likec4-chrome";
 import { useResolvedTheme } from "../settings/theme";
@@ -24,6 +28,33 @@ type Prepared =
   | { kind: "ready"; model: ReturnType<typeof LikeC4Model.create>; viewId: string }
   | { kind: "error"; error: string };
 
+function ModeTabs({
+  mode,
+  onSelect,
+  className = "plan-compare-tabs",
+}: {
+  mode: CompareMode;
+  onSelect: (mode: CompareMode) => void;
+  className?: string;
+}) {
+  return (
+    <div className={className} role="tablist" aria-label="Model state">
+      {COMPARE_MODES.map((item) => (
+        <button
+          type="button"
+          key={item.id}
+          role="tab"
+          aria-selected={mode === item.id}
+          className={mode === item.id ? "active" : ""}
+          onClick={() => onSelect(item.id)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function PlanCompare({
   plan,
   onLoad,
@@ -36,10 +67,20 @@ export function PlanCompare({
   const [mode, setMode] = useState<CompareMode>("changes");
   const [loads, setLoads] = useState<Record<string, Load>>({});
   const [attempt, setAttempt] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const requested = useRef(new Set<string>());
   const loadRef = useRef(onLoad);
   const theme = useResolvedTheme();
   const version = plan.version;
+
+  useEffect(() => {
+    if (!expanded) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setExpanded(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
 
   useEffect(() => {
     loadRef.current = onLoad;
@@ -143,20 +184,7 @@ export function PlanCompare({
         )}
       </div>
 
-      <div className="plan-compare-tabs" role="tablist" aria-label="Model state">
-        {COMPARE_MODES.map((item) => (
-          <button
-            type="button"
-            key={item.id}
-            role="tab"
-            aria-selected={mode === item.id}
-            className={mode === item.id ? "active" : ""}
-            onClick={() => setMode(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      <ModeTabs mode={mode} onSelect={setMode} />
 
       <div className="plan-compare-legend" aria-label="Change legend">
         <span className="added">+ Added</span>
@@ -181,57 +209,93 @@ export function PlanCompare({
         <p className="plan-compare-error">{prepared.error}</p>
       )}
       {prepared?.kind === "ready" && (
-        <div className="plan-compare-canvas">
-          <LikeC4ModelProvider likec4model={prepared.model}>
-            <LikeC4View
-              key={`${version}:${prepared.viewId}:${mode}`}
-              viewId={prepared.viewId}
-              layoutType="auto"
-              colorScheme={theme}
-              background="dots"
-              pannable
-              zoomable
-              controls
-              fitView
-              keepAspectRatio={false}
-              injectFontCss={false}
-              browser={false}
-              enableElementDetails={false}
-              enableRelationshipDetails={false}
-              enableNotes={false}
-              className="plan-compare-diagram"
+        <>
+          {expanded && (
+            <div
+              className="plan-compare-backdrop"
+              onClick={() => setExpanded(false)}
+            />
+          )}
+          <div
+            className={`plan-compare-canvas${expanded ? " expanded" : ""}`}
+            role={expanded ? "dialog" : undefined}
+            aria-modal={expanded ? true : undefined}
+            aria-label={expanded ? "Expanded architecture comparison" : undefined}
+          >
+            {expanded && (
+              <ModeTabs
+                mode={mode}
+                onSelect={setMode}
+                className="plan-compare-tabs plan-compare-modes"
+              />
+            )}
+            <button
+              type="button"
+              className="plan-compare-expand"
+              onClick={() => setExpanded((value) => !value)}
+              aria-label={
+                expanded ? "Collapse comparison" : "Expand comparison"
+              }
+              title={expanded ? "Collapse comparison" : "Expand comparison"}
             >
-              <style>{`
-                ${HIDDEN_DIAGRAM_CHROME}
-                .react-flow__node.likec4-diff-added::after,
-                .react-flow__node.likec4-diff-modified::after,
-                .react-flow__node.likec4-diff-removed::after {
-                  position: absolute;
-                  top: -9px;
-                  left: 8px;
-                  padding: 1px 5px;
-                  border-radius: 999px;
-                  color: #fff;
-                  font: 600 9px/1.4 var(--fonts-body, sans-serif);
-                  letter-spacing: 0.2px;
-                  pointer-events: none;
-                }
-                .react-flow__node.likec4-diff-added::after {
-                  content: "+ Added";
-                  background: #2f9e44;
-                }
-                .react-flow__node.likec4-diff-modified::after {
-                  content: "~ Modified";
-                  background: #b7791f;
-                }
-                .react-flow__node.likec4-diff-removed::after {
-                  content: "− Removed";
-                  background: #c92a2a;
-                }
-              `}</style>
-            </LikeC4View>
-          </LikeC4ModelProvider>
-        </div>
+              {expanded ? (
+                <FullscreenExitRegular size={12} />
+              ) : (
+                <FullscreenRegular size={12} />
+              )}
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+            <LikeC4ModelProvider likec4model={prepared.model}>
+              <LikeC4View
+                key={`${version}:${prepared.viewId}:${mode}`}
+                viewId={prepared.viewId}
+                layoutType="auto"
+                colorScheme={theme}
+                background="dots"
+                pannable
+                zoomable
+                controls
+                fitView
+                keepAspectRatio={false}
+                injectFontCss={false}
+                browser={false}
+                enableElementDetails={false}
+                enableRelationshipDetails={false}
+                enableNotes={false}
+                className="plan-compare-diagram"
+              >
+                <style>{`
+                  ${HIDDEN_DIAGRAM_CHROME}
+                  .react-flow__node.likec4-diff-added::after,
+                  .react-flow__node.likec4-diff-modified::after,
+                  .react-flow__node.likec4-diff-removed::after {
+                    position: absolute;
+                    top: -9px;
+                    left: 8px;
+                    padding: 1px 5px;
+                    border-radius: 999px;
+                    color: #fff;
+                    font: 600 9px/1.4 var(--fonts-body, sans-serif);
+                    letter-spacing: 0.2px;
+                    pointer-events: none;
+                  }
+                  .react-flow__node.likec4-diff-added::after {
+                    content: "+ Added";
+                    background: #2f9e44;
+                  }
+                  .react-flow__node.likec4-diff-modified::after {
+                    content: "~ Modified";
+                    background: #b7791f;
+                  }
+                  .react-flow__node.likec4-diff-removed::after {
+                    content: "− Removed";
+                    background: #c92a2a;
+                  }
+                `}</style>
+              </LikeC4View>
+            </LikeC4ModelProvider>
+          </div>
+        </>
       )}
 
     </section>
