@@ -102,6 +102,7 @@ pub(super) fn system_prompt(
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
         "Paths are relative to the workspace; absolute paths inside it also work. Shell commands start in the workspace root, so never prefix them with cd <workspace>.".into(),
         "In your reply, name files by their full workspace-relative path, such as `crates/acorn-core/src/ontology/view.rs`. Chat file links resolve from the workspace root, so a module-relative shorthand like `ontology/view.rs` will not open.".into(),
+        "Do not write code comments, including doc comments. Make names and structure self-explanatory instead.".into(),
     ];
     rules.extend(tools.guidance().into_iter().map(str::to_string));
     rules.extend(
@@ -251,6 +252,13 @@ mod tests {
         let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("full workspace-relative path"));
         assert!(prompt.contains("module-relative shorthand"));
+    }
+
+    #[test]
+    fn system_prompt_forbids_code_comments() {
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        assert!(prompt.contains("Do not write code comments"));
+        assert!(prompt.contains("including doc comments"));
     }
 
     #[test]
