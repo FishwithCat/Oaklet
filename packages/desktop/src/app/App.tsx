@@ -383,15 +383,17 @@ function App() {
           }}
         />
 
+        {/* Workspace-scoped views remount when the workspace changes. Their
+            keys must stay unique because they are siblings. */}
         <Terminal
           ref={terminalRef}
-          key={workspace}
+          key={`terminal:${workspace}`}
           active={view === "terminal"}
           onClose={() => setView("chat")}
         />
 
         <SourceControl
-          key={workspace}
+          key={`source-control:${workspace}`}
           active={view === "git"}
           changes={changes}
           changesError={changesError}
@@ -402,7 +404,7 @@ function App() {
         {filesOpened && (
           <Files
             ref={filesRef}
-            key={workspace}
+            key={`files:${workspace}`}
             active={view === "files"}
             workspace={workspace}
             refreshToken={workspaceTick}
@@ -419,7 +421,7 @@ function App() {
             }
           >
             <Architecture
-              key={workspace}
+              key={`architecture:${workspace}`}
               active={view === "architecture"}
               workspace={workspace}
               refreshToken={workspaceTick}
@@ -461,7 +463,7 @@ function App() {
 
       {skillsOpen && (
         <SkillsPopup
-          key={workspace}
+          key={`skills:${workspace}`}
           onClose={() => setSkillsOpen(false)}
         />
       )}
