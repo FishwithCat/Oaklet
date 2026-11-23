@@ -68,6 +68,16 @@ export function Sidebar({
       </button>
       <button
         type="button"
+        className={`ghost icon-button files-toggle${view === "files" ? " active" : ""}`}
+        onClick={() => onSelectView("files")}
+        aria-label="Files"
+        aria-pressed={view === "files"}
+        title="Files"
+      >
+        <FolderTreeRegular size={18} />
+      </button>
+      <button
+        type="button"
         className={`ghost icon-button sc-toggle${
           view === "git" ? " active" : ""
         }`}
@@ -102,16 +112,6 @@ export function Sidebar({
         title="Architecture"
       >
         <LighthouseRegular size={18} />
-      </button>
-      <button
-        type="button"
-        className={`ghost icon-button files-toggle${view === "files" ? " active" : ""}`}
-        onClick={() => onSelectView("files")}
-        aria-label="Files"
-        aria-pressed={view === "files"}
-        title="Files"
-      >
-        <FolderTreeRegular size={18} />
       </button>
       <div className="sidebar-foot">
         <button
