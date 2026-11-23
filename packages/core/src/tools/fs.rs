@@ -6,6 +6,7 @@ use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::comments;
 use super::diff::{FileDiff, compute_diffs};
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
@@ -300,12 +301,28 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         return Err(ToolError::Failed("That path is a directory.".into()));
     }
     let existed = path.is_file();
-    let before = existed
-        .then(|| std::fs::read_to_string(&path).ok())
-        .flatten();
+    let display = ctx.workspace.relative(&path).display().to_string();
+    let before = if existed {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(error) if comments::checks_path(&display) => {
+                return Err(ToolError::Failed(format!(
+                    "Cannot read {display} as UTF-8 text before writing: {error}"
+                )));
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    comments::refuse_new_comments(
+        &display,
+        before.as_deref().map(|text| (display.as_str(), text)),
+        &args.content,
+    )
+    .map_err(ToolError::Failed)?;
     write_atomic(&path, &args.content, false)
         .map_err(|error| format!("Cannot write file: {error}"))?;
-    let display = ctx.workspace.relative(&path).display().to_string();
     let diffs = if existed && before.is_none() {
         Vec::new()
     } else {
@@ -424,8 +441,10 @@ fn edit_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     } else {
         text.replacen(args.old_string.as_str(), &args.new_string, 1)
     };
-    write_atomic(&path, &updated, false).map_err(|error| format!("Cannot write file: {error}"))?;
     let display = ctx.workspace.relative(&path).display().to_string();
+    comments::refuse_new_comments(&display, Some((&display, &text)), &updated)
+        .map_err(ToolError::Failed)?;
+    write_atomic(&path, &updated, false).map_err(|error| format!("Cannot write file: {error}"))?;
     let diffs = compute_diffs(&display, Some(&text), &updated);
     Ok(ToolOutput::with_diffs(
         format!(
@@ -596,6 +615,86 @@ mod tests {
             std::fs::read_to_string(root.join("notes.txt")).unwrap(),
             "x gamma x"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_new_comments_in_code_files() {
+        let (ctx, root, _handle) = context("comments");
+        let refused = write_file(
+            &ctx,
+            json!({ "path": "src/main.rs", "content": "// entry point\nfn main() {}\n" }),
+        );
+        let message = refused.unwrap_err().to_string();
+        assert!(message.contains("src/main.rs"));
+        assert!(message.contains("New code comments are not allowed"));
+        assert!(message.contains("// entry point"));
+        assert!(!root.join("src/main.rs").exists());
+
+        write_file(
+            &ctx,
+            json!({ "path": "notes.md", "content": "# Notes\n\n- item\n" }),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn allows_existing_comments_and_refuses_added_ones() {
+        let (ctx, root, _handle) = context("comments-existing");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "// kept\npub fn value() -> u8 { 1 }\n",
+        )
+        .unwrap();
+
+        write_file(
+            &ctx,
+            json!({ "path": "src/lib.rs", "content": "// kept\npub fn value() -> u8 { 2 }\n" }),
+        )
+        .unwrap();
+
+        let refused = edit_file(
+            &ctx,
+            json!({ "path": "src/lib.rs", "old_string": "pub fn value", "new_string": "// explain\npub fn value" }),
+        );
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .contains("New code comments are not allowed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "// kept\npub fn value() -> u8 { 2 }\n"
+        );
+
+        edit_file(
+            &ctx,
+            json!({ "path": "src/lib.rs", "old_string": "{ 2 }", "new_string": "{ 3 }" }),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "// kept\npub fn value() -> u8 { 3 }\n"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn does_not_overwrite_non_utf8_source_files() {
+        let (ctx, root, _handle) = context("non-utf8-source");
+        let path = root.join("main.rs");
+        std::fs::write(&path, [0xff]).unwrap();
+        let error = write_file(
+            &ctx,
+            json!({ "path": "main.rs", "content": "// entry point\nfn main() {}\n" }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Cannot read main.rs as UTF-8"), "{error}");
+        assert_eq!(std::fs::read(path).unwrap(), [0xff]);
         std::fs::remove_dir_all(&root).ok();
     }
 

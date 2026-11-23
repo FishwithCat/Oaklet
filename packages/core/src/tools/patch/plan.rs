@@ -207,6 +207,11 @@ impl Preflight {
             PatchOperation::Add { content, .. } => {
                 match self.state(&operation.source, &operation.source_display)? {
                     Simulated::Missing => {
+                        crate::tools::comments::refuse_new_comments(
+                            &operation.source_display,
+                            None,
+                            content,
+                        )?;
                         self.states
                             .insert(operation.source.clone(), Simulated::File(content.clone()));
                         Ok(())
@@ -260,6 +265,11 @@ impl Preflight {
                 };
                 let after = apply_hunks(&before, hunks)
                     .map_err(|failure| mismatch_message(&operation.source_display, &failure))?;
+                crate::tools::comments::refuse_new_comments(
+                    &operation.source_display,
+                    Some((&operation.source_display, &before)),
+                    &after,
+                )?;
                 self.states
                     .insert(operation.source.clone(), Simulated::File(after));
                 Ok(())
@@ -310,6 +320,11 @@ impl Preflight {
                 }
                 let after = apply_hunks(&before, hunks)
                     .map_err(|failure| mismatch_message(&operation.source_display, &failure))?;
+                crate::tools::comments::refuse_new_comments(
+                    destination_display,
+                    Some((&operation.source_display, &before)),
+                    &after,
+                )?;
                 self.states
                     .insert(destination.clone(), Simulated::File(after));
                 self.states

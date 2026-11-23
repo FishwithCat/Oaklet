@@ -346,6 +346,78 @@ fn refuses_to_add_an_existing_file() {
 }
 
 #[test]
+fn refuses_comments_added_by_a_patch() {
+    let (ctx, root, _handle) = context("patch-comments");
+    let error = run(
+        &ctx,
+        "*** Begin Patch\n*** Add File: src/main.rs\n+// entry point\n+fn main() {}\n*** End Patch",
+    )
+    .unwrap_err();
+    assert!(error.contains("src/main.rs"));
+    assert!(error.contains("New code comments are not allowed"));
+    assert!(!root.join("src/main.rs").exists());
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// kept\npub fn value() -> u8 { 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("other.txt"), "before\n").unwrap();
+    let error = run(
+        &ctx,
+        "\
+*** Begin Patch
+*** Update File: other.txt
+@@
+-before
++after
+*** Update File: src/lib.rs
+@@
++// explain
+ pub fn value() -> u8 { 1 }
+*** End Patch",
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Patch rejected before any change"),
+        "{error}"
+    );
+    assert!(error.contains("line 2: // explain"), "{error}");
+    assert_eq!(text(root.join("other.txt")), "before\n");
+    assert_eq!(
+        text(root.join("src/lib.rs")),
+        "// kept\npub fn value() -> u8 { 1 }\n"
+    );
+
+    run(
+        &ctx,
+        "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-pub fn value() -> u8 { 1 }\n+pub fn value() -> u8 { 2 }\n*** End Patch",
+    )
+    .unwrap();
+    assert_eq!(
+        text(root.join("src/lib.rs")),
+        "// kept\npub fn value() -> u8 { 2 }\n"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn keeps_comments_when_a_patch_moves_a_file() {
+    let (ctx, root, _handle) = context("patch-move-comments");
+    std::fs::write(root.join("a.rs"), "// kept\nfn run() {}\n").unwrap();
+
+    run(
+        &ctx,
+        "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-fn run() {}\n+fn run() { stop(); }\n*** End Patch",
+    )
+    .unwrap();
+    assert!(!root.join("a.rs").exists());
+    assert_eq!(text(root.join("b.rs")), "// kept\nfn run() { stop(); }\n");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn empty_patch_is_a_no_op() {
     let (ctx, root, _handle) = context("patch-empty");
     assert_eq!(
