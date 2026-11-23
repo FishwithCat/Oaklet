@@ -43,16 +43,7 @@ export type ChatComposerHandle = {
   focus: () => void;
 };
 
-/** Count-up digits: the context size eases to its new value instead of jumping. */
-function UsageLabel({
-  used,
-  limit,
-  step,
-}: {
-  used: number;
-  limit: number;
-  step: StepUsage | null;
-}) {
+function UsageLabel({ used, limit }: { used: number; limit: number }) {
   const [shown, setShown] = useState(used);
   const shownRef = useRef(used);
 
@@ -76,7 +67,7 @@ function UsageLabel({
     return () => cancelAnimationFrame(frame);
   }, [used]);
 
-  return <>{formatContextLabel(shown, limit, step)}</>;
+  return <>{formatContextLabel(shown, limit)}</>;
 }
 
 function ContextGauge({
@@ -473,14 +464,13 @@ export function ChatComposer({
                   title={
                     stepUsage
                       ? formatRequestTitle(stepUsage)
-                      : "Current context; the cache share appears after the next reply"
+                      : "Current context"
                   }
                 >
                   <UsageLabel
                     key={activeTabId}
                     used={context.used}
                     limit={context.window}
-                    step={stepUsage}
                   />
                 </span>
               )}

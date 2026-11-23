@@ -97,15 +97,8 @@ export function formatContextUsage(used: number, window: number): string {
   return `${formatContextPercent(used, window)} (${formatTokens(used)}/${formatTokens(window)})`;
 }
 
-/** Composer label: current context size plus the last request's cache share. */
-export function formatContextLabel(
-  used: number,
-  window: number,
-  step: StepUsage | null,
-): string {
-  const size = `${formatTokens(used)}/${formatTokens(window)}`;
-  if (!step || step.cacheHitTokens + step.cacheMissTokens <= 0) return size;
-  return `${size} (${formatCacheHitRate(step)} cached)`;
+export function formatContextLabel(used: number, window: number): string {
+  return `${formatTokens(used)}/${formatTokens(window)}`;
 }
 
 /** Hover detail for the label: how the last model request was billed. */

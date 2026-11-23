@@ -144,7 +144,7 @@ test("the gauge tooltip pairs the percent with compact token counts", () => {
   assert.equal(formatTokens(1_572_864), "1.5M");
 });
 
-test("the context label reports the window size and the last request's cache", () => {
+test("the context label reports the context size against the window", () => {
   const usage = {
     promptTokens: 1_400_000,
     completionTokens: 48_000,
@@ -163,16 +163,8 @@ test("the context label reports the window size and the last request's cache", (
   assert.equal(formatUsageTokens(1_218_000), "1.2M");
   assert.equal(formatUsageTokens(48_000), "48k");
   assert.equal(formatUsageTokens(999), "999");
-  assert.equal(formatContextLabel(41_398, 262_144, step), "40k/256k (95% cached)");
-  assert.equal(formatContextLabel(41_398, 262_144, null), "40k/256k");
-  assert.equal(
-    formatContextLabel(41_398, 262_144, {
-      ...step,
-      cacheHitTokens: 0,
-      cacheMissTokens: 0,
-    }),
-    "40k/256k",
-  );
+  assert.equal(formatContextLabel(41_398, 262_144), "40k/256k");
+  assert.equal(formatContextLabel(999, 262_144), "999/256k");
   assert.equal(
     formatRequestTitle(step),
     "last request · cache 95% · 38k/40k prompt · 900 completion",
