@@ -5,7 +5,7 @@ use crate::chat::{RunHandle, test_support::state};
 use crate::compaction::test_support::user;
 use crate::store::NewUserTurn;
 use crate::tools::CancelHandle;
-use crate::tools::{ArchitectureImpact, Assessment, Intent};
+use crate::tools::{ArchitectureImpact, Assessment, Intent, ProcessOutcome};
 
 #[test]
 fn repairs_pending_events_for_unanswered_tool_calls() {
@@ -192,6 +192,53 @@ async fn a_finished_run_saves_the_usage_accumulated_across_steps() {
     ctx.finish_done(vec![request]).await;
 
     assert!(store.get_session("s").unwrap().is_some());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn a_command_outcome_is_saved_with_the_tool_message() {
+    let (state, store, root) = state(AppConfig::default());
+    store.create_session("s", "/tmp", 1).unwrap();
+    let request = user("run the tests");
+    let started = store
+        .begin_run(
+            "s",
+            "r",
+            &NewUserTurn {
+                message: request.clone(),
+                display: None,
+                title: None,
+            },
+            2,
+        )
+        .unwrap();
+    let ctx = RunContext::without_window(state, "s", "r", started);
+    ctx.tool_start("c1", "run_command", "cargo test", &[]);
+    ctx.tool_result(
+        "c1",
+        false,
+        "Exit code 101.\nfailed",
+        &[],
+        Some(&ProcessOutcome::Exited { code: 101 }),
+    );
+    ctx.finish_done(vec![request]).await;
+
+    let saved = store.get_session("s").unwrap().unwrap();
+    let display = saved
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            crate::store::EventPayload::Message { message, display }
+                if message["tool_call_id"] == "c1" =>
+            {
+                display.as_ref()
+            }
+            _ => None,
+        })
+        .expect("the tool result should be saved");
+    assert_eq!(display["ok"], false);
+    assert_eq!(display["outcome"]["kind"], "exited");
+    assert_eq!(display["outcome"]["code"], 101);
     std::fs::remove_dir_all(root).ok();
 }
 

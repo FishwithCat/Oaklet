@@ -18,6 +18,8 @@ import { DiffCard } from "./DiffCard";
 import { diffTotals } from "./tool-diff";
 import {
   isActive,
+  outcomeDetail,
+  outcomeLabel,
   primaryCategory,
   processTitle,
   processDuration,
@@ -216,6 +218,8 @@ function ToolRow({
       : item.status === "error"
         ? "Failed"
         : "";
+  const outcome = outcomeLabel(item.outcome);
+  const detail = outcomeDetail(item.outcome);
 
   useEffect(() => {
     if (item.status === "error") setOpen(true);
@@ -236,9 +240,17 @@ function ToolRow({
         summary={item.summary}
         live={running}
         open={open}
-        expandable={hasOutput || hasDiff}
+        expandable={hasOutput || hasDiff || Boolean(detail)}
         trailing={
           <>
+            {outcome && (
+              <span
+                className="row-outcome"
+                data-tone={item.status === "error" ? "error" : "muted"}
+              >
+                {outcome}
+              </span>
+            )}
             {item.name === "run_command" && <ExecutionTime item={item} />}
             {trailing}
           </>
@@ -250,9 +262,10 @@ function ToolRow({
         <Approval item={item} onApproval={onApproval} />
       )}
       {open && hasDiff && <DiffCard diffs={diffs} />}
-      {open && !hasDiff && item.output && (
+      {open && !hasDiff && (item.output || detail) && (
         <div className="tool-body">
-          <pre>{item.output}</pre>
+          {detail && <p className="tool-outcome-detail">{detail}</p>}
+          {item.output && <pre>{item.output}</pre>}
         </div>
       )}
     </div>

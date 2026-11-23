@@ -271,6 +271,35 @@ test("applyToolResult records success or failure and the elapsed time", () => {
   assert.equal(failed.items[0].durationMs, 750);
 });
 
+test("applyToolResult carries a process outcome and clears it for older rows", () => {
+  const started = applyToolStart(
+    session(),
+    { runId: "run-1", id: "tool-1", name: "run_command", summary: "cargo test" },
+    1000,
+  );
+  const failed = applyToolResult(
+    started,
+    {
+      runId: "run-1",
+      id: "tool-1",
+      ok: false,
+      output: "Exit code 101.\nfailed",
+      outcome: { kind: "exited", code: 101 },
+    },
+    1500,
+  );
+  assert.equal(failed.items[0].status, "error");
+  assert.deepEqual(failed.items[0].outcome, { kind: "exited", code: 101 });
+
+  const legacy = applyToolResult(
+    failed,
+    { runId: "run-1", id: "tool-1", ok: true, output: "ok" },
+    2000,
+  );
+  assert.equal(legacy.items[0].status, "ok");
+  assert.equal(legacy.items[0].outcome, undefined);
+});
+
 test("reused tool IDs cannot overwrite another run's output or approval", () => {
   const previous = {
     kind: "tool", runId: "previous-run", id: "call_0", name: "run_command",

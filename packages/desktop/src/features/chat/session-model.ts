@@ -1,5 +1,5 @@
 import { settleStreaming, type Item } from "./chat-model.ts";
-import type { FileDiff } from "./process-model.ts";
+import type { FileDiff, ProcessOutcome } from "./process-model.ts";
 
 export type ContextUsage = { used: number; window: number };
 
@@ -328,7 +328,14 @@ export function applyToolStart(
 
 export function applyToolResult(
   tab: SessionView,
-  event: { runId: string; id: string; ok: boolean; output: string; diffs?: FileDiff[] },
+  event: {
+    runId: string;
+    id: string;
+    ok: boolean;
+    output: string;
+    diffs?: FileDiff[];
+    outcome?: ProcessOutcome;
+  },
   finishedAt: number,
 ): SessionView {
   const items = tab.items.map((item) => {
@@ -343,6 +350,8 @@ export function applyToolResult(
     };
     if (event.diffs && event.diffs.length > 0) next.diffs = event.diffs;
     else delete next.diffs;
+    if (event.outcome) next.outcome = event.outcome;
+    else delete next.outcome;
     return next;
   });
   return withItems(tab, items);

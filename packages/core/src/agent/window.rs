@@ -196,6 +196,7 @@ mod tests {
                 true,
                 &format!("result {index}: {}", "x".repeat(8000)),
                 &[],
+                None,
             ));
         }
         let original = messages.clone();

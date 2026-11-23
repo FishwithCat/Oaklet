@@ -71,6 +71,7 @@ fn serializes_views_and_items_in_the_frontend_shape() {
         approval_prompt: None,
         approval_detail: None,
         diffs: Vec::new(),
+        outcome: None,
     })))
     .unwrap();
     assert_eq!(item["kind"], "tool");
@@ -224,6 +225,77 @@ fn projects_events_into_items_without_leaking_display_data() {
     let model = surface_messages(&events);
     assert_eq!(model.len(), 4);
     assert!(model.iter().all(|message| message.get("oaklet").is_none()));
+}
+
+#[test]
+fn restored_tool_rows_keep_their_process_outcome() {
+    let events = vec![
+        Event {
+            seq: 1,
+            created_at: 1,
+            payload: EventPayload::Message {
+                message: json!({
+                    "role": "tool",
+                    "tool_call_id": "c1",
+                    "content": "Exit code 1.\nboom",
+                }),
+                display: Some(json!({
+                    "runId": "r1",
+                    "name": "run_command",
+                    "summary": "cargo test",
+                    "ok": false,
+                    "outcome": { "kind": "exited", "code": 1 },
+                })),
+            },
+        },
+        Event {
+            seq: 2,
+            created_at: 2,
+            payload: EventPayload::Message {
+                message: json!({
+                    "role": "tool",
+                    "tool_call_id": "c2",
+                    "content": "Command terminated by signal 9 (SIGKILL).",
+                }),
+                display: Some(json!({
+                    "runId": "r1",
+                    "name": "run_command",
+                    "summary": "cargo test",
+                    "ok": false,
+                    "outcome": {
+                        "kind": "signaled",
+                        "signal": 9,
+                        "signalName": "SIGKILL",
+                    },
+                })),
+            },
+        },
+        Event {
+            seq: 3,
+            created_at: 3,
+            payload: EventPayload::Message {
+                message: json!({ "role": "tool", "tool_call_id": "c3", "content": "done" }),
+                display: Some(json!({
+                    "runId": "r1",
+                    "name": "run_command",
+                    "summary": "cargo check",
+                    "ok": true,
+                })),
+            },
+        },
+    ];
+
+    let items = project_events(&events);
+    assert_eq!(items[0]["status"], "error");
+    assert_eq!(items[0]["outcome"]["kind"], "exited");
+    assert_eq!(items[0]["outcome"]["code"], 1);
+    assert_eq!(items[1]["outcome"]["kind"], "signaled");
+    assert_eq!(items[1]["outcome"]["signalName"], "SIGKILL");
+    assert_eq!(items[2]["status"], "ok");
+    assert!(
+        items[2].get("outcome").is_none(),
+        "older rows without an outcome keep the existing ok/error fields"
+    );
 }
 
 #[test]

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tauri::Manager;
 use tokio::sync::watch;
@@ -106,6 +106,87 @@ pub struct ToolImage {
     pub data_url: String,
 }
 
+/// How a shell command ended, or that it is still running in the background.
+///
+/// This is display metadata for the chat tool row. Older conversations stored
+/// no outcome, so every consumer treats it as optional and falls back to the
+/// tool's `ok` flag.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProcessOutcome {
+    Succeeded,
+    Exited {
+        code: i32,
+    },
+    Signaled {
+        signal: i32,
+        #[serde(rename = "signalName")]
+        signal_name: String,
+    },
+    TimedOut,
+    Cancelled,
+    Denied,
+    Running {
+        #[serde(rename = "jobId")]
+        job_id: String,
+    },
+}
+
+impl ProcessOutcome {
+    /// Whether a finished process failed. A nonzero exit and a signal do;
+    /// starting a background job does not.
+    pub fn failed(&self) -> bool {
+        match self {
+            Self::Exited { code } => *code != 0,
+            Self::Signaled { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Classify a finished foreground process from its real exit status.
+    pub fn from_exit(status: std::process::ExitStatus) -> Self {
+        if status.success() {
+            return Self::Succeeded;
+        }
+        if let Some(code) = status.code() {
+            return Self::Exited { code };
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            let signal = status.signal().unwrap_or(0);
+            Self::Signaled {
+                signal,
+                signal_name: signal_name(signal),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self::Signaled {
+                signal: 0,
+                signal_name: "terminated".into(),
+            }
+        }
+    }
+}
+
+/// A short name for the signals a local command commonly dies from.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> String {
+    let name = match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return format!("signal {signal}"),
+    };
+    name.into()
+}
+
 /// Result of one tool call. Most tools return text only; a few attach images
 /// the agent loop forwards as a separate user message, and file-mutation tools
 /// attach display-only diffs the chat UI renders.
@@ -114,6 +195,8 @@ pub struct ToolOutput {
     pub text: String,
     pub images: Vec<ToolImage>,
     pub diffs: Vec<FileDiff>,
+    /// Set by tools that run a process; the chat row renders it.
+    pub outcome: Option<ProcessOutcome>,
 }
 
 impl ToolOutput {
@@ -122,6 +205,7 @@ impl ToolOutput {
             text: text.into(),
             images: Vec::new(),
             diffs: Vec::new(),
+            outcome: None,
         }
     }
 
@@ -130,6 +214,7 @@ impl ToolOutput {
             text: text.into(),
             images: vec![ToolImage { data_url }],
             diffs: Vec::new(),
+            outcome: None,
         }
     }
 
@@ -138,7 +223,13 @@ impl ToolOutput {
             text: text.into(),
             images: Vec::new(),
             diffs,
+            outcome: None,
         }
+    }
+
+    pub fn with_outcome(mut self, outcome: ProcessOutcome) -> Self {
+        self.outcome = Some(outcome);
+        self
     }
 }
 
@@ -479,15 +570,25 @@ pub struct ToolOutcome {
     pub images: Vec<ToolImage>,
     /// Applied diffs for the chat UI; empty for tools that do not mutate files.
     pub diffs: Vec<FileDiff>,
+    /// Process outcome for command rows; absent for tools without a process.
+    pub outcome: Option<ProcessOutcome>,
 }
 
 impl ToolOutcome {
     pub fn failure(message: impl Into<String>) -> Self {
+        Self::failure_with_outcome(message, None)
+    }
+
+    pub fn failure_with_outcome(
+        message: impl Into<String>,
+        outcome: Option<ProcessOutcome>,
+    ) -> Self {
         Self {
             ok: false,
             output: message.into(),
             images: Vec::new(),
             diffs: Vec::new(),
+            outcome,
         }
     }
 }
@@ -844,10 +945,16 @@ impl ToolRegistry {
             match approver.approve(request).await {
                 ApprovalDecision::Allow => {}
                 ApprovalDecision::Deny => {
-                    return ToolOutcome::failure("The user denied this command.");
+                    return ToolOutcome::failure_with_outcome(
+                        "The user denied this command.",
+                        Some(ProcessOutcome::Denied),
+                    );
                 }
                 ApprovalDecision::Cancelled => {
-                    return ToolOutcome::failure("Cancelled.");
+                    return ToolOutcome::failure_with_outcome(
+                        "Cancelled.",
+                        Some(ProcessOutcome::Cancelled),
+                    );
                 }
             }
         }
@@ -861,13 +968,29 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolOutcome {
-                ok: true,
-                output: ctx.bound_output(name, call_id, output.text),
-                images: output.images,
-                diffs: output.diffs,
-            },
-            Err(error) => ToolOutcome::failure(ctx.bound_output(name, call_id, error.to_string())),
+            Ok(output) => {
+                // A process that captured output but exited nonzero is still a
+                // failed command, so the tool row must not report success.
+                let ok = !output.outcome.as_ref().is_some_and(ProcessOutcome::failed);
+                ToolOutcome {
+                    ok,
+                    output: ctx.bound_output(name, call_id, output.text),
+                    images: output.images,
+                    diffs: output.diffs,
+                    outcome: output.outcome,
+                }
+            }
+            Err(error) => {
+                let outcome = match &error {
+                    ToolError::Timeout(_) => Some(ProcessOutcome::TimedOut),
+                    ToolError::Cancelled => Some(ProcessOutcome::Cancelled),
+                    _ => None,
+                };
+                ToolOutcome::failure_with_outcome(
+                    ctx.bound_output(name, call_id, error.to_string()),
+                    outcome,
+                )
+            }
         }
     }
 }
@@ -972,8 +1095,8 @@ mod tests {
     use super::test_support::context;
     use super::{
         Access, ApprovalDecision, ApprovalRequest, Approver, ArchitectureImpact, Assessment,
-        CancelHandle, Intent, SPILL_MARKER_HEAD, SPILL_MARKER_POINTER, SPILL_MARKER_TAIL,
-        TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER, TOOL_OUTPUT_TAIL_CHARS,
+        CancelHandle, Intent, ProcessOutcome, SPILL_MARKER_HEAD, SPILL_MARKER_POINTER,
+        SPILL_MARKER_TAIL, TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_MARKER, TOOL_OUTPUT_TAIL_CHARS,
         TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, cap,
         prune_tool_output, spill_pointer,
     };
@@ -1578,6 +1701,7 @@ mod tests {
         assert!(!ran.load(Ordering::SeqCst));
         assert!(!outcome.ok);
         assert_eq!(outcome.output, "The user denied this command.");
+        assert_eq!(outcome.outcome, Some(ProcessOutcome::Denied));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1597,6 +1721,7 @@ mod tests {
             .await;
         assert!(!ran.load(Ordering::SeqCst));
         assert_eq!(outcome.output, "Cancelled.");
+        assert_eq!(outcome.outcome, Some(ProcessOutcome::Cancelled));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -1616,7 +1741,69 @@ mod tests {
             .await;
         assert!(ran.load(Ordering::SeqCst));
         assert!(outcome.output.starts_with("Timed out after"));
+        assert_eq!(outcome.outcome, Some(ProcessOutcome::TimedOut));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_nonzero_exit_propagates_as_a_failed_tool_result() {
+        let (ctx, root, _handle) = context("real-exit");
+        let outcome = ToolRegistry::new()
+            .execute(
+                &ctx,
+                &Allow,
+                "run_command",
+                "call-1",
+                json!({ "command": "printf 'stdout'; printf 'stderr' >&2; exit 4" }),
+            )
+            .await;
+        assert!(!outcome.ok);
+        assert_eq!(outcome.outcome, Some(ProcessOutcome::Exited { code: 4 }));
+        assert!(outcome.output.starts_with("Exit code 4."));
+        assert!(outcome.output.contains("stdout"));
+        assert!(outcome.output.contains("stderr"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_successful_process_keeps_the_tool_result_ok() {
+        let (ctx, root, _handle) = context("real-success");
+        let outcome = ToolRegistry::new()
+            .execute(
+                &ctx,
+                &Allow,
+                "run_command",
+                "call-1",
+                json!({ "command": "printf 'done'" }),
+            )
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(outcome.outcome, Some(ProcessOutcome::Succeeded));
+        assert!(outcome.output.contains("done"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn process_outcomes_serialize_in_the_desktop_shape() {
+        assert_eq!(
+            json!(ProcessOutcome::Exited { code: 2 }),
+            json!({ "kind": "exited", "code": 2 })
+        );
+        assert_eq!(
+            json!(ProcessOutcome::Signaled {
+                signal: 9,
+                signal_name: "SIGKILL".into(),
+            }),
+            json!({ "kind": "signaled", "signal": 9, "signalName": "SIGKILL" })
+        );
+        assert_eq!(
+            json!(ProcessOutcome::Running {
+                job_id: "job-1".into(),
+            }),
+            json!({ "kind": "running", "jobId": "job-1" })
+        );
     }
 
     #[tokio::test]

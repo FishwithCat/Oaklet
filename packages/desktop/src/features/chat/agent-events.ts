@@ -1,6 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { RunUsage, SessionView } from "./session-model.ts";
-import type { FileDiff } from "./process-model.ts";
+import type { FileDiff, ProcessOutcome } from "./process-model.ts";
 
 export type DeltaEvent = { sessionId: string; runId: string; text: string };
 export type ReasoningEvent = { sessionId: string; runId: string; text: string };
@@ -19,6 +19,7 @@ export type ToolResultEvent = {
   ok: boolean;
   output: string;
   diffs?: FileDiff[];
+  outcome?: ProcessOutcome;
 };
 export type ApprovalEvent = {
   sessionId: string;

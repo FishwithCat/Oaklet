@@ -2,11 +2,48 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatDuration,
+  outcomeDetail,
+  outcomeLabel,
   processTitle,
   reasoningSummary,
   processDuration,
   toolTitle,
 } from "../src/features/chat/process-model.ts";
+
+test("labels command outcomes and keeps older rows blank", () => {
+  assert.equal(outcomeLabel(undefined), undefined);
+  assert.equal(outcomeLabel({ kind: "succeeded" }), undefined);
+  assert.equal(outcomeLabel({ kind: "exited", code: 0 }), undefined);
+  assert.equal(outcomeLabel({ kind: "exited", code: 7 }), "Exit 7");
+  assert.equal(
+    outcomeLabel({ kind: "signaled", signal: 9, signalName: "SIGKILL" }),
+    "SIGKILL",
+  );
+  assert.equal(outcomeLabel({ kind: "timed_out" }), "Timed out");
+  assert.equal(outcomeLabel({ kind: "cancelled" }), "Stopped");
+  assert.equal(outcomeLabel({ kind: "denied" }), "Denied");
+  assert.equal(
+    outcomeLabel({ kind: "running", jobId: "job-1" }),
+    "In background",
+  );
+});
+
+test("expanded command rows explain why the process ended", () => {
+  assert.equal(outcomeDetail(undefined), undefined);
+  assert.equal(outcomeDetail({ kind: "succeeded" }), undefined);
+  assert.equal(outcomeDetail({ kind: "exited", code: 7 }), "Exit code 7.");
+  assert.equal(
+    outcomeDetail({ kind: "signaled", signal: 15, signalName: "SIGTERM" }),
+    "Terminated by SIGTERM (signal 15).",
+  );
+  assert.equal(outcomeDetail({ kind: "timed_out" }), "The command timed out.");
+  assert.equal(outcomeDetail({ kind: "cancelled" }), "The command was cancelled.");
+  assert.equal(outcomeDetail({ kind: "denied" }), "The command was denied.");
+  assert.equal(
+    outcomeDetail({ kind: "running", jobId: "job-9" }),
+    "Background job job-9 is running. Read its result with job_output.",
+  );
+});
 
 test("streaming reasoning previews the latest completed paragraph", () => {
   assert.equal(reasoningSummary("First line\nrest of paragraph", true), "First line");

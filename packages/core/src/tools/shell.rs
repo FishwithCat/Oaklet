@@ -7,7 +7,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
-use super::{ApprovalRequest, Tool, ToolContext, ToolError, ToolOutput, parse_args};
+use super::{
+    ApprovalRequest, ProcessOutcome, Tool, ToolContext, ToolError, ToolOutput, parse_args,
+};
 use crate::shell_env::ApplyEnvironment;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -68,7 +70,7 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr."
+        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit or signal as a failed command."
     }
 
     fn parameters(&self) -> Value {
@@ -84,7 +86,7 @@ impl Tool for RunCommand {
     }
 
     fn guidance(&self) -> &'static str {
-        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. Commands may need approval depending on Settings, so keep them focused. Long-running commands should use run_in_background."
+        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. Commands may need approval depending on Settings, so keep them focused. Long-running commands should use run_in_background. Base conclusions on the reported exit status, not on whether output was captured."
     }
 
     fn summary(&self, args: &Value) -> String {
@@ -117,7 +119,7 @@ impl Tool for RunCommand {
         ctx: &'a ToolContext,
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
-        Box::pin(async move { run_command(ctx, args).await.map(ToolOutput::text) })
+        Box::pin(async move { run_command(ctx, args).await })
     }
 }
 
@@ -129,7 +131,7 @@ struct RunCommandArgs {
     run_in_background: bool,
 }
 
-async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError> {
+async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     let args: RunCommandArgs = parse_args(args)?;
     if args.command.trim().is_empty() {
         return Err(ToolError::InvalidArguments(
@@ -151,9 +153,10 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
                 },
             )
             .map_err(ToolError::Failed)?;
-        return Ok(format!(
+        let text = format!(
             "Started background job {id}. Use job_output with job_id \"{id}\" to read its output, and job_kill to stop it."
-        ));
+        );
+        return Ok(ToolOutput::text(text).with_outcome(ProcessOutcome::Running { job_id: id }));
     }
 
     let mut process = shell_command(&args.command);
@@ -208,17 +211,28 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<String, ToolError
     }
     let output = output.trim_end();
 
-    let summary = match status.code() {
-        Some(0) => "Command succeeded.".to_string(),
-        Some(code) => format!("Exit code {code}."),
-        None => "Command terminated by a signal.".to_string(),
+    let outcome = ProcessOutcome::from_exit(status);
+    let summary = match &outcome {
+        ProcessOutcome::Succeeded => "Command succeeded.".to_string(),
+        ProcessOutcome::Exited { code } => format!("Exit code {code}."),
+        ProcessOutcome::Signaled {
+            signal,
+            signal_name,
+        } => format!("Command terminated by signal {signal} ({signal_name})."),
+        ProcessOutcome::TimedOut => "Command timed out.".to_string(),
+        ProcessOutcome::Cancelled => "Command cancelled.".to_string(),
+        ProcessOutcome::Denied => "Command denied.".to_string(),
+        ProcessOutcome::Running { job_id } => {
+            format!("Background job {job_id} is running.")
+        }
     };
 
-    if output.is_empty() {
-        Ok(summary)
+    let text = if output.is_empty() {
+        summary
     } else {
-        Ok(format!("{summary}\n{output}"))
-    }
+        format!("{summary}\n{output}")
+    };
+    Ok(ToolOutput::text(text).with_outcome(outcome))
 }
 
 /// The shell invocation shared by foreground commands and background jobs.
@@ -272,7 +286,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{RunCommand, Tool, run_command};
+    use super::{ProcessOutcome, RunCommand, Tool, run_command};
     use crate::tools::test_support::context;
     use crate::tools::{CancelHandle, ToolContext, ToolError, Workspace};
 
@@ -290,7 +304,45 @@ mod tests {
             .await
             .unwrap();
         assert!(failed.starts_with("Exit code 3."));
+        assert_eq!(failed.outcome, Some(ProcessOutcome::Exited { code: 3 }));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nonzero_exits_keep_stdout_and_stderr() {
+        let (ctx, root, _handle) = context("command-streams");
+        let output = run_command(
+            &ctx,
+            json!({
+                "command": "printf 'to-stdout'; printf 'to-stderr' >&2; exit 7"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(output.starts_with("Exit code 7."));
+        assert!(output.contains("to-stdout"));
+        assert!(output.contains("to-stderr"));
+        assert_eq!(output.outcome, Some(ProcessOutcome::Exited { code: 7 }));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn signals_are_reported_as_termination() {
+        let (ctx, root, _handle) = context("command-signal");
+        let output = run_command(&ctx, json!({ "command": "kill -TERM $$" }))
+            .await
+            .unwrap();
+        assert!(output.starts_with("Command terminated by signal 15 (SIGTERM)."));
+        assert_eq!(
+            output.outcome,
+            Some(ProcessOutcome::Signaled {
+                signal: 15,
+                signal_name: "SIGTERM".into(),
+            })
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]
@@ -390,6 +442,11 @@ mod tests {
         .await
         .unwrap();
         assert!(output.starts_with("Started background job job-"));
+        let text = output.text.clone();
+        let Some(ProcessOutcome::Running { job_id }) = output.outcome else {
+            panic!("a background command should report a running job");
+        };
+        assert!(text.contains(&job_id));
         std::fs::remove_dir_all(&root).ok();
     }
 }

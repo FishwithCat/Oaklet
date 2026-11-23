@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::SessionView;
 use crate::store::{self, Event, EventPayload, Session};
-use crate::tools::FileDiff;
+use crate::tools::{FileDiff, ProcessOutcome};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,6 +40,8 @@ pub(super) struct ToolItem {
     pub(super) approval_detail: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) diffs: Vec<FileDiff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) outcome: Option<ProcessOutcome>,
 }
 
 /// A transcript row the backend creates. Streaming assistant/reasoning rows are
@@ -309,6 +311,13 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                             .filter(|diffs| !diffs.is_empty() && !pending)
                         {
                             item["diffs"] = Value::Array(diffs.clone());
+                        }
+                        if let Some(outcome) = display
+                            .as_ref()
+                            .and_then(|display| display.get("outcome"))
+                            .filter(|outcome| outcome.is_object())
+                        {
+                            item["outcome"] = outcome.clone();
                         }
                         items.push(item);
                     }

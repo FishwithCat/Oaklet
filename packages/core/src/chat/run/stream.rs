@@ -8,7 +8,7 @@ use crate::chat::transcript::{
 };
 use crate::context;
 use crate::store::{self, ContextUsage, EventPayload};
-use crate::tools::FileDiff;
+use crate::tools::{FileDiff, ProcessOutcome};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +46,8 @@ struct ToolResultEvent {
     ok: bool,
     output: String,
     diffs: Vec<FileDiff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<ProcessOutcome>,
 }
 
 #[derive(Clone, Serialize)]
@@ -159,6 +161,7 @@ impl RunContext {
                 approval_prompt: None,
                 approval_detail: None,
                 diffs: diffs.to_vec(),
+                outcome: None,
             }));
             match serde_json::to_value(item) {
                 Ok(item) => view.items.push(item),
@@ -182,7 +185,14 @@ impl RunContext {
         );
     }
 
-    pub fn tool_result(&self, id: &str, ok: bool, output: &str, diffs: &[FileDiff]) -> Value {
+    pub fn tool_result(
+        &self,
+        id: &str,
+        ok: bool,
+        output: &str,
+        diffs: &[FileDiff],
+        outcome: Option<&ProcessOutcome>,
+    ) -> Value {
         let finished_at = store::now_ms() as u64;
         let mut duration_ms = None;
         self.update_view(|view| {
@@ -200,6 +210,9 @@ impl RunContext {
                     }
                 } else {
                     item["diffs"] = json!(diffs);
+                }
+                if let Some(outcome) = outcome {
+                    item["outcome"] = json!(outcome);
                 }
                 if let Some(started_at) = item.get("startedAt").and_then(Value::as_u64) {
                     duration_ms = Some(finished_at.saturating_sub(started_at));
@@ -242,19 +255,26 @@ impl RunContext {
                     } else {
                         meta["diffs"] = json!(diffs);
                     }
+                    if let Some(outcome) = outcome {
+                        meta.insert("outcome".into(), json!(outcome));
+                    }
                 }
                 found = true;
                 break;
             }
             if !found {
                 drop(pending);
+                let mut display = json!({
+                    "runId": self.run_id,
+                    "ok": ok,
+                    "diffs": diffs,
+                });
+                if let Some(outcome) = outcome {
+                    display["outcome"] = json!(outcome);
+                }
                 self.record(EventPayload::Message {
                     message: json!({ "role": "tool", "tool_call_id": id, "content": output }),
-                    display: Some(json!({
-                        "runId": self.run_id,
-                        "ok": ok,
-                        "diffs": diffs,
-                    })),
+                    display: Some(display),
                 });
             }
         }
@@ -267,6 +287,7 @@ impl RunContext {
                 ok,
                 output: output.to_string(),
                 diffs: diffs.to_vec(),
+                outcome: outcome.cloned(),
             },
         );
         let pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());

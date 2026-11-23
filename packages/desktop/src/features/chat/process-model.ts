@@ -9,6 +9,16 @@ export type FileDiff = {
   newText: string;
 };
 
+/** Real process outcome carried by a command tool result. */
+export type ProcessOutcome =
+  | { kind: "succeeded" }
+  | { kind: "exited"; code: number }
+  | { kind: "signaled"; signal: number; signalName: string }
+  | { kind: "timed_out" }
+  | { kind: "cancelled" }
+  | { kind: "denied" }
+  | { kind: "running"; jobId: string };
+
 export type ReasoningItem = {
   kind: "reasoning";
   seq?: number;
@@ -36,6 +46,8 @@ export type ToolItem = {
   approvalPrompt?: string;
   approvalDetail?: string;
   diffs?: FileDiff[];
+  /** Absent on conversations recorded before command outcomes were saved. */
+  outcome?: ProcessOutcome;
 };
 
 export type ProcessItem = ReasoningItem | ToolItem;
@@ -100,6 +112,48 @@ export function toolTitle(name: string): string {
     }
   }
   return name.replace(/_/g, " ");
+}
+
+/** Short row label for a command outcome; older rows have none. */
+export function outcomeLabel(outcome?: ProcessOutcome): string | undefined {
+  if (!outcome) return undefined;
+  switch (outcome.kind) {
+    case "succeeded":
+      return undefined;
+    case "exited":
+      return outcome.code === 0 ? undefined : `Exit ${outcome.code}`;
+    case "signaled":
+      return outcome.signalName || `Signal ${outcome.signal}`;
+    case "timed_out":
+      return "Timed out";
+    case "cancelled":
+      return "Stopped";
+    case "denied":
+      return "Denied";
+    case "running":
+      return "In background";
+  }
+}
+
+/** Expanded detail that explains the exit or termination. */
+export function outcomeDetail(outcome?: ProcessOutcome): string | undefined {
+  if (!outcome) return undefined;
+  switch (outcome.kind) {
+    case "succeeded":
+      return undefined;
+    case "exited":
+      return outcome.code === 0 ? undefined : `Exit code ${outcome.code}.`;
+    case "signaled":
+      return `Terminated by ${outcome.signalName} (signal ${outcome.signal}).`;
+    case "timed_out":
+      return "The command timed out.";
+    case "cancelled":
+      return "The command was cancelled.";
+    case "denied":
+      return "The command was denied.";
+    case "running":
+      return `Background job ${outcome.jobId} is running. Read its result with job_output.`;
+  }
 }
 
 /** Human-readable elapsed time, e.g. `0.4s`, `12s`, `1m 5s`. */

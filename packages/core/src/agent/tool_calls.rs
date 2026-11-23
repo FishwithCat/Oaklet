@@ -177,7 +177,7 @@ impl ToolRun<'_> {
             Ok(args) => args,
             Err(message) => {
                 self.ctx.tool_start(&call.id, &call.name, "", &[]);
-                let result = self.ctx.tool_result(&call.id, false, &message, &[]);
+                let result = self.ctx.tool_result(&call.id, false, &message, &[], None);
                 if let Some(reminder) = observe(guard, call, &Err(message.clone())) {
                     batch.reminders.push(reminder);
                 }
@@ -230,7 +230,13 @@ fn record(
     messages: &mut Vec<Value>,
     batch: &mut Batch,
 ) {
-    let result = ctx.tool_result(&call.id, outcome.ok, &outcome.output, &outcome.diffs);
+    let result = ctx.tool_result(
+        &call.id,
+        outcome.ok,
+        &outcome.output,
+        &outcome.diffs,
+        outcome.outcome.as_ref(),
+    );
     if outcome.ok
         && let Some(touched) = touched
     {
@@ -306,6 +312,7 @@ mod tests {
                             output: format!("read {index}"),
                             images: Vec::new(),
                             diffs: Vec::new(),
+                            outcome: None,
                         },
                         None,
                     )
