@@ -25,6 +25,7 @@ import {
   processDuration,
   reasoningSummary,
   toolCategory,
+  toolOutput,
   toolTitle,
   type ApprovalChoice,
   type ProcessItem,
@@ -204,7 +205,7 @@ function ToolRow({
   const [open, setOpen] = useState(false);
   const category = toolCategory(item.name);
   const running = item.status === "pending" || item.status === "running";
-  const hasOutput = Boolean(item.output);
+  const output = toolOutput(item);
   const diffs = item.diffs ?? [];
   const hasDiff = diffs.length > 0;
   const totals = useMemo(
@@ -240,7 +241,7 @@ function ToolRow({
         summary={item.summary}
         live={running}
         open={open}
-        expandable={hasOutput || hasDiff || Boolean(detail)}
+        expandable={Boolean(output) || hasDiff || Boolean(detail)}
         trailing={
           <>
             {outcome && (
@@ -262,10 +263,10 @@ function ToolRow({
         <Approval item={item} onApproval={onApproval} />
       )}
       {open && hasDiff && <DiffCard diffs={diffs} />}
-      {open && !hasDiff && (item.output || detail) && (
+      {open && !hasDiff && (output || detail) && (
         <div className="tool-body">
           {detail && <p className="tool-outcome-detail">{detail}</p>}
-          {item.output && <pre>{item.output}</pre>}
+          {output && <pre>{output}</pre>}
         </div>
       )}
     </div>

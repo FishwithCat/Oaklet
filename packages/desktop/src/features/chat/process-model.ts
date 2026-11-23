@@ -156,6 +156,15 @@ export function outcomeDetail(outcome?: ProcessOutcome): string | undefined {
   }
 }
 
+/** Output worth showing; a bare cancellation notice only repeats the detail. */
+export function toolOutput(item: ToolItem): string | undefined {
+  if (!item.output) return undefined;
+  if (item.outcome?.kind === "cancelled" && item.output.trim() === "Cancelled.") {
+    return undefined;
+  }
+  return item.output;
+}
+
 /** Human-readable elapsed time, e.g. `0.4s`, `12s`, `1m 5s`. */
 export function formatDuration(ms: number): string {
   const seconds = Math.max(0, ms) / 1000;

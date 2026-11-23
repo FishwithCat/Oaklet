@@ -7,6 +7,7 @@ import {
   processTitle,
   reasoningSummary,
   processDuration,
+  toolOutput,
   toolTitle,
 } from "../src/features/chat/process-model.ts";
 
@@ -43,6 +44,24 @@ test("expanded command rows explain why the process ended", () => {
     outcomeDetail({ kind: "running", jobId: "job-9" }),
     "Background job job-9 is running. Read its result with job_output.",
   );
+});
+
+test("drops a cancelled command's bare cancellation output", () => {
+  const command = {
+    kind: "tool",
+    runId: "run",
+    id: "1",
+    name: "run_command",
+    status: "error",
+    outcome: { kind: "cancelled" },
+  };
+  assert.equal(toolOutput({ ...command, output: "Cancelled." }), undefined);
+  assert.equal(toolOutput({ ...command, output: " partial output\n" }), " partial output\n");
+  assert.equal(
+    toolOutput({ ...command, output: "Cancelled.", outcome: { kind: "exited", code: 1 } }),
+    "Cancelled.",
+  );
+  assert.equal(toolOutput(command), undefined);
 });
 
 test("streaming reasoning previews the latest completed paragraph", () => {
