@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useRef,
@@ -12,10 +13,11 @@ import {
   Message4Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
-import type { Attachment } from "./attachments";
+import { readDroppedFile, type Attachment } from "./attachments";
 import {
   isAtBottom,
   mergeDraft,
@@ -131,8 +133,12 @@ export function Chat({
   const attachmentsRef = useRef(new Map<string, Attachment[]>());
   const lastTabIdRef = useRef(activeTabId);
   const activeTabIdRef = useRef(activeTabId);
+  const activeRef = useRef(active);
+  const dropOverRef = useRef(false);
   const submittingRef = useRef(false);
+  const [dropping, setDropping] = useState(false);
   activeTabIdRef.current = activeTabId;
+  activeRef.current = active;
   // The welcome screen is the blank first tab: no tabs, find or selection.
   const welcome = tabs.length <= 1 && items.length === 0 && !hasMore;
   const { selectionAction, selectionButtonRef, clearSelection } =
@@ -251,6 +257,80 @@ export function Chat({
     if (activeTabIdRef.current === tabId) setAttachments(next);
   }
 
+  function appendDraft(addition: string, tabId = activeTabId) {
+    const current = draftsRef.current.get(tabId) ?? "";
+    const draft = current.trimEnd();
+    const next = draft ? `${draft} ${addition}` : addition;
+    draftsRef.current.set(tabId, next);
+    if (activeTabIdRef.current === tabId) setInput(next);
+  }
+
+  function isChatDropPosition(position: { x: number; y: number }): boolean {
+    if (!activeRef.current) return false;
+    const scale = window.devicePixelRatio || 1;
+    const target = document.elementFromPoint(
+      position.x / scale,
+      position.y / scale,
+    );
+    return Boolean(target?.closest(".main"));
+  }
+
+  function setDropOver(next: boolean) {
+    if (dropOverRef.current === next) return;
+    dropOverRef.current = next;
+    setDropping(next);
+  }
+
+  async function addDroppedPaths(paths: string[]) {
+    const tabId = activeTabIdRef.current;
+    const added: Attachment[] = [];
+    const fallback: string[] = [];
+    for (const path of paths) {
+      try {
+        const attachment = await readDroppedFile(path);
+        if (attachment) added.push(attachment);
+        else fallback.push(path);
+      } catch {
+        // An unreadable file is still useful to the model as a path.
+        fallback.push(path);
+      }
+    }
+    if (added.length > 0) addAttachments(added, tabId);
+    if (fallback.length > 0) appendDraft(fallback.join(" "), tabId);
+    if (activeTabIdRef.current === tabId) {
+      requestAnimationFrame(() => composerRef.current?.focus());
+    }
+  }
+
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload;
+        if (payload.type === "over" || payload.type === "enter") {
+          setDropOver(isChatDropPosition(payload.position));
+          return;
+        }
+        setDropOver(false);
+        if (payload.type === "drop" && isChatDropPosition(payload.position)) {
+          void addDroppedPaths(payload.paths);
+        }
+      })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else release = unlisten;
+      })
+      .catch((error) => {
+        console.error(`Could not watch for dropped files: ${String(error)}`);
+      });
+    return () => {
+      disposed = true;
+      release?.();
+    };
+  }, []);
+
   async function submit(attachments: Attachment[]): Promise<boolean> {
     if (submittingRef.current) return false;
     submittingRef.current = true;
@@ -344,6 +424,11 @@ export function Chat({
       onCompact={onCompact}
     />
   );
+  const dropHint = dropping && (
+    <div className="chat-drop" role="status">
+      <span>Drop files to attach — large files insert their path</span>
+    </div>
+  );
 
   if (welcome) {
     return (
@@ -357,6 +442,7 @@ export function Chat({
           {empty}
         </main>
         {composer}
+        {dropHint}
       </>
     );
   }
@@ -493,6 +579,7 @@ export function Chat({
       )}
 
       {composer}
+      {dropHint}
     </>
   );
 }

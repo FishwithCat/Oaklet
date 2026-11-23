@@ -112,7 +112,7 @@ impl Tool for ReadImage {
     }
 }
 
-fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
     } else if bytes.starts_with(b"\xff\xd8\xff") {

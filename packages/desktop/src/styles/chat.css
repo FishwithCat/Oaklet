@@ -14,6 +14,26 @@
   display: none;
 }
 
+.chat-drop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+
+.chat-drop span {
+  padding: 10px 16px;
+  border: 1px dashed var(--accent-border-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px var(--shadow-color);
+  color: var(--text);
+  font-size: 13px;
+}
+
 .chat-find {
   position: fixed;
   top: 52px;

@@ -7,6 +7,8 @@
  * cannot blow up the context window or the history quota.
  */
 
+import { invoke } from "@tauri-apps/api/core";
+
 /** Longest edge kept for a pasted image; providers downscale around here too. */
 const MAX_IMAGE_EDGE = 1568;
 /** Display copy for the thread, its preview, and the composer chip. */
@@ -85,19 +87,31 @@ function encodeImage(
   return canvas.toDataURL("image/jpeg", quality);
 }
 
+async function imageAttachment(
+  name: string,
+  bytes: number,
+  source: string,
+): Promise<Attachment> {
+  const image = await loadImage(source, name);
+  return {
+    kind: "image",
+    name,
+    bytes,
+    dataUrl: encodeImage(image, MAX_IMAGE_EDGE, IMAGE_QUALITY),
+    thumbnail: encodeImage(image, THUMBNAIL_EDGE, 0.8),
+  };
+}
+
 /** Read one pasted file into something the composer and the model can use. */
 export async function readAttachment(file: File): Promise<Attachment> {
   if (file.type.startsWith("image/") || IMAGE_NAME.test(file.name)) {
     const url = URL.createObjectURL(file);
     try {
-      const image = await loadImage(url, file.name);
-      return {
-        kind: "image",
-        name: file.name || "Pasted image",
-        bytes: file.size,
-        dataUrl: encodeImage(image, MAX_IMAGE_EDGE, IMAGE_QUALITY),
-        thumbnail: encodeImage(image, THUMBNAIL_EDGE, 0.8),
-      };
+      return await imageAttachment(
+        file.name || "Pasted image",
+        file.size,
+        url,
+      );
     } catch {
       throw new Error(`Could not read ${file.name || "that image"}.`);
     } finally {
@@ -122,6 +136,30 @@ export async function readAttachment(file: File): Promise<Attachment> {
     name: file.name || "Pasted file",
     bytes: file.size,
     text,
+  };
+}
+
+type DroppedFile =
+  | { kind: "image"; name: string; bytes: number; dataUrl: string }
+  | { kind: "text"; name: string; bytes: number; text: string }
+  | { kind: "path"; path: string };
+
+/**
+ * Read a file dropped from the OS by its absolute path. Small files become
+ * attachments; large or binary files return `null` so the caller can use the
+ * path instead.
+ */
+export async function readDroppedFile(path: string): Promise<Attachment | null> {
+  const dropped = await invoke<DroppedFile>("files_read_dropped", { path });
+  if (dropped.kind === "path") return null;
+  if (dropped.kind === "image") {
+    return imageAttachment(dropped.name, dropped.bytes, dropped.dataUrl);
+  }
+  return {
+    kind: "file",
+    name: dropped.name,
+    bytes: dropped.bytes,
+    text: dropped.text,
   };
 }
 

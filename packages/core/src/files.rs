@@ -10,6 +10,8 @@ use crate::windows::workspace_for_window;
 use crate::{SharedState, tools::Workspace};
 
 const MAX_BYTES: u64 = 2_000_000;
+/// Matches the composer's text attachment cap; larger drops keep their path.
+const MAX_DROP_TEXT_BYTES: u64 = 200_000;
 const MAX_FIND_RESULTS: usize = 20_000;
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -73,6 +75,37 @@ pub async fn files_read(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// A file dropped from the OS. Small files become composer attachments; larger
+/// or binary files keep their absolute path for the model to inspect.
+#[derive(Debug, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DroppedFile {
+    Image {
+        name: String,
+        bytes: u64,
+        data_url: String,
+    },
+    Text {
+        name: String,
+        bytes: u64,
+        text: String,
+    },
+    Path {
+        path: String,
+    },
+}
+
+#[tauri::command]
+pub async fn files_read_dropped(path: String) -> Result<DroppedFile, String> {
+    tauri::async_runtime::spawn_blocking(move || read_dropped(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -185,6 +218,45 @@ fn read(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "Only UTF-8 text files are supported.".into())
 }
 
+fn read_dropped(path: &Path) -> Result<DroppedFile, String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("Cannot read file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Only files can be dropped into the chat.".into());
+    }
+    let bytes = metadata.len();
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let absolute = path.to_string_lossy().into_owned();
+
+    if bytes <= crate::tools::image::MAX_IMAGE_BYTES && looks_like_image(path) {
+        let (data, _) = crate::tools::image::read_image(path)?;
+        return Ok(DroppedFile::Image {
+            name,
+            bytes,
+            data_url: crate::tools::image::data_url(&data)?,
+        });
+    }
+    if bytes <= MAX_DROP_TEXT_BYTES
+        && let Ok(text) = read(path)
+    {
+        return Ok(DroppedFile::Text { name, bytes, text });
+    }
+    Ok(DroppedFile::Path { path: absolute })
+}
+
+fn looks_like_image(path: &Path) -> bool {
+    let mut head = [0u8; 12];
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(read) = file.read(&mut head) else {
+        return false;
+    };
+    crate::tools::image::image_mime(&head[..read]).is_some()
+}
+
 fn save(root: &Workspace, input: &str, original: &str, content: &str) -> Result<(), String> {
     let _lock = SAVE_LOCK.lock().map_err(|e| e.to_string())?;
     let path = resolve(root, input)?;
@@ -274,6 +346,65 @@ mod tests {
         let entries = list(&root, ".").unwrap();
         assert!(entries.iter().all(|entry| entry.name != ".git"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drops_attachments_and_falls_back_to_paths() {
+        let dir = temp_root("dropped-files");
+        fs::write(dir.join("notes.txt"), "hello").unwrap();
+        assert!(matches!(
+            read_dropped(&dir.join("notes.txt")),
+            Ok(DroppedFile::Text { .. })
+        ));
+
+        fs::write(dir.join("shot.png"), b"\x89PNG\r\n\x1a\npixel").unwrap();
+        assert!(matches!(
+            read_dropped(&dir.join("shot.png")),
+            Ok(DroppedFile::Image { .. })
+        ));
+
+        fs::write(dir.join("binary.bin"), [0, 1, 2]).unwrap();
+        assert!(matches!(
+            read_dropped(&dir.join("binary.bin")),
+            Ok(DroppedFile::Path { .. })
+        ));
+
+        File::create(dir.join("large.log"))
+            .unwrap()
+            .set_len(MAX_DROP_TEXT_BYTES + 1)
+            .unwrap();
+        assert!(matches!(
+            read_dropped(&dir.join("large.log")),
+            Ok(DroppedFile::Path { .. })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dropped_files_serialize_in_the_composer_shape() {
+        let image = serde_json::to_value(DroppedFile::Image {
+            name: "shot.png".into(),
+            bytes: 3,
+            data_url: "data:image/png;base64,AAA".into(),
+        })
+        .unwrap();
+        assert_eq!(image["kind"], "image");
+        assert_eq!(image["dataUrl"], "data:image/png;base64,AAA");
+
+        let text = serde_json::to_value(DroppedFile::Text {
+            name: "notes.md".into(),
+            bytes: 5,
+            text: "hello".into(),
+        })
+        .unwrap();
+        assert_eq!(text["kind"], "text");
+
+        let path = serde_json::to_value(DroppedFile::Path {
+            path: "/tmp/large.bin".into(),
+        })
+        .unwrap();
+        assert_eq!(path["kind"], "path");
+        assert_eq!(path["path"], "/tmp/large.bin");
     }
 
     #[test]
