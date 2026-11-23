@@ -7,6 +7,7 @@ type KeyEvent = Pick<
   | "shiftKey"
   | "repeat"
   | "isComposing"
+  | "keyCode"
   | "defaultPrevented"
   | "target"
 >;
@@ -19,7 +20,51 @@ export type AgentShortcut =
   | "history"
   | "stop";
 
-type EnterEvent = Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing">;
+type EnterEvent = Pick<
+  KeyboardEvent,
+  "key" | "shiftKey" | "isComposing" | "keyCode"
+>;
+
+/** Safari keeps the guard alive briefly after compositionend. */
+const COMPOSITION_SETTLE_MS = 10;
+
+/**
+ * WebKit can report the closing IME keydown with isComposing cleared; keyCode
+ * 229 is the legacy signal those engines still emit for composition keys.
+ */
+export function isImeEvent(
+  event: Pick<KeyboardEvent, "isComposing" | "keyCode">,
+): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
+
+/**
+ * Composition lifetime for one input. `end` keeps the guard active for a short
+ * window because Safari fires compositionend before the confirming keydown.
+ */
+export function createCompositionGuard(
+  now: () => number = () => performance.now(),
+) {
+  let composing = false;
+  let settleUntil = 0;
+  return {
+    start() {
+      composing = true;
+      settleUntil = 0;
+    },
+    end() {
+      composing = false;
+      settleUntil = now() + COMPOSITION_SETTLE_MS;
+    },
+    reset() {
+      composing = false;
+      settleUntil = 0;
+    },
+    active() {
+      return composing || now() < settleUntil;
+    },
+  };
+}
 
 /** Command/Ctrl with + or - adjusts the markdown preview font size; 0 resets it. */
 export function previewFontShortcut(event: KeyEvent): -1 | 0 | 1 | "reset" {
@@ -40,7 +85,7 @@ export function isSendEnter(event: EnterEvent, composing: boolean): boolean {
   return (
     event.key === "Enter" &&
     !event.shiftKey &&
-    !event.isComposing &&
+    !isImeEvent(event) &&
     !composing
   );
 }
@@ -92,7 +137,7 @@ export function agentShortcut(
   if (
     key === "escape" &&
     running &&
-    !event.isComposing &&
+    !isImeEvent(event) &&
     !event.defaultPrevented
   ) {
     return "stop";

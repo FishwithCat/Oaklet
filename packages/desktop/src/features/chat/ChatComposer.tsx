@@ -14,7 +14,11 @@ import {
   QuestionRegular,
 } from "@mingcute/react/core-regular";
 import { PauseFilled, SendFilled } from "@mingcute/react/core-filled";
-import { isSendEnter } from "../../app/shortcuts";
+import {
+  createCompositionGuard,
+  isImeEvent,
+  isSendEnter,
+} from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
 import {
   formatBytes,
@@ -169,7 +173,7 @@ export function ChatComposer({
   const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
-  const composingRef = useRef(false);
+  const compositionRef = useRef(createCompositionGuard());
   const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
   const options = mention ? mentionOptions(mention.query) : [];
@@ -256,7 +260,7 @@ export function ChatComposer({
   }
 
   function syncMention(text: string, caret: number | null) {
-    if (composingRef.current || caret === null) {
+    if (compositionRef.current.active() || caret === null) {
       setMention(null);
       return;
     }
@@ -397,25 +401,24 @@ export function ChatComposer({
           }
           onPaste={pasteFiles}
           onCompositionStart={() => {
-            composingRef.current = true;
+            compositionRef.current.start();
           }}
           onCompositionEnd={() => {
             // Safari fires compositionend before the Enter keydown that
             // confirms the candidate, so keep the flag through that keydown.
-            setTimeout(() => {
-              composingRef.current = false;
-            }, 0);
+            compositionRef.current.end();
           }}
           onBlur={() => {
-            composingRef.current = false;
+            compositionRef.current.reset();
             setMention(null);
           }}
           onKeyDown={(event) => {
+            const composing = compositionRef.current.active();
             if (
               mention &&
               options.length > 0 &&
-              !event.nativeEvent.isComposing &&
-              !composingRef.current
+              !isImeEvent(event.nativeEvent) &&
+              !composing
             ) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
@@ -441,7 +444,7 @@ export function ChatComposer({
                 return;
               }
             }
-            if (!isSendEnter(event.nativeEvent, composingRef.current)) return;
+            if (!isSendEnter(event.nativeEvent, composing)) return;
             event.preventDefault();
             void submit();
           }}

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentShortcut, isSendEnter, previewFontShortcut } from "../src/app/shortcuts.ts";
+import {
+  agentShortcut,
+  createCompositionGuard,
+  isImeEvent,
+  isSendEnter,
+  previewFontShortcut,
+} from "../src/app/shortcuts.ts";
 
 const press = (overrides) => ({
   key: "",
@@ -177,6 +183,10 @@ test("Escape stops a running session just like Control+C", () => {
     ),
     null,
   );
+  assert.equal(
+    agentShortcut(press({ key: "Escape", keyCode: 229 }), "chat", true),
+    null,
+  );
 });
 
 test("Enter sends only when no IME composition is active", () => {
@@ -189,4 +199,31 @@ test("Enter sends only when no IME composition is active", () => {
   // Safari clears isComposing before the confirming keydown, so the tracked
   // composition flag must still block it.
   assert.equal(isSendEnter(enter, true), false);
+  // WebKit can also omit isComposing and keep only the legacy 229 key code.
+  assert.equal(isImeEvent({ ...enter, keyCode: 229 }), true);
+  assert.equal(isSendEnter({ ...enter, keyCode: 229 }, false), false);
+});
+
+test("Composition guard holds through the closing IME keydown", () => {
+  let now = 1000;
+  const guard = createCompositionGuard(() => now);
+  const enter = press({ key: "Enter" });
+
+  assert.equal(guard.active(), false);
+  guard.start();
+  assert.equal(isSendEnter(enter, guard.active()), false);
+
+  guard.end();
+  now += 5;
+  // Safari delivers the confirming keydown just after compositionend.
+  assert.equal(isSendEnter(enter, guard.active()), false);
+
+  now += 20;
+  assert.equal(isSendEnter({ ...enter, keyCode: 229 }, guard.active()), false);
+  assert.equal(isSendEnter(enter, guard.active()), true);
+
+  guard.start();
+  assert.equal(guard.active(), true);
+  guard.reset();
+  assert.equal(guard.active(), false);
 });
