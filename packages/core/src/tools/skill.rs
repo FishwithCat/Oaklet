@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager, State, WebviewWindow};
 use crate::SharedState;
 use crate::windows::workspace_for_window;
 
+use super::principles;
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput};
 
 const MAX_SKILL_BYTES: u64 = 256 * 1024;
@@ -169,10 +170,6 @@ impl SkillCatalog {
         self.by_name.get(name).map(|index| &self.skills[*index])
     }
 
-    pub(crate) fn has_model_skills(&self) -> bool {
-        self.skills.iter().any(|skill| skill.model_invocable)
-    }
-
     pub(crate) fn into_list(self) -> SkillList {
         SkillList {
             skills: self
@@ -278,7 +275,12 @@ pub(crate) struct LoadSkill {
 
 impl LoadSkill {
     pub(crate) fn new(catalog: SkillCatalog) -> Self {
-        let guidance = catalog.render_guidance();
+        let mut guidance = principles::index_guidance();
+        let local = catalog.render_guidance();
+        if !local.is_empty() {
+            guidance.push_str("\n\n");
+            guidance.push_str(&local);
+        }
         Self { catalog, guidance }
     }
 }
@@ -293,7 +295,7 @@ impl Tool for LoadSkill {
     }
 
     fn description(&self) -> &str {
-        "Load the full instructions for a skill. Call it before acting when a task names or clearly matches an available skill."
+        "Load the full instructions for a skill or built-in principle. Call it before acting when a task names or clearly matches one."
     }
 
     fn parameters(&self) -> Value {
@@ -302,7 +304,7 @@ impl Tool for LoadSkill {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Exact skill name from the available skills list."
+                    "description": "Exact skill or principle name from the guidance list."
                 }
             },
             "required": ["name"]
@@ -330,6 +332,9 @@ impl Tool for LoadSkill {
                 .get("name")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ToolError::InvalidArguments("name is required".into()))?;
+            if let Some(principle) = principles::get(name) {
+                return Ok(ToolOutput::text(principles::render(principle)));
+            }
             let skill = self.catalog.get(name).ok_or_else(|| {
                 ToolError::Failed(format!(
                     "Unknown skill \"{name}\". Use a name from the available skills list."
@@ -454,6 +459,13 @@ fn load_skill(
     if !valid_name(name) {
         warnings.push(format!(
             "Skipped {}: name \"{name}\" must be kebab-case.",
+            path.display()
+        ));
+        return None;
+    }
+    if name.starts_with(principles::PREFIX) {
+        warnings.push(format!(
+            "Skipped {}: name \"{name}\" is reserved for a built-in principle.",
             path.display()
         ));
         return None;
@@ -612,7 +624,7 @@ mod tests {
 
         let deploy = catalog.get("deploy").unwrap();
         assert_eq!(deploy.source, SkillSource::UserAgents);
-        assert!(catalog.has_model_skills());
+        assert!(catalog.skills.iter().any(|skill| skill.model_invocable));
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -791,7 +803,104 @@ mod tests {
         let catalog = SkillCatalog::discover(&workspace, None);
         assert!(catalog.skills.is_empty());
         assert!(catalog.warnings.is_empty());
-        assert!(!catalog.has_model_skills());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn principle_entries(guidance: &str) -> usize {
+        guidance
+            .lines()
+            .filter(|line| line.trim_start().starts_with("- `oaklet-principle-"))
+            .count()
+    }
+
+    #[test]
+    fn built_in_principles_are_available_without_installed_skills() {
+        let root = temp_root("principle-empty");
+        let workspace = root.join("does-not-exist");
+        let catalog = SkillCatalog::discover(&workspace, None);
+        assert!(catalog.skills.is_empty());
+        let load = LoadSkill::new(catalog);
+        let guidance = load.guidance();
+        assert_eq!(
+            principle_entries(guidance),
+            super::principles::PRINCIPLES.len()
+        );
+        assert!(guidance.contains("read-only guidance"));
+        assert!(!guidance.contains("Available skills"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn loads_a_built_in_principle_by_its_reserved_name() {
+        let (ctx, root, _handle) = context("principle-load");
+        let catalog = SkillCatalog::discover(&root.join("does-not-exist"), None);
+        let load = LoadSkill::new(catalog);
+        let output = load
+            .execute(
+                &ctx,
+                json!({ "name": "oaklet-principle-make-operations-idempotent" }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output
+                .text
+                .contains("<skill_content name=\"oaklet-principle-make-operations-idempotent\">")
+        );
+        assert!(output.text.contains("# Make Operations Idempotent"));
+        assert!(output.text.contains("what happens if this runs twice?"));
+
+        for principle in super::principles::PRINCIPLES {
+            let name = format!("{}{}", super::principles::PREFIX, principle.slug);
+            let output = load
+                .execute(&ctx, json!({ "name": name }))
+                .await
+                .unwrap();
+            assert!(output.text.contains(principle.title), "{name}");
+        }
+
+        assert!(
+            load.execute(&ctx, json!({ "name": "oaklet-principle-not-real" }))
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn local_files_cannot_shadow_a_built_in_principle() {
+        let root = temp_root("principle-reserved");
+        let workspace = root.join("ws");
+        let reserved = "oaklet-principle-make-operations-idempotent";
+        write(
+            &workspace.join(format!(".oaklet/skills/{reserved}/SKILL.md")),
+            &skill_file(reserved, "A local override.", ""),
+        );
+        write(
+            &workspace.join(".oaklet/skills/demo/SKILL.md"),
+            &skill_file("demo", "A normal local skill.", ""),
+        );
+
+        let catalog = SkillCatalog::discover(&workspace, None);
+        assert!(catalog.get(reserved).is_none());
+        assert!(catalog.get("demo").is_some());
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("reserved for a built-in principle"))
+        );
+        let load = LoadSkill::new(catalog);
+        let guidance = load.guidance();
+        assert_eq!(
+            principle_entries(guidance),
+            super::principles::PRINCIPLES.len()
+        );
+        assert_eq!(guidance.matches(reserved).count(), 1);
+        assert!(!guidance.contains("A local override."));
+        assert!(guidance.contains("`demo`: A normal local skill."));
 
         std::fs::remove_dir_all(&root).ok();
     }

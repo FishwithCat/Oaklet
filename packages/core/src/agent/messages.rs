@@ -271,6 +271,57 @@ mod tests {
 
         assert!(prompt.contains("Available skills"));
         assert!(prompt.contains("`review`: Review a change."));
+        assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
+        assert_eq!(
+            principle_index_entries(&prompt),
+            crate::tools::principles::PRINCIPLES.len()
+        );
+        assert!(
+            !prompt.contains("Fix the fault, not the place where it surfaced."),
+            "the initial prompt should carry only the index, not principle bodies"
+        );
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    fn principle_index_entries(prompt: &str) -> usize {
+        prompt
+            .lines()
+            .filter(|line| line.trim_start().starts_with("- `oaklet-principle-"))
+            .count()
+    }
+
+    #[test]
+    fn planning_turns_keep_the_principle_index() {
+        let workspace = crate::tools::test_support::temp_root("prompt-principles-planning");
+        let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
+        let mut tools = ToolRegistry::new();
+        tools.set_access(crate::tools::Access::planning());
+        tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
+
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert!(prompt.contains("architecture planning turn"));
+        assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
+        assert_eq!(
+            principle_index_entries(&prompt),
+            crate::tools::principles::PRINCIPLES.len()
+        );
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
+    fn the_principle_index_is_present_after_a_prompt_rebuild() {
+        let workspace = crate::tools::test_support::temp_root("prompt-principles-rebuild");
+        let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
+        let mut tools = ToolRegistry::new();
+        tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
+
+        let first = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let rebuilt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert_eq!(
+            principle_index_entries(&first),
+            crate::tools::principles::PRINCIPLES.len()
+        );
+        assert_eq!(first, rebuilt);
         std::fs::remove_dir_all(&workspace).ok();
     }
 

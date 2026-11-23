@@ -28,6 +28,7 @@ mod patch;
 mod plan;
 mod plan_diff;
 mod plan_present;
+pub(crate) mod principles;
 pub(crate) use plan_diff::draft_path;
 mod search;
 mod shell;
@@ -734,11 +735,11 @@ impl ToolRegistry {
         })
         .await
         .unwrap_or_default();
-        if catalog.has_model_skills() {
-            registry
-                .tools
-                .push(Box::new(skill::LoadSkill::new(catalog)));
-        }
+        // Built-in principles are always available, even when the workspace
+        // has no skills of its own, so the tool is always registered.
+        registry
+            .tools
+            .push(Box::new(skill::LoadSkill::new(catalog)));
 
         let node = crate::architecture::find_node();
         let helper = crate::architecture::find_helper(app);
