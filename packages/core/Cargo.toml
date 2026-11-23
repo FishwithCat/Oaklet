@@ -1,6 +1,6 @@
 [package]
 name = "oaklet"
-version = "0.2.0"
+version = "0.2.1"
 description = "Oaklet local code agent"
 authors = ["you"]
 license = "Apache-2.0"
