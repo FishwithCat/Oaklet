@@ -127,7 +127,19 @@ pub(crate) fn provider_message(mut message: Value) -> Value {
         object.remove("oaklet_id");
         object.remove("oaklet_source");
     }
+    require_reasoning_replay(&mut message);
     message
+}
+
+fn require_reasoning_replay(message: &mut Value) {
+    if message["role"] == "assistant"
+        && message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        message["reasoning_content"] = Value::String(String::new());
+    }
 }
 
 /// Merge adjacent user messages only at the provider boundary.
@@ -330,6 +342,39 @@ mod request_budget_tests {
         assert_eq!(meter.pressure(&messages), 1500);
         meter.set_schema_tokens(1000);
         assert_eq!(meter.pressure(&messages), 1200);
+    }
+
+    #[test]
+    fn every_replayed_assistant_turn_carries_reasoning_content() {
+        let messages = vec![
+            json!({"role":"user", "content":"go"}),
+            json!({"role":"assistant", "content":"first answer"}),
+            json!({"role":"user", "content":"again"}),
+            json!({
+                "role":"assistant",
+                "content":"",
+                "reasoning_content":"checked the path",
+                "tool_calls":[{
+                    "id":"call_1",
+                    "type":"function",
+                    "function": {"name":"read_file", "arguments":"{}"}
+                }]
+            }),
+            json!({"role":"tool", "tool_call_id":"call_1", "content":"ok"}),
+            json!({"role":"assistant", "content":"done", "reasoning_content": null}),
+        ];
+        let replayed = request_messages(&messages);
+        assert_eq!(replayed.len(), messages.len());
+        assert_eq!(replayed[1]["reasoning_content"], "");
+        assert_eq!(replayed[3]["reasoning_content"], "checked the path");
+        assert_eq!(replayed[5]["reasoning_content"], "");
+        for index in [0, 2, 4] {
+            assert!(
+                replayed[index].get("reasoning_content").is_none(),
+                "{} must not gain a reasoning field",
+                replayed[index]
+            );
+        }
     }
 
     #[test]
