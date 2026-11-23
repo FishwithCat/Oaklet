@@ -176,8 +176,19 @@ export function SourceControl({
                 onClick={() => selectCommit(entry.hash)}
                 aria-current={entry.hash === selectedCommit}
               >
-                <span className="commit-subject">
-                  {entry.subject || "Untitled commit"}
+                <span className="commit-subject-row">
+                  <span className="commit-subject">
+                    {entry.subject || "Untitled commit"}
+                  </span>
+                  {entry.refs.length > 0 && (
+                    <span className="commit-refs">
+                      {entry.refs.map((ref) => (
+                        <span className="commit-ref" key={ref} title={ref}>
+                          {ref}
+                        </span>
+                      ))}
+                    </span>
+                  )}
                 </span>
                 <span className="commit-meta">
                   <code>{entry.shortHash}</code>

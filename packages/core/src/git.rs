@@ -18,6 +18,7 @@ pub struct GitCommit {
     email: String,
     date: String,
     subject: String,
+    refs: Vec<String>,
     body: String,
 }
 
@@ -39,7 +40,7 @@ pub struct GitChange {
 }
 
 /// Field/record separators keep subjects and multi-line bodies unambiguous.
-const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%b%x1e";
+const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%D%x1f%b%x1e";
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
@@ -423,7 +424,7 @@ fn parse_log(output: &str) -> Vec<GitCommit> {
                 return None;
             }
 
-            let mut fields = record.splitn(7, '\u{1f}');
+            let mut fields = record.splitn(8, '\u{1f}');
             Some(GitCommit {
                 hash: fields.next()?.to_string(),
                 short_hash: fields.next()?.to_string(),
@@ -431,10 +432,33 @@ fn parse_log(output: &str) -> Vec<GitCommit> {
                 email: fields.next()?.to_string(),
                 date: fields.next()?.to_string(),
                 subject: fields.next()?.to_string(),
+                refs: parse_refs(fields.next()?),
                 body: fields.next().unwrap_or_default().trim().to_string(),
             })
         })
         .collect()
+}
+
+fn parse_refs(field: &str) -> Vec<String> {
+    let mut refs: Vec<String> = Vec::new();
+    for entry in field.split(", ") {
+        let entry = entry
+            .trim()
+            .strip_prefix("HEAD -> ")
+            .unwrap_or(entry.trim());
+        // Tags and symbolic refs such as `origin/HEAD` do not name a commit
+        // directly, so only branches are useful as list markers.
+        if entry.is_empty()
+            || entry.starts_with("tag:")
+            || entry.contains(" -> ")
+            || entry.ends_with("/HEAD")
+            || refs.iter().any(|existing| existing == entry)
+        {
+            continue;
+        }
+        refs.push(entry.to_string());
+    }
+    refs
 }
 
 #[tauri::command]
@@ -515,7 +539,9 @@ pub(crate) async fn git_diff(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_branches, parse_log, parse_status, valid_hash, valid_relative_path};
+    use super::{
+        parse_branches, parse_log, parse_refs, parse_status, valid_hash, valid_relative_path,
+    };
 
     #[test]
     fn branch_metadata_can_be_loaded_without_commit_history() {
@@ -537,6 +563,7 @@ mod tests {
             ],
         )
         .unwrap();
+        super::run_git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]).unwrap();
         let metadata = super::log(&root, false).unwrap();
         assert_eq!(metadata.branch, "main");
         assert_eq!(metadata.branches, ["main"]);
@@ -544,6 +571,7 @@ mod tests {
         let history = super::log(&root, true).unwrap();
         assert_eq!(history.commits.len(), 1);
         assert_eq!(history.commits[0].subject, "Initial");
+        assert_eq!(history.commits[0].refs, ["main", "origin/main"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -573,8 +601,8 @@ mod tests {
 
     #[test]
     fn parses_commits_and_multiline_bodies() {
-        let output = "abc123\u{1f}abc\u{1f}Ada\u{1f}ada@example.com\u{1f}2026-01-02T03:04:05+00:00\u{1f}Add git view\u{1f}First line\n\nSecond line\n\u{1e}
-def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1f}Initial commit\u{1f}\u{1e}";
+        let output = "abc123\u{1f}abc\u{1f}Ada\u{1f}ada@example.com\u{1f}2026-01-02T03:04:05+00:00\u{1f}Add git view\u{1f}HEAD -> main, origin/main, origin/HEAD, tag: v1.0.0\u{1f}First line\n\nSecond line\n\u{1e}
+ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1f}Initial commit\u{1f}\u{1f}\u{1e}";
 
         let commits = parse_log(output);
         assert_eq!(commits.len(), 2);
@@ -583,9 +611,21 @@ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1
         assert_eq!(commits[0].author, "Ada");
         assert_eq!(commits[0].email, "ada@example.com");
         assert_eq!(commits[0].subject, "Add git view");
+        assert_eq!(commits[0].refs, ["main", "origin/main"]);
         assert_eq!(commits[0].body, "First line\n\nSecond line");
         assert_eq!(commits[1].subject, "Initial commit");
+        assert!(commits[1].refs.is_empty());
         assert_eq!(commits[1].body, "");
+    }
+
+    #[test]
+    fn parses_only_branch_refs() {
+        assert_eq!(
+            parse_refs("HEAD -> main, origin/main, origin/HEAD, tag: v0.2.1"),
+            ["main", "origin/main"]
+        );
+        assert_eq!(parse_refs("feature/nested"), ["feature/nested"]);
+        assert!(parse_refs("").is_empty());
     }
 
     #[test]

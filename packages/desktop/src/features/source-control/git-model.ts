@@ -5,6 +5,7 @@ export type CommitInfo = {
   email: string;
   date: string;
   subject: string;
+  refs: string[];
   body: string;
 };
 
