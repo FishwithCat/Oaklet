@@ -6,10 +6,11 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{RunContext, trim_incomplete_tool_block};
-use crate::chat::transcript::{settle_streaming, settle_unfinished_tools};
-use crate::chat::{SessionView, Tone, notices::resume_notices};
-use crate::store::{self, EventPayload, RunEnd};
+use super::{RunContext, RunTrigger, start_run, trim_incomplete_tool_block};
+use crate::chat::transcript::{settle_streaming, settle_unfinished_tools, user_item};
+use crate::chat::{PendingInput, SessionView, Tone, notices::resume_notices};
+use crate::store::{self, EventPayload, NewUserTurn, RunEnd};
+use crate::tools::CancelHandle;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,6 +271,24 @@ impl RunContext {
             live.runs.remove(&self.run_id);
         }
 
+        let followup = if status == "stopped" || (status == "error" && self.auto_resume) {
+            self.state.chat.clear_pending(&self.session_id);
+            None
+        } else {
+            self.state.chat.take_next_input(&self.session_id)
+        };
+        session.pending = self.state.chat.pending_views(&self.session_id);
+        // The follow-up turn is not streamed; show its bubble in this terminal
+        // view so it does not disappear between this run and the next one.
+        if let Some(input) = &followup {
+            let text = input
+                .display
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            session.items.push(user_item(text, Some(&input.display)));
+        }
+
         if let Some(save_error) = &save_error {
             crate::log::key(format_args!("[oaklet] {save_error}"));
         }
@@ -318,10 +337,50 @@ impl RunContext {
             ),
         }
 
+        // A message that arrived after the last step gets one more turn before
+        // job notices do; the new run picks the remaining queue up itself.
+        let resumed = followup.is_some_and(|input| self.start_resume(input));
         // Anything that settled after this run's last step still reaches the
         // session, in one turn instead of one per job.
-        if status != "stopped" {
+        if !resumed && status != "stopped" {
             resume_notices(self);
+        }
+    }
+
+    /// Open one more turn for a message left after this run.
+    fn start_resume(&self, input: PendingInput) -> bool {
+        let Some(meta) = self.store().session_meta(&self.session_id).ok().flatten() else {
+            return false;
+        };
+        let Ok(mut config) = self.state.config.lock().map(|config| config.clone()) else {
+            return false;
+        };
+        config.workspace = meta.workspace;
+        let turn = NewUserTurn {
+            message: input.message,
+            display: Some(input.display),
+            title: None,
+        };
+        let (cancel_handle, cancel) = CancelHandle::new();
+        match start_run(
+            self.app(),
+            self.state(),
+            self.window_label(),
+            &self.session_id,
+            RunTrigger::User,
+            config,
+            turn,
+            cancel,
+            cancel_handle,
+            true,
+        ) {
+            Ok(_) => true,
+            Err(error) => {
+                crate::log::key(format_args!(
+                    "[oaklet] queued message not delivered: {error}"
+                ));
+                false
+            }
         }
     }
 

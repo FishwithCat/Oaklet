@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 use super::transcript::{settle_streaming, view_from_window};
-use super::{JobNotice, RunHandle, SessionView, Tone};
+use super::{JobNotice, PendingInputView, RunHandle, SessionView, Tone};
 use crate::agent::Usage;
 use crate::store::{self, EventPayload, NewUserTurn};
 use crate::tools::{Access, CancelHandle};
@@ -44,6 +44,7 @@ pub(super) fn start_run(
     turn: NewUserTurn,
     cancel: crate::tools::Cancel,
     cancel_handle: CancelHandle,
+    auto_resume: bool,
 ) -> Result<(String, Arc<Mutex<SessionView>>), String> {
     let store = state.chat.store.clone();
     let run_id = state.next_id();
@@ -106,6 +107,12 @@ pub(super) fn start_run(
             context::MessageId::Stored(started.start_seq),
         ));
         let mut view = view_from_window(started.window, false);
+        view.pending = super::pending_views(
+            live.pending
+                .get(session_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        );
         view.running = true;
         view.active_run_id = Some(run_id.clone());
         let view = Arc::new(Mutex::new(view));
@@ -156,6 +163,7 @@ pub(super) fn start_run(
         next_plan_version: plan_state.latest.unwrap_or(0) + 1,
         plan_requires_validation: plan_state.requires_validation,
         records_plan: plan_turn,
+        auto_resume,
     };
     let recovery_ctx = ctx.clone();
     let recovery_messages = messages.clone();
@@ -342,6 +350,9 @@ pub struct RunContext {
     plan_requires_validation: bool,
     /// Background-notice turns never create a plan awaiting review.
     records_plan: bool,
+    /// This turn was opened to deliver a message left after an earlier run, so
+    /// an error must not start another one.
+    auto_resume: bool,
 }
 
 #[derive(Default)]
@@ -386,6 +397,30 @@ impl RunContext {
     /// model step.
     pub fn take_notices(&self) -> Vec<JobNotice> {
         self.state.chat.take_notices(&self.session_id)
+    }
+
+    /// User messages that joined the turn at this step boundary.
+    pub fn take_steer_inputs(&self) -> Vec<super::PendingInput> {
+        let (taken, _) = self
+            .state
+            .chat
+            .take_steer_inputs(&self.session_id, |items, pending| {
+                self.emit(
+                    "agent:steered",
+                    SteeredEvent {
+                        session_id: self.session_id.clone(),
+                        run_id: self.run_id.clone(),
+                        items: items.to_vec(),
+                        pending: pending.to_vec(),
+                    },
+                );
+            });
+        taken
+    }
+
+    /// True when a steer arrived after this step's request was sent.
+    pub fn has_pending_steer(&self) -> bool {
+        self.state.chat.has_pending_steer(&self.session_id)
     }
 
     pub fn store(&self) -> crate::store::Store {
@@ -560,6 +595,7 @@ impl RunContext {
             next_plan_version: started.plan.latest.unwrap_or(0) + 1,
             plan_requires_validation: started.plan.requires_validation,
             records_plan: true,
+            auto_resume: false,
         }
     }
 
@@ -570,6 +606,15 @@ impl RunContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         update(&mut view);
     }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SteeredEvent {
+    session_id: String,
+    run_id: String,
+    items: Vec<Value>,
+    pending: Vec<PendingInputView>,
 }
 
 /// A plain user turn executes normally. `@arch` and plan revisions are

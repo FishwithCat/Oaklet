@@ -116,6 +116,7 @@ fn wake_notice(
         turn,
         cancel,
         cancel_handle,
+        false,
     )?;
     let spent = state
         .chat

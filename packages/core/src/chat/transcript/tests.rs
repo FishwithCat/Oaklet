@@ -40,6 +40,7 @@ fn serializes_views_and_items_in_the_frontend_shape() {
         updated_at: 7,
         turns: 2,
         items: Vec::new(),
+        pending: Vec::new(),
         first_seq: None,
         has_more: false,
         context: None,

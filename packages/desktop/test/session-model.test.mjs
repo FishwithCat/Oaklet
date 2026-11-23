@@ -7,6 +7,8 @@ import {
   applyApprovalResolved,
   applyContext,
   applyDeltas,
+  applyPending,
+  applySteered,
   applyToolResult,
   applyToolStart,
   mergeWindow,
@@ -24,6 +26,7 @@ const session = (overrides = {}) => ({
   updatedAt: 1,
   turns: 0,
   items: [],
+  pending: [],
   firstSeq: null,
   hasMore: false,
   context: null,
@@ -59,6 +62,45 @@ test("applyContext records the latest gauge without touching the transcript", ()
 
   assert.deepEqual(updated.context, { used: 12000, window: 262144 });
   assert.deepEqual(updated.items, []);
+});
+
+test("applyPending replaces the queue without touching the transcript", () => {
+  const pending = [{ id: "p1", mode: "steer", text: "go left" }];
+  const updated = applyPending(
+    session({ items: [{ kind: "assistant", text: "working", streaming: true }] }),
+    pending,
+  );
+
+  assert.deepEqual(updated.pending, pending);
+  assert.equal(updated.items.length, 1);
+  assert.equal(updated.running, true);
+});
+
+test("applySteered moves claimed messages to the end of the thread", () => {
+  const pending = [{ id: "p2", mode: "steer", text: "later" }];
+  const updated = applySteered(
+    session({ items: [{ kind: "assistant", text: "working", streaming: true }] }),
+    "run-1",
+    [{ kind: "user", text: "go left" }],
+    pending,
+  );
+
+  assert.deepEqual(updated.pending, pending);
+  assert.deepEqual(
+    updated.items.map((item) => item.kind),
+    ["assistant", "user"],
+  );
+  assert.equal(updated.activeRunId, "run-1");
+});
+
+test("mergeWindow brings the pending queue from the persisted view", () => {
+  const pending = [{ id: "p1", mode: "steer", text: "go left" }];
+  const merged = mergeWindow(
+    session(),
+    session({ pending, firstSeq: 1, items: [] }),
+  );
+
+  assert.deepEqual(merged.pending, pending);
 });
 
 test("tab usage accumulates across runs instead of resetting on send", () => {

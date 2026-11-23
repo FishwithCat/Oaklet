@@ -360,6 +360,7 @@ function App() {
           onMoveTab={session.moveTab}
           onCloseTab={session.closeTab}
           items={session.items}
+          pending={session.pending}
           firstSeq={session.firstSeq}
           hasMore={session.hasMore}
           loadingOlder={session.loadingOlder}

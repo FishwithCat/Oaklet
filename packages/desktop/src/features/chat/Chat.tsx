@@ -30,7 +30,9 @@ import type { PlanBaseline, PlanCompareData } from "./plan-model";
 import type {
   ChatTabInfo,
   ContextUsage,
+  PendingInput,
   RunUsage,
+  SendMode,
   StepUsage,
 } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
@@ -58,6 +60,7 @@ export function Chat({
   onMoveTab,
   onCloseTab,
   items,
+  pending,
   firstSeq,
   hasMore,
   loadingOlder,
@@ -89,6 +92,7 @@ export function Chat({
   onMoveTab: (from: number, to: number) => void;
   onCloseTab: (id: string) => void;
   items: Item[];
+  pending: PendingInput[];
   firstSeq: number | null;
   hasMore: boolean;
   loadingOlder: boolean;
@@ -100,7 +104,11 @@ export function Chat({
   usage: RunUsage | null;
   stepUsage: StepUsage | null;
   model: string;
-  onSend: (text: string, attachments: Attachment[]) => Promise<boolean>;
+  onSend: (
+    text: string,
+    attachments: Attachment[],
+    mode: SendMode,
+  ) => Promise<boolean>;
   onStop: () => void;
   onCompact: () => void;
   onLoadOlder: () => Promise<boolean>;
@@ -171,7 +179,7 @@ export function Chat({
     if (stickToBottomRef.current) {
       pinToBottom();
     }
-  }, [items, compacting]);
+  }, [items, pending.length, compacting]);
 
   // A prepend keeps the row the user was reading under the same viewport
   // position; only a window that actually grew older consumes the anchor.
@@ -337,7 +345,11 @@ export function Chat({
     const tabId = activeTabIdRef.current;
     const text = input;
     try {
-      const accepted = await onSend(text, attachments);
+      const accepted = await onSend(
+        text,
+        attachments,
+        running ? "steer" : "normal",
+      );
       if (!accepted) return false;
       // A successful send consumes this tab's draft, but do not erase text
       // typed in another tab while the request was in flight.
@@ -538,6 +550,7 @@ export function Chat({
           <ChatThread
             sessionId={activeTabId}
             items={items}
+            pending={pending}
             running={running}
             compacting={compacting}
             activeRunId={activeRunId}

@@ -126,6 +126,19 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             messages.push(message);
         }
 
+        // A message the user sent while this turn was working joins here, after
+        // every tool result and after any job notice. The model sees it first on
+        // the next request, and the turn keeps its original access.
+        for input in ctx.take_steer_inputs() {
+            let mut display = input.display;
+            if let Some(object) = display.as_object_mut() {
+                object.insert("steer".into(), json!(true));
+                object.insert("runId".into(), json!(ctx.run_id()));
+            }
+            let message = ctx.record_message(input.message, Some(display));
+            messages.push(message);
+        }
+
         // This also runs before the first request of a run, so a saved history
         // that no longer fits the configured window after a model switch is
         // compacted before it is sent.
@@ -199,6 +212,11 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         messages.push(assistant);
         ctx.context(meter.pressure(&messages), config.context_window);
         if reply.calls.is_empty() {
+            // A steer that arrived while this reply was streaming still gets a
+            // step, so the message is never stranded behind a finished turn.
+            if ctx.has_pending_steer() {
+                continue;
+            }
             // The system prompt is rebuilt every turn; keep it out of the
             // conversation that is saved.
             ctx.finish_done(tail(&messages)).await;

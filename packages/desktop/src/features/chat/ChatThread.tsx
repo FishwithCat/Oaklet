@@ -3,6 +3,7 @@ import { FileRegular } from "@mingcute/react/core-regular";
 import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import type { SentAttachment } from "./attachments";
+import type { PendingInput } from "./session-model";
 import { ProcessGroup } from "./Process";
 import { toBlocks, type Item } from "./chat-model";
 import type { ApprovalChoice, ToolItem } from "./process-model";
@@ -19,9 +20,61 @@ function isImage(attachment: SentAttachment): attachment is ImageAttachment {
   return attachment.kind === "image";
 }
 
+function UserMessage({
+  text,
+  attachments,
+  onPreview,
+}: {
+  text: string;
+  attachments: SentAttachment[];
+  onPreview: (attachment: ImageAttachment) => void;
+}) {
+  const images = attachments.filter(isImage);
+  const files = attachments.filter((attachment) => attachment.kind === "file");
+  return (
+    <>
+      {images.length > 0 && (
+        <div className="message-images">
+          {images.map((attachment, index) => (
+            <button
+              key={`${attachment.name}-${index}`}
+              type="button"
+              className="message-image"
+              aria-label={`Preview ${attachment.name}`}
+              title="Preview image"
+              onClick={() => onPreview(attachment)}
+            >
+              <img src={attachment.thumbnail} alt={attachment.name} />
+            </button>
+          ))}
+        </div>
+      )}
+      {(text || files.length > 0) && (
+        <div className="bubble">
+          {files.length > 0 && (
+            <div className="bubble-attachments">
+              {files.map((attachment, index) => (
+                <span
+                  className="bubble-file"
+                  key={`${attachment.name}-${index}`}
+                >
+                  <FileRegular size={12} aria-hidden="true" />
+                  <span className="bubble-file-name">{attachment.name}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {text && <div className="bubble-text">{text}</div>}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function ChatThread({
   sessionId,
   items,
+  pending,
   running,
   compacting,
   activeRunId,
@@ -34,6 +87,7 @@ export function ChatThread({
 }: {
   sessionId: string;
   items: Item[];
+  pending: PendingInput[];
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
@@ -83,11 +137,6 @@ export function ChatThread({
 
         const item = block.item;
         if (item.kind === "user") {
-          const attachments = item.attachments ?? [];
-          const images = attachments.filter(isImage);
-          const files = attachments.filter(
-            (attachment) => attachment.kind === "file",
-          );
           return (
             <div
               className="msg user"
@@ -98,42 +147,11 @@ export function ChatThread({
               }
               data-seq={item.seq}
             >
-              {images.length > 0 && (
-                <div className="message-images">
-                  {images.map((attachment, index) => (
-                    <button
-                      key={`${attachment.name}-${index}`}
-                      type="button"
-                      className="message-image"
-                      aria-label={`Preview ${attachment.name}`}
-                      title="Preview image"
-                      onClick={() => setPreview(attachment)}
-                    >
-                      <img src={attachment.thumbnail} alt={attachment.name} />
-                    </button>
-                  ))}
-                </div>
-              )}
-              {(item.text || files.length > 0) && (
-                <div className="bubble">
-                  {files.length > 0 && (
-                    <div className="bubble-attachments">
-                      {files.map((attachment, index) => (
-                        <span
-                          className="bubble-file"
-                          key={`${attachment.name}-${index}`}
-                        >
-                          <FileRegular size={12} aria-hidden="true" />
-                          <span className="bubble-file-name">
-                            {attachment.name}
-                          </span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {item.text && <div className="bubble-text">{item.text}</div>}
-                </div>
-              )}
+              <UserMessage
+                text={item.text}
+                attachments={item.attachments ?? []}
+                onPreview={setPreview}
+              />
             </div>
           );
         }
@@ -188,6 +206,15 @@ export function ChatThread({
           </div>
         );
       })}
+      {pending.map((input) => (
+        <div className="msg user pending" key={`pending-${input.id}`}>
+          <UserMessage
+            text={input.text}
+            attachments={input.attachments ?? []}
+            onPreview={setPreview}
+          />
+        </div>
+      ))}
       {compacting && (
         <div className="notice" role="status">
           Compacting context…

@@ -222,6 +222,15 @@
   font-size: 13px;
 }
 
+.msg.user.pending {
+  opacity: 0.68;
+}
+
+.msg.user.pending .bubble {
+  border: 1px dashed var(--panel-muted-border-strong);
+  background: transparent;
+}
+
 .message-images {
   display: flex;
   flex-wrap: wrap;
@@ -653,6 +662,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
 }
 
 .composer-meta {

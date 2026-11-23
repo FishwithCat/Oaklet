@@ -1,5 +1,10 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { RunUsage, SessionView } from "./session-model.ts";
+import type {
+  PendingInput,
+  RunUsage,
+  SessionView,
+} from "./session-model.ts";
+import type { Item } from "./chat-model.ts";
 import type { FileDiff, ProcessOutcome } from "./process-model.ts";
 
 export type DeltaEvent = { sessionId: string; runId: string; text: string };
@@ -62,6 +67,16 @@ export type StoppedEvent = {
   runId: string;
   session: SessionView | null;
 };
+export type PendingEvent = {
+  sessionId: string;
+  pending: PendingInput[];
+};
+export type SteeredEvent = {
+  sessionId: string;
+  runId: string;
+  items: Item[];
+  pending: PendingInput[];
+};
 
 export type AgentEventHandlers = {
   onDelta: (event: DeltaEvent) => void;
@@ -75,6 +90,8 @@ export type AgentEventHandlers = {
   onUsage: (event: UsageEvent) => void;
   onError: (event: ErrorEvent) => void;
   onStopped: (event: StoppedEvent) => void;
+  onPending: (event: PendingEvent) => void;
+  onSteered: (event: SteeredEvent) => void;
 };
 
 export type RegisterListener = <T>(
@@ -129,6 +146,12 @@ export async function subscribeAgentEvents(
     await add<ErrorEvent>("agent:error", (payload) => handlers.onError(payload));
     await add<StoppedEvent>("agent:stopped", (payload) =>
       handlers.onStopped(payload),
+    );
+    await add<PendingEvent>("agent:pending", (payload) =>
+      handlers.onPending(payload),
+    );
+    await add<SteeredEvent>("agent:steered", (payload) =>
+      handlers.onSteered(payload),
     );
   } catch (error) {
     for (const unlisten of unlisteners) unlisten();

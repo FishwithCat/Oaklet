@@ -65,6 +65,7 @@ pub(super) fn view_from_session(session: Session, compacting: bool) -> SessionVi
         updated_at: session.updated_at,
         turns: session.turns,
         items: project_events(&session.events),
+        pending: Vec::new(),
         first_seq,
         has_more: first_seq.is_some_and(|seq| seq > 1),
         context: session.context,
@@ -85,6 +86,7 @@ pub(super) fn view_from_window(window: store::SessionWindow, compacting: bool) -
         updated_at: window.updated_at,
         turns: window.turns,
         items: project_events(&window.events),
+        pending: Vec::new(),
         first_seq,
         has_more: window.has_more,
         context: window.context,
@@ -94,6 +96,19 @@ pub(super) fn view_from_window(window: store::SessionWindow, compacting: bool) -
         compacting,
         active_run_id: None,
     }
+}
+
+/// A user bubble from display metadata, shared by the projection and the live
+/// rows a steer appends at a step boundary.
+pub(super) fn user_item(text: &str, display: Option<&Value>) -> Value {
+    let mut item = json!({ "kind": "user", "text": text });
+    if let Some(attachments) = display
+        .and_then(|display| display.get("attachments"))
+        .filter(|value| value.as_array().is_some_and(|list| !list.is_empty()))
+    {
+        item["attachments"] = attachments.clone();
+    }
+    item
 }
 
 /// Text a user bubble shows; attachment bodies in the model message stay out
@@ -216,15 +231,8 @@ fn project_events(events: &[Event]) -> Vec<Value> {
                             .and_then(Value::as_str)
                             .map(str::to_string)
                             .unwrap_or_else(|| item_text(message.get("content")));
-                        let mut item = json!({ "kind": "user", "text": text });
+                        let mut item = user_item(&text, display.as_ref());
                         item["seq"] = json!(event.seq);
-                        if let Some(attachments) = display
-                            .as_ref()
-                            .and_then(|display| display.get("attachments"))
-                            .filter(|value| value.as_array().is_some_and(|list| !list.is_empty()))
-                        {
-                            item["attachments"] = attachments.clone();
-                        }
                         items.push(item);
                     }
                     "assistant" => {

@@ -1,5 +1,6 @@
 import { settleStreaming, type Item } from "./chat-model.ts";
 import type { FileDiff, ProcessOutcome } from "./process-model.ts";
+import type { SentAttachment } from "./attachments.ts";
 
 export type ContextUsage = { used: number; window: number };
 
@@ -18,6 +19,17 @@ export type RunUsage = {
   cacheHitTokens: number;
   cacheMissTokens: number;
   steps: number;
+};
+
+/** How a message sent while a run is active is delivered. */
+export type SendMode = "normal" | "steer" | "queue";
+
+/** A message waiting for the busy turn; the backend is the source of truth. */
+export type PendingInput = {
+  id: string;
+  mode: "steer" | "queue";
+  text: string;
+  attachments?: SentAttachment[];
 };
 
 /** Usage for one tab: settled runs plus the run currently reporting. */
@@ -114,6 +126,8 @@ export type SessionView = {
   updatedAt: number;
   turns: number;
   items: Item[];
+  /** Messages sent while the run was busy, in arrival order. */
+  pending: PendingInput[];
   /** Seq of the oldest event in this window, or null for an empty session. */
   firstSeq: number | null;
   /** Whether events exist before `firstSeq`. */
@@ -235,6 +249,29 @@ export function applyContext(
   event: ContextUsage,
 ): SessionView {
   return { ...tab, context: { used: event.used, window: event.window } };
+}
+
+/** Replace the queue a client shows; the backend already accepted its claim. */
+export function applyPending(
+  tab: SessionView,
+  pending: PendingInput[],
+): SessionView {
+  return { ...tab, pending, running: true };
+}
+
+/** Move claimed messages from the queue into the thread. */
+export function applySteered(
+  tab: SessionView,
+  runId: string,
+  items: Item[],
+  pending: PendingInput[],
+): SessionView {
+  return {
+    ...withItems(tab, [...tab.items, ...items]),
+    pending,
+    running: true,
+    activeRunId: runId,
+  };
 }
 
 export function tabStatus(tab: SessionView): ChatTabInfo["status"] {

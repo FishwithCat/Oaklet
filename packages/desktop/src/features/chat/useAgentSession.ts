@@ -14,6 +14,8 @@ import {
   applyApprovalResolved,
   applyContext,
   applyDeltas,
+  applyPending,
+  applySteered,
   applyToolResult,
   applyToolStart,
   mergeWindow,
@@ -25,6 +27,7 @@ import {
   type SessionSummary,
   type SessionView,
   type RunUsage,
+  type SendMode,
   type StreamDelta,
   type TabUsage,
 } from "./session-model.ts";
@@ -291,6 +294,19 @@ export function useAgentSession({
           text: "Stopped.",
         });
       },
+      onPending: (event) => {
+        if (disposed) return;
+        updateSession(event.sessionId, (tab) =>
+          applyPending(tab, event.pending),
+        );
+      },
+      onSteered: (event) => {
+        if (disposed) return;
+        batch.flush();
+        updateSession(event.sessionId, (tab) =>
+          applySteered(tab, event.runId, event.items, event.pending),
+        );
+      },
     })
       .then((unlisten) => {
         if (disposed) unlisten();
@@ -356,42 +372,49 @@ export function useAgentSession({
   async function send(
     text: string,
     attachments: Attachment[] = [],
+    mode: SendMode = "normal",
   ): Promise<boolean> {
     const trimmed = text.trim();
     if ((!trimmed && attachments.length === 0) || !enabled) return false;
 
     const tab = sessionsRef.current[activeTabIdRef.current];
-    if (
-      !tab ||
-      tab.running ||
-      tab.compacting ||
-      compactingIdsRef.current.has(tab.id)
-    ) {
+    if (!tab || tab.compacting || compactingIdsRef.current.has(tab.id)) {
       return false;
+    }
+    // A stale running flag on the client would otherwise be rejected by the
+    // backend; steer instead, which also handles a run that already ended.
+    if (mode === "normal" && tab.running) {
+      return send(text, attachments, "steer");
     }
 
     const workspaceAtSend = workspaceRef.current;
     const previous = tab;
-    const userItem: Item =
-      attachments.length > 0
-        ? {
-            kind: "user",
-            text: trimmed,
-            attachments: sentAttachments(attachments),
-          }
-        : { kind: "user", text: trimmed };
-    putSession(
-      withItems(
-        { ...tab, running: true, activeRunId: null },
-        [...tab.items, userItem],
-      ),
-    );
+    if (mode === "normal") {
+      const userItem: Item =
+        attachments.length > 0
+          ? {
+              kind: "user",
+              text: trimmed,
+              attachments: sentAttachments(attachments),
+            }
+          : { kind: "user", text: trimmed };
+      putSession(
+        withItems(
+          { ...tab, running: true, activeRunId: null },
+          [...tab.items, userItem],
+        ),
+      );
+    } else {
+      // No optimistic bubble: the backend's pending list is authoritative.
+      putSession({ ...tab, running: true });
+    }
 
     try {
       const { runId, session } = await invoke<SendResult>("session_send", {
         sessionId: tab.id,
         text: trimmed,
         attachments,
+        mode,
       });
       if (workspaceRef.current !== workspaceAtSend) return false;
       const current = sessionsRef.current[tab.id];
@@ -408,13 +431,23 @@ export function useAgentSession({
         turns: session.turns,
         updatedAt: session.updatedAt,
         running: true,
-        activeRunId: runId,
+        activeRunId: mode === "normal" ? runId : (session.activeRunId ?? runId),
       });
       return true;
     } catch (error) {
       if (workspaceRef.current !== workspaceAtSend) return false;
-      if (!sessionsRef.current[tab.id]) return false;
-      putSession(appendNotice(previous, "error", errorText(error)));
+      const current = sessionsRef.current[tab.id];
+      if (!current) return false;
+      const message = errorText(error);
+      if (mode === "normal" && message.includes("already working")) {
+        putSession(previous);
+        return send(text, attachments, "steer");
+      }
+      // A steer ran alongside the stream, so keep what arrived while it was
+      // in flight instead of restoring the pre-send snapshot.
+      putSession(
+        appendNotice(mode === "normal" ? previous : current, "error", message),
+      );
       return false;
     }
   }
@@ -688,6 +721,7 @@ export function useAgentSession({
 
   return {
     items: activeTab?.items ?? [],
+    pending: activeTab?.pending ?? [],
     firstSeq: activeTab?.firstSeq ?? null,
     hasMore: activeTab?.hasMore ?? false,
     loadingOlder,

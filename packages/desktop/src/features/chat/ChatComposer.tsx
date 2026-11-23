@@ -548,7 +548,7 @@ export function ChatComposer({
                       <dt>
                         <kbd>↵</kbd>
                       </dt>
-                      <dd>Send</dd>
+                      <dd>{running ? "Steer the current turn" : "Send"}</dd>
                     </div>
                     <div className="shortcut">
                       <dt>
@@ -567,17 +567,18 @@ export function ChatComposer({
               )}
             </span>
           </span>
-          {running ? (
-            <button
-              type="button"
-              className="stop icon-button"
-              onClick={onStop}
-              aria-label="Stop"
-              title="Stop"
-            >
-              <PauseFilled size={14} />
-            </button>
-          ) : (
+          <div className="composer-actions">
+            {running && (
+              <button
+                type="button"
+                className="stop icon-button"
+                onClick={onStop}
+                aria-label="Stop"
+                title="Stop"
+              >
+                <PauseFilled size={14} />
+              </button>
+            )}
             <button
               type="submit"
               className="primary icon-button"
@@ -586,12 +587,20 @@ export function ChatComposer({
                 reading ||
                 (!value.trim() && attachments.length === 0)
               }
-              aria-label={compacting ? "Compacting context" : "Send"}
-              title={compacting ? "Compacting context…" : "Send"}
+              aria-label={
+                compacting ? "Compacting context" : running ? "Steer" : "Send"
+              }
+              title={
+                compacting
+                  ? "Compacting context…"
+                  : running
+                    ? "Steer the current turn"
+                    : "Send"
+              }
             >
               <SendFilled size={16} />
             </button>
-          )}
+          </div>
         </div>
       </form>
     </div>

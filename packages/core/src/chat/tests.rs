@@ -152,6 +152,7 @@ fn live_runs_override_the_persisted_view() {
         has_more: false,
         context: None,
         last_usage: None,
+        pending: Vec::new(),
         running: true,
         blocked: true,
         compacting: false,
@@ -183,4 +184,148 @@ fn live_runs_override_the_persisted_view() {
 
     let idle = view_from_session(session, false);
     assert!(!idle.running);
+}
+
+fn busy_state() -> ChatState {
+    let state = ChatState::in_memory();
+    let session = state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+    let mut view = view_from_session(session, false);
+    view.running = true;
+    view.active_run_id = Some("r1".into());
+    let (cancel, _cancel) = CancelHandle::new();
+    state.live().runs.insert(
+        "r1".into(),
+        RunHandle {
+            session_id: "s1".into(),
+            window: "main".into(),
+            cancel,
+            view: Arc::new(Mutex::new(view)),
+        },
+    );
+    state
+}
+
+fn queued_turn(text: &str) -> store::NewUserTurn {
+    store::NewUserTurn {
+        message: json!({ "role": "user", "content": text }),
+        display: Some(json!({ "text": text })),
+        title: None,
+    }
+}
+
+#[test]
+fn a_steer_joins_the_queue_and_is_claimed_once() {
+    let state = busy_state();
+    let result = state
+        .enqueue_input(
+            "s1",
+            "main",
+            SendMode::Steer,
+            "p1".into(),
+            queued_turn("go left"),
+            |session| {
+                assert_eq!(session.pending.len(), 1);
+                assert_eq!(session.pending[0].text, "go left");
+            },
+        )
+        .unwrap();
+    assert!(matches!(result, Ok((ref run_id, _)) if run_id == "r1"));
+    assert!(state.has_pending_steer("s1"));
+
+    let mut published = 0;
+    let (taken, pending) = state.take_steer_inputs("s1", |items, pending| {
+        published = items.len();
+        assert_eq!(items[0]["text"], "go left");
+        assert!(pending.is_empty());
+    });
+    assert_eq!(published, 1);
+    assert_eq!(taken.len(), 1);
+    assert!(pending.is_empty());
+    assert!(!state.has_pending_steer("s1"));
+
+    let view = state.live_view("s1").unwrap();
+    assert!(view.pending.is_empty());
+    assert!(
+        view.items
+            .iter()
+            .any(|item| item["kind"] == "user" && item["text"] == "go left")
+    );
+    assert!(state.take_steer_inputs("s1", |_, _| {}).0.is_empty());
+}
+
+#[test]
+fn a_queued_message_waits_for_the_next_turn() {
+    let state = busy_state();
+    let enqueued = state
+        .enqueue_input(
+            "s1",
+            "main",
+            SendMode::Queue,
+            "p1".into(),
+            queued_turn("later"),
+            |_| {},
+        )
+        .unwrap();
+    assert!(enqueued.is_ok());
+
+    assert!(!state.has_pending_steer("s1"));
+    let (taken, pending) = state.take_steer_inputs("s1", |_, _| {});
+    assert!(taken.is_empty());
+    assert_eq!(pending.len(), 1);
+
+    let next = state.take_next_input("s1").unwrap();
+    assert_eq!(next.display["text"].as_str(), Some("later"));
+    assert!(state.pending_views("s1").is_empty());
+}
+
+#[test]
+fn a_normal_send_is_not_queued_behind_a_run() {
+    let state = busy_state();
+    let result = state
+        .enqueue_input(
+            "s1",
+            "main",
+            SendMode::Normal,
+            "p1".into(),
+            queued_turn("hello"),
+            |_| panic!("a normal send must not publish a pending row"),
+        )
+        .unwrap();
+    assert!(matches!(
+        result,
+        Err(turn) if turn.display.as_ref().and_then(|display| display["text"].as_str())
+            == Some("hello")
+    ));
+}
+
+#[test]
+fn the_queue_is_bounded() {
+    let state = busy_state();
+    for index in 0..MAX_PENDING {
+        let result = state
+            .enqueue_input(
+                "s1",
+                "main",
+                SendMode::Steer,
+                format!("p{index}"),
+                queued_turn("go"),
+                |_| {},
+            )
+            .unwrap();
+        assert!(result.is_ok());
+    }
+
+    let error = match state.enqueue_input(
+        "s1",
+        "main",
+        SendMode::Steer,
+        "overflow".into(),
+        queued_turn("go"),
+        |_| {},
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("the queue must reject a message over its bound"),
+    };
+    assert!(error.contains("16"));
+    assert_eq!(state.pending_views("s1").len(), MAX_PENDING);
 }

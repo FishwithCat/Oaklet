@@ -14,6 +14,8 @@ const handlers = () => ({
   onUsage: () => {},
   onError: () => {},
   onStopped: () => {},
+  onPending: () => {},
+  onSteered: () => {},
 });
 
 test("registers every agent event and releases all listeners", async () => {
@@ -38,6 +40,8 @@ test("registers every agent event and releases all listeners", async () => {
     "agent:usage",
     "agent:error",
     "agent:stopped",
+    "agent:pending",
+    "agent:steered",
   ]);
 
   release();

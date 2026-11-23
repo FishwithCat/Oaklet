@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use super::input::{build_user_turn, session_title};
 use super::manual_compaction::{CompactionSlot, compact_session};
@@ -11,8 +11,8 @@ use super::mentions;
 use super::run::{RunTrigger, start_run};
 use super::transcript::view_from_session;
 use super::{
-    CompactResult, IncomingAttachment, SendResult, SessionOperation, SessionSummary, SessionView,
-    resolve_approvals,
+    CompactResult, IncomingAttachment, PendingInputView, SendMode, SendResult, SessionOperation,
+    SessionSummary, SessionView, resolve_approvals,
 };
 use crate::SharedState;
 use crate::architecture::{self, PlanningScope};
@@ -89,6 +89,7 @@ pub async fn session_send(
     session_id: String,
     text: String,
     attachments: Vec<IncomingAttachment>,
+    mode: Option<SendMode>,
 ) -> Result<SendResult, String> {
     let window_workspace = workspace_for_window(&state, window.label())?;
     let mut config = state
@@ -135,6 +136,34 @@ pub async fn session_send(
         title,
     };
 
+    let mode = mode.unwrap_or(SendMode::Normal);
+    let pending_id = state.next_id();
+    let turn = match state.chat.enqueue_input(
+        &session_id,
+        window.label(),
+        mode,
+        pending_id,
+        turn,
+        |session| {
+            let _ = app.emit_to(
+                window.label(),
+                "agent:pending",
+                PendingEvent {
+                    session_id: session_id.clone(),
+                    pending: session.pending.clone(),
+                },
+            );
+        },
+    )? {
+        Ok((run_id, session)) => {
+            // A queued message ends the wake chain a job notice may have started.
+            state.chat.live().wakes.remove(&session_id);
+            return Ok(SendResult { run_id, session });
+        }
+        // The run ended before the lock; deliver the turn normally.
+        Err(turn) => turn,
+    };
+
     let (cancel_handle, cancel) = CancelHandle::new();
     let (run_id, view) = start_run(
         &app,
@@ -146,6 +175,7 @@ pub async fn session_send(
         turn,
         cancel,
         cancel_handle,
+        false,
     )?;
     // A user message ends the wake chain a job notice may have started.
     state.chat.live().wakes.remove(&session_id);
@@ -222,6 +252,7 @@ pub async fn session_confirm_plan(
         turn,
         cancel,
         cancel_handle,
+        false,
     )?;
     state.chat.live().wakes.remove(&session_id);
     let session = view
@@ -229,6 +260,13 @@ pub async fn session_confirm_plan(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     Ok(SendResult { run_id, session })
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingEvent {
+    session_id: String,
+    pending: Vec<PendingInputView>,
 }
 
 async fn verify_confirmation(
