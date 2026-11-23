@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::ToolCall;
 use crate::AppConfig;
-use crate::tools::{ToolImage, ToolRegistry};
+use crate::tools::{ToolAccess, ToolImage, ToolRegistry};
 
 pub(super) fn strip_system(input: &[Value]) -> Vec<Value> {
     input
@@ -148,6 +148,38 @@ pub(super) fn system_prompt(
             model_sources.join(", ")
         ));
     }
+    if tools.access().mode() == ToolAccess::Execute {
+        rules.push(
+            "Treat a bug-fix request as a change request: reproduce the failure before editing, \
+             trace it to the root cause, and prefer an existing test or script. When a suitable \
+             regression check exists, confirm it fails for the expected reason, make the fix, and \
+             rerun the same check. If reproduction is blocked, say what is missing and run the \
+             checks that are available."
+                .into(),
+        );
+        rules.push(
+            "Treat a verification-only request (verify, check, review) as read-only: inspect the \
+             current changes and project conventions, run the most relevant existing tests, \
+             builds, or scripts, and do not edit source files or change Git staging state."
+                .into(),
+        );
+        rules.push(
+            "After changing code, including while implementing an approved plan, run the checks \
+             relevant to the change before replying. Break multistep work into steps you can \
+             check independently, reuse existing tests and scripts, and prefer the smallest \
+             change that fixes the issue."
+                .into(),
+        );
+        rules.push(
+            "In the final reply, list each check that actually ran, its result, and what behavior \
+             it covered. For a bug fix, include the results of the same check before and after \
+             the fix when available. State missing reproduction conditions, gaps in the available \
+             checks, or what blocked them; if a check is still running in the background, report \
+             that status instead of claiming it passed. A successful compile only shows that the \
+             code compiles."
+                .into(),
+        );
+    }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
     let mut prompt = format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
@@ -196,6 +228,22 @@ mod tests {
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
+    }
+
+    #[test]
+    fn execution_turns_get_bug_fix_and_verification_rules() {
+        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        assert!(prompt.contains("reproduce the failure before editing"));
+        assert!(prompt.contains("verification-only request"));
+        assert!(prompt.contains("do not edit source files or change Git staging state"));
+        assert!(prompt.contains("list each check that actually ran"));
+        assert!(prompt.contains("A successful compile only shows that the code compiles"));
+
+        let mut tools = ToolRegistry::new();
+        tools.set_access(crate::tools::Access::planning());
+        let planning = system_prompt(&AppConfig::default(), &tools, &[], None);
+        assert!(!planning.contains("reproduce the failure before editing"));
+        assert!(!planning.contains("list each check that actually ran"));
     }
 
     #[test]
@@ -283,6 +331,8 @@ mod tests {
         assert!(prompt.contains("approved plan version 3"));
         assert!(prompt.contains("may edit from the first step"));
         assert!(prompt.contains("stop writing and report it"));
+        assert!(prompt.contains("After changing code"));
+        assert!(prompt.contains("list each check that actually ran"));
     }
 
     #[test]
