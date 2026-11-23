@@ -27,7 +27,7 @@ const MAX_GREP_FILE_BYTES: u64 = 2_000_000;
 const MAX_LINE_CHARS: usize = 2_000;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn walker(root: &Path, include_hidden: bool) -> WalkBuilder {
+pub(crate) fn walker(root: &Path, include_hidden: bool) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(!include_hidden)

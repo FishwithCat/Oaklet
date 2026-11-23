@@ -10,6 +10,7 @@ use crate::windows::workspace_for_window;
 use crate::{SharedState, tools::Workspace};
 
 const MAX_BYTES: u64 = 2_000_000;
+const MAX_FIND_RESULTS: usize = 20_000;
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize)]
@@ -41,6 +42,18 @@ pub async fn files_list(
 ) -> Result<Vec<Entry>, String> {
     let root = self::workspace(&state, &window, &workspace)?;
     tauri::async_runtime::spawn_blocking(move || list(&root, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn files_find(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    workspace: String,
+) -> Result<Vec<String>, String> {
+    let root = self::workspace(&state, &window, &workspace)?;
+    tauri::async_runtime::spawn_blocking(move || find(&root))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -126,6 +139,25 @@ fn list(root: &Workspace, path: &str) -> Result<Vec<Entry>, String> {
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(entries)
+}
+
+/// Every visible file in the workspace for the editor's quick-open list.
+fn find(root: &Workspace) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    for result in crate::tools::search::walker(root.root(), true).build() {
+        let Ok(entry) = result else {
+            continue;
+        };
+        if entry.depth() == 0 || !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        files.push(root.relative(entry.path()).to_string_lossy().into_owned());
+        if files.len() == MAX_FIND_RESULTS {
+            break;
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn read(path: &Path) -> Result<String, String> {
@@ -241,6 +273,26 @@ mod tests {
         assert!(read(&dir).is_err());
         let entries = list(&root, ".").unwrap();
         assert!(entries.iter().all(|entry| entry.name != ".git"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn finds_workspace_files_and_honors_ignore_rules() {
+        let dir = temp_root("file-find");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        fs::create_dir(dir.join("src")).unwrap();
+        fs::create_dir(dir.join(".git")).unwrap();
+        fs::write(dir.join("src/main.rs"), "").unwrap();
+        fs::write(dir.join(".git/config"), "").unwrap();
+        fs::write(dir.join(".gitignore"), "secret.txt\n").unwrap();
+        fs::write(dir.join("secret.txt"), "").unwrap();
+
+        let files = find(&root).unwrap();
+
+        assert_eq!(
+            files,
+            vec![".gitignore".to_string(), "src/main.rs".to_string()]
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

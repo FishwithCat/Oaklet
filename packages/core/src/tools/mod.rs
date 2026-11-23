@@ -31,7 +31,7 @@ mod plan_diff;
 mod plan_present;
 pub(crate) mod principles;
 pub(crate) use plan_diff::draft_path;
-mod search;
+pub(crate) mod search;
 mod shell;
 pub(crate) mod skill;
 pub(crate) mod web;

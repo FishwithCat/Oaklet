@@ -20,6 +20,7 @@ import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../sourc
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
+import { FileSearch } from "./FileSearch";
 
 // The editor bundle is heavy; load it when a file is opened, not with the page.
 const FileEditor = lazy(() => import("./FileEditor"));
@@ -34,6 +35,7 @@ export type FilesHandle = {
   hasUnsaved: () => boolean;
   open: (path: string) => void;
   closeDocument: () => void;
+  quickOpen: () => void;
 };
 type Document = { path: string; original: string; content: string };
 type ImageDocument = { path: string; src: string };
@@ -66,6 +68,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [enlarged, setEnlarged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [preview, setPreview] = useState(false);
   const [previewFontSize, setPreviewFontSize] = useState(PREVIEW_FONT_SIZE_DEFAULT);
   const [syntax, setSyntax] = useState<Extension>([]);
@@ -103,6 +106,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       setPreview(false);
       dirtyRef.current = false;
     },
+    quickOpen: () => setSearchOpen(true),
   }));
 
   useEffect(() => {
@@ -129,6 +133,10 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [active, preview]);
+
+  useEffect(() => {
+    if (!active) setSearchOpen(false);
+  }, [active]);
 
   // Gutter marks come from the file on disk. While the buffer is dirty it
   // keeps its mapped marks, and saving refetches the diff.
@@ -260,6 +268,16 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
         </div>
       </div>
       {image && enlarged && <ImageLightbox src={image.src} alt={image.path} onClose={() => setEnlarged(false)} />}
+      {searchOpen && (
+        <FileSearch
+          workspace={workspace}
+          onClose={() => setSearchOpen(false)}
+          onOpen={(path) => {
+            setSearchOpen(false);
+            if (path !== openPath) void openFile(path);
+          }}
+        />
+      )}
     </section>
   );
 }

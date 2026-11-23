@@ -15,6 +15,7 @@ export type AgentShortcut =
   | "new-session"
   | "close-session"
   | "new-terminal"
+  | "quick-open"
   | "history"
   | "stop";
 
@@ -57,7 +58,7 @@ function hasTextSelection(target: EventTarget | null): boolean {
   );
 }
 
-/** Chat and terminal shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
+/** Chat, terminal, and file shortcuts; other views keep their own key handling (e.g. terminal Ctrl+C). */
 export function agentShortcut(
   event: KeyEvent,
   view: string,
@@ -72,6 +73,9 @@ export function agentShortcut(
     return event.metaKey && !event.ctrlKey && key === "n"
       ? "new-terminal"
       : null;
+  }
+  if (view === "files" && event.metaKey !== event.ctrlKey && key === "p") {
+    return "quick-open";
   }
   if (view !== "chat") {
     return null;

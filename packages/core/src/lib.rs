@@ -58,6 +58,7 @@ pub fn run() {
             agent::approval::grant_command_allow_all,
             tools::skill::skills_list,
             files::files_list,
+            files::files_find,
             files::files_read,
             files::files_read_image,
             files::files_save,

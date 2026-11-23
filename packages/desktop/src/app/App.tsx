@@ -229,6 +229,8 @@ function App() {
         session.closeTab(session.activeTabId);
       } else if (action === "new-terminal") {
         terminalRef.current?.addTab();
+      } else if (action === "quick-open") {
+        filesRef.current?.quickOpen();
       } else if (action === "history") {
         // A live run keeps streaming while History is open; picking a session
         // only adds a tab, so the running one is untouched.

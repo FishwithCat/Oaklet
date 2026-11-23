@@ -65,6 +65,29 @@ test("Command+R opens session history only in the chat view", () => {
   );
 });
 
+test("Command+P opens file search only in the files view", () => {
+  assert.equal(
+    agentShortcut(press({ key: "p", metaKey: true }), "files", false),
+    "quick-open",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "p", ctrlKey: true }), "files", false),
+    "quick-open",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "p", metaKey: true }), "chat", false),
+    null,
+  );
+  assert.equal(
+    agentShortcut(
+      press({ key: "p", metaKey: true, shiftKey: true }),
+      "files",
+      false,
+    ),
+    null,
+  );
+});
+
 test("Command+X closes the active chat tab unless text is selected", () => {
   assert.equal(
     agentShortcut(press({ key: "x", metaKey: true }), "chat", false),
