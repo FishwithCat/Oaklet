@@ -297,7 +297,10 @@
   position: sticky;
   top: 0;
   left: 0;
-  z-index: 1;
+  /* The sign cell is a flex item with a z-index, so it paints above anything
+     at its own level and would cover the leading path characters while the
+     card scrolls. Keep the pinned header one step higher. */
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 10px;
