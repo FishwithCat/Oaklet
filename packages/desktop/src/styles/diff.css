@@ -37,13 +37,16 @@
   flex: none;
   width: var(--diff-num-width);
   padding: 0 6px;
-  border-right: 1px solid var(--border);
   background: inherit;
   color: color-mix(in srgb, var(--muted) 72%, transparent);
   font-variant-numeric: tabular-nums;
   text-align: right;
   cursor: pointer;
   user-select: none;
+}
+
+.diff-num.old {
+  border-right: 1px solid var(--border);
 }
 
 .diff-num.new {
@@ -72,7 +75,6 @@
   z-index: 1;
   flex: none;
   width: 16px;
-  border-right: 1px solid var(--border);
   background: inherit;
   color: var(--muted);
   text-align: center;
@@ -82,7 +84,6 @@
 /* Without gutters the sign is just a prefix, not a sticky column. */
 .diff-line:not(.numbered) .diff-sign {
   position: static;
-  border-right: 0;
 }
 
 .diff-line.add .diff-sign {
@@ -118,6 +119,7 @@
   .diff-line:has(.diff-num.new:empty) .diff-num.old {
     display: block;
     left: 0;
+    border-right: 0;
   }
 
   .diff-sign {
