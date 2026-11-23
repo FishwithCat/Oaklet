@@ -15,7 +15,7 @@ import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
 import { previewFontShortcut } from "../../app/shortcuts";
-import { changedLines, parseDiff, type ChangedLine } from "../source-control/git-diff";
+import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../source-control/git-diff";
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
@@ -35,6 +35,7 @@ export type FilesHandle = {
   closeDocument: () => void;
 };
 type Document = { path: string; original: string; content: string };
+type ImageDocument = { path: string; src: string };
 
 async function language(path: string): Promise<Extension> {
   const ext = path.split(".").pop()?.toLowerCase();
@@ -60,6 +61,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   onSaved: () => void;
 }) {
   const [document, setDocument] = useState<Document | null>(null);
+  const [image, setImage] = useState<ImageDocument | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(false);
@@ -94,6 +96,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     open: (path) => { void openFile(path, isMarkdownPath(path)); },
     closeDocument: () => {
       setDocument(null);
+      setImage(null);
       setPreview(false);
       dirtyRef.current = false;
     },
@@ -146,10 +149,19 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     setBusy(true);
     setError("");
     try {
-      const content = await invoke<string>("files_read", { workspace, path });
-      setDocument({ path, original: content, content: editorText(content) });
-      dirtyRef.current = false;
-      setPreview(previewMarkdown);
+      if (isImagePath(path)) {
+        const src = await invoke<string>("files_read_image", { workspace, path });
+        setImage({ path, src });
+        setDocument(null);
+        setPreview(false);
+        dirtyRef.current = false;
+      } else {
+        const content = await invoke<string>("files_read", { workspace, path });
+        setDocument({ path, original: content, content: editorText(content) });
+        setImage(null);
+        dirtyRef.current = false;
+        setPreview(previewMarkdown);
+      }
     } catch (err) { setError(errorText(err)); }
     finally { busyRef.current = false; setBusy(false); }
   }
@@ -168,6 +180,8 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     } catch (err) { setError(errorText(err)); }
     finally { busyRef.current = false; setBusy(false); }
   }
+
+  const openPath = document?.path ?? image?.path;
 
   return (
     <section className="files-panel" hidden={!active} aria-label="Files" onKeyDown={(event) => {
@@ -198,17 +212,17 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           active={active}
           refreshToken={refreshToken}
           changes={changes}
-          selected={document?.path}
+          selected={openPath}
           busy={busy}
-          onOpen={(path) => { if (path !== document?.path) void openFile(path); }}
+          onOpen={(path) => { if (path !== openPath) void openFile(path); }}
         />
         <PaneResizer width={browserWidth} label="Resize file browser" onChange={setBrowserWidth} />
         <div className="files-document">
           {error && <p role="alert" className="files-error">{error}</p>}
-          {document ? <>
+          {openPath ? <>
             <div className="files-toolbar">
-              <nav className="files-breadcrumbs" aria-label="File path" title={document.path}>
-                {breadcrumbParts(workspace, document.path).map((part, index, parts) => {
+              <nav className="files-breadcrumbs" aria-label="File path" title={openPath}>
+                {breadcrumbParts(workspace, openPath).map((part, index, parts) => {
                   const last = index === parts.length - 1;
                   return (
                     <Fragment key={`${index}:${part}`}>
@@ -216,27 +230,28 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                       <span className={`files-crumb${last ? " files-crumb-file" : ""}`} aria-current={last ? "page" : undefined}>
                         {last && <Document2Regular size={12} aria-hidden="true" />}
                         <span className="files-crumb-label">{part}</span>
-                        {last && dirty && <><span className="files-dirty" aria-hidden="true">●</span><span className="sr-only">Unsaved changes</span></>}
+                        {last && document && dirty && <><span className="files-dirty" aria-hidden="true">●</span><span className="sr-only">Unsaved changes</span></>}
                       </span>
                     </Fragment>
                   );
                 })}
               </nav>
               <div className="files-actions">
-                <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(document.path)}><Refresh3Regular size={14} /></button>
-                {isMarkdownPath(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
-                <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
+                <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(openPath)}><Refresh3Regular size={14} /></button>
+                {document && isMarkdownPath(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
+                <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); setImage(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
               </div>
             </div>
-            {preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
-              <Suspense fallback={<div className="files-editor" />}>
-                <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
-                  marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
-                  onChange={(content) => {
-                    dirtyRef.current = content !== editorText(document.original);
-                    setDocument({ ...document, content });
-                  }} />
-              </Suspense>}
+            {image ? <div className="files-image"><img src={image.src} alt={image.path} /></div> :
+              document && (preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
+                <Suspense fallback={<div className="files-editor" />}>
+                  <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                    marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
+                    onChange={(content) => {
+                      dirtyRef.current = content !== editorText(document.original);
+                      setDocument({ ...document, content });
+                    }} />
+                </Suspense>)}
           </> : <div className="files-empty files-placeholder">Select a file to view or edit.</div>}
         </div>
       </div>

@@ -395,6 +395,7 @@ function App() {
         <SourceControl
           key={`source-control:${workspace}`}
           active={view === "git"}
+          workspace={workspace}
           changes={changes}
           changesError={changesError}
           refreshToken={workspaceTick}

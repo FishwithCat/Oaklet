@@ -17,12 +17,14 @@ import { useSourceControl } from "./useSourceControl";
 /** Uncommitted changes and the commit history, each with a file diff. */
 export function SourceControl({
   active,
+  workspace,
   refreshToken,
   onRefresh,
   changes,
   changesError,
 }: {
   active: boolean;
+  workspace: string;
   refreshToken: number;
   onRefresh: () => void;
   changes: ChangeInfo[] | null;
@@ -151,6 +153,9 @@ export function SourceControl({
                 ready={diffReady}
                 error={diffError}
                 empty="No diff for this file."
+                workspace={workspace}
+                commit={null}
+                revision={refreshToken}
               />
             </div>
           </div>
@@ -208,6 +213,9 @@ export function SourceControl({
               ready={diffReady}
               error={diffError}
               empty="No changes in this commit."
+              workspace={workspace}
+              commit={selectedCommit}
+              revision={refreshToken}
             />
           </div>
         </div>

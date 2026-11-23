@@ -21,7 +21,7 @@ mod comments;
 mod diff;
 mod fs;
 pub(crate) mod history;
-mod image;
+pub(crate) mod image;
 pub(crate) mod jobs;
 mod likec4;
 mod mcp;

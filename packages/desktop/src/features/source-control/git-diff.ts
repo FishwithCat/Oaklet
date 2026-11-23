@@ -15,6 +15,13 @@ export type DiffFile = {
   hunks: DiffHunk[];
 };
 
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
+
+/** Image formats the core's `read_image` tool can hand to the webview. */
+export function isImagePath(path: string): boolean {
+  return IMAGE_PATH.test(path);
+}
+
 /** A line in the new file that differs from its previous version. */
 export type ChangedLine = { line: number; kind: "added" | "modified" };
 

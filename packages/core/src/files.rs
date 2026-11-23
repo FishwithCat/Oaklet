@@ -63,6 +63,23 @@ pub async fn files_read(
 }
 
 #[tauri::command]
+pub async fn files_read_image(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    workspace: String,
+    path: String,
+) -> Result<String, String> {
+    let root = self::workspace(&state, &window, &workspace)?;
+    let target = resolve(&root, &path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (bytes, _) = crate::tools::image::read_image(&target)?;
+        crate::tools::image::data_url(&bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn files_save(
     window: WebviewWindow,
     state: State<'_, SharedState>,

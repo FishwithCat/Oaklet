@@ -6,6 +6,7 @@
 //! `tool` message.
 
 use std::fs;
+use std::path::Path;
 
 use base64::Engine as _;
 use futures_util::future::BoxFuture;
@@ -15,7 +16,33 @@ use serde_json::{Value, json};
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, parse_args};
 
 /// Keep the data URL below the composer's 8 MB attachment budget after base64.
-const MAX_IMAGE_BYTES: u64 = 5_500_000;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 5_500_000;
+
+/// Read a supported image from disk, with its MIME type.
+pub(crate) fn read_image(path: &Path) -> Result<(Vec<u8>, &'static str), String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("Cannot read image: {error}"))?;
+    if !metadata.is_file() {
+        return Err("That path is not a file.".into());
+    }
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "Image is {} bytes; the limit is {MAX_IMAGE_BYTES}. Resize it first.",
+            metadata.len()
+        ));
+    }
+
+    let bytes = fs::read(path).map_err(|error| format!("Cannot read image: {error}"))?;
+    let mime =
+        image_mime(&bytes).ok_or("Unsupported image format. Use PNG, JPEG, WebP, or GIF.")?;
+    Ok((bytes, mime))
+}
+
+/// Encode image bytes as a data URL the webview can display.
+pub(crate) fn data_url(bytes: &[u8]) -> Result<String, String> {
+    let mime = image_mime(bytes).ok_or("Unsupported image format. Use PNG, JPEG, WebP, or GIF.")?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{data}"))
+}
 
 pub struct ReadImage;
 
@@ -72,30 +99,14 @@ impl Tool for ReadImage {
         Box::pin(async move {
             let args: ReadImageArgs = parse_args(args)?;
             let path = ctx.workspace.resolve(&args.path)?;
-            let metadata =
-                fs::metadata(&path).map_err(|error| format!("Cannot read image: {error}"))?;
-            if !metadata.is_file() {
-                return Err(ToolError::Failed("That path is not a file.".into()));
-            }
-            if metadata.len() > MAX_IMAGE_BYTES {
-                return Err(ToolError::Failed(format!(
-                    "Image is {} bytes; the limit is {MAX_IMAGE_BYTES}. Resize it first.",
-                    metadata.len()
-                )));
-            }
-
-            let bytes = fs::read(&path).map_err(|error| format!("Cannot read image: {error}"))?;
-            let mime = image_mime(&bytes).ok_or_else(|| {
-                ToolError::Failed("Unsupported image format. Use PNG, JPEG, WebP, or GIF.".into())
-            })?;
-            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let (bytes, mime) = read_image(&path)?;
             let relative = ctx.workspace.relative(&path).display().to_string();
             Ok(ToolOutput::with_image(
                 format!(
                     "Read image {relative} ({} bytes, {mime}). The image is attached to the model context below for inspection.",
                     bytes.len()
                 ),
-                format!("data:{mime};base64,{data}"),
+                data_url(&bytes)?,
             ))
         })
     }
@@ -138,6 +149,10 @@ mod tests {
             output.images[0]
                 .data_url
                 .starts_with("data:image/png;base64,")
+        );
+        assert_eq!(
+            super::read_image(&root.join("pixel.png")).unwrap().1,
+            "image/png"
         );
 
         assert!(

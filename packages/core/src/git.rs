@@ -45,7 +45,7 @@ const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
 const NULL_DEVICE: &str = "/dev/null";
 
-fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git_bytes(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
         .arg("--literal-pathspecs")
@@ -67,7 +67,11 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
         });
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
+}
+
+fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
+    Ok(String::from_utf8_lossy(&run_git_bytes(workspace, args)?).into_owned())
 }
 
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
@@ -319,6 +323,30 @@ pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
     )
 }
 
+pub fn show_image(workspace: &Path, path: &str, hash: &str) -> Result<String, String> {
+    if !valid_hash(hash) {
+        return Err("Invalid commit hash.".into());
+    }
+    if !valid_relative_path(path) {
+        return Err("Invalid file path.".into());
+    }
+
+    let object = format!("{hash}:{path}");
+    let size: u64 = run_git(workspace, &["cat-file", "-s", &object])?
+        .trim()
+        .parse()
+        .map_err(|_| "Could not read the image.".to_string())?;
+    if size > crate::tools::image::MAX_IMAGE_BYTES {
+        return Err(format!(
+            "Image is {size} bytes; the limit is {}. Resize it first.",
+            crate::tools::image::MAX_IMAGE_BYTES
+        ));
+    }
+
+    let bytes = run_git_bytes(workspace, &["cat-file", "blob", &object])?;
+    crate::tools::image::data_url(&bytes)
+}
+
 fn valid_hash(hash: &str) -> bool {
     (4..=64).contains(&hash.len()) && hash.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -431,6 +459,19 @@ pub(crate) async fn git_show(
     tauri::async_runtime::spawn_blocking(move || show(&workspace, &hash))
         .await
         .map_err(|error| format!("Could not read the commit: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn git_show_image(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    hash: String,
+    path: String,
+) -> Result<String, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || show_image(&workspace, &path, &hash))
+        .await
+        .map_err(|error| format!("Could not read the image: {error}"))?
 }
 
 #[tauri::command]
@@ -690,6 +731,44 @@ def456\u{1f}def\u{1f}Lin\u{1f}lin@example.com\u{1f}2026-01-01T00:00:00+00:00\u{1
                 .unwrap()
                 .contains("+new file")
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn image_preview_reads_supported_blobs_from_a_commit() {
+        let root = crate::tools::test_support::temp_root("git-image");
+        std::fs::write(root.join("pixel.png"), b"\x89PNG\r\n\x1a\npixels").unwrap();
+        std::fs::write(root.join("notes.txt"), "text").unwrap();
+        super::run_git(&root, &["init", "-b", "main"]).unwrap();
+        super::run_git(&root, &["add", "."]).unwrap();
+        super::run_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "Image",
+            ],
+        )
+        .unwrap();
+        let hash = super::run_git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        assert!(
+            super::show_image(&root, "pixel.png", &hash)
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert!(super::show_image(&root, "notes.txt", &hash).is_err());
+        assert!(super::show_image(&root, "../pixel.png", &hash).is_err());
+        assert!(super::show_image(&root, "pixel.png", "not-a-hash").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

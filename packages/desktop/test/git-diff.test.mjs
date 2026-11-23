@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedLines, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
+import { changedLines, isImagePath, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -77,4 +77,13 @@ test("gutter marks read a replaced block as modified and an insertion as added",
  three
 `;
   assert.deepEqual(changedLines(parseDiff(insertion)), [{ line: 2, kind: "added" }]);
+});
+
+test("only webview-supported image extensions get an image preview", () => {
+  for (const path of ["a.png", "a.PNG", "dir/b.jpg", "b.jpeg", "c.gif", "d.webp"]) {
+    assert.equal(isImagePath(path), true, path);
+  }
+  for (const path of ["a.svg", "a.bmp", "a.txt", "png", "a.png.txt"]) {
+    assert.equal(isImagePath(path), false, path);
+  }
 });
