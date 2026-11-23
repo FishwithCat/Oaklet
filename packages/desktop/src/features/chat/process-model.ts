@@ -156,12 +156,15 @@ export function outcomeDetail(outcome?: ProcessOutcome): string | undefined {
   }
 }
 
+const OPENED_FILE_TOOLS = new Set(["read_file"]);
+
 /** Output worth showing; a bare cancellation notice only repeats the detail. */
 export function toolOutput(item: ToolItem): string | undefined {
   if (!item.output) return undefined;
   if (item.outcome?.kind === "cancelled" && item.output.trim() === "Cancelled.") {
     return undefined;
   }
+  if (item.status !== "error" && OPENED_FILE_TOOLS.has(item.name)) return undefined;
   return item.output;
 }
 

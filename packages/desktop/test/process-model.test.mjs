@@ -64,6 +64,25 @@ test("drops a cancelled command's bare cancellation output", () => {
   assert.equal(toolOutput(command), undefined);
 });
 
+test("keeps a successful file read to its one-line row", () => {
+  const read = {
+    kind: "tool",
+    runId: "run",
+    id: "1",
+    name: "read_file",
+    status: "ok",
+    summary: "packages/desktop/src/features/chat/ChatComposer.tsx",
+    output: "[lines 430-499 of 609]\n  return;\n}",
+  };
+  assert.equal(toolOutput(read), undefined);
+  assert.equal(toolOutput({ ...read, name: "read_image" }), read.output);
+  assert.equal(toolOutput({ ...read, status: "running" }), undefined);
+  assert.equal(
+    toolOutput({ ...read, status: "error", output: "No such file: x.ts" }),
+    "No such file: x.ts",
+  );
+});
+
 test("streaming reasoning previews the latest completed paragraph", () => {
   assert.equal(reasoningSummary("First line\nrest of paragraph", true), "First line");
   assert.equal(reasoningSummary("First\n\nSecond line\nmore", true), "Second line");
