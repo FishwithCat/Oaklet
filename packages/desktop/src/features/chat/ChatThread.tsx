@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FileRegular } from "@mingcute/react/core-regular";
+import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import type { SentAttachment } from "./attachments";
 import { ProcessGroup } from "./Process";
@@ -56,15 +57,6 @@ export function ChatThread({
       break;
     }
   }
-
-  useEffect(() => {
-    if (!preview) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPreview(null);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [preview]);
 
   return (
     <div className="thread" aria-live="polite">
@@ -203,20 +195,11 @@ export function ChatThread({
       )}
       <div />
       {preview && (
-        <div
-          className="modal-backdrop image-preview-backdrop"
-          onClick={() => setPreview(null)}
-        >
-          <figure
-            className="image-preview"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`Image preview: ${preview.name}`}
-          >
-            <img src={preview.thumbnail} alt={preview.name} />
-            <figcaption>{preview.name}</figcaption>
-          </figure>
-        </div>
+        <ImageLightbox
+          src={preview.thumbnail}
+          alt={preview.name}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );

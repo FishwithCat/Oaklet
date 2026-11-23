@@ -11,6 +11,7 @@ import {
   RightSmallRegular,
 } from "@mingcute/react/core-regular";
 import type { Extension } from "@codemirror/state";
+import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
@@ -62,6 +63,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
 }) {
   const [document, setDocument] = useState<Document | null>(null);
   const [image, setImage] = useState<ImageDocument | null>(null);
+  const [enlarged, setEnlarged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(false);
@@ -97,6 +99,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     closeDocument: () => {
       setDocument(null);
       setImage(null);
+      setEnlarged(false);
       setPreview(false);
       dirtyRef.current = false;
     },
@@ -152,6 +155,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       if (isImagePath(path)) {
         const src = await invoke<string>("files_read_image", { workspace, path });
         setImage({ path, src });
+        setEnlarged(false);
         setDocument(null);
         setPreview(false);
         dirtyRef.current = false;
@@ -242,7 +246,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                 <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); setImage(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
               </div>
             </div>
-            {image ? <div className="files-image"><img src={image.src} alt={image.path} /></div> :
+            {image ? <div className="files-image"><button type="button" className="files-image-button" title="Enlarge image" aria-label={`Enlarge ${image.path}`} onClick={() => setEnlarged(true)}><img src={image.src} alt={image.path} /></button></div> :
               document && (preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
                 <Suspense fallback={<div className="files-editor" />}>
                   <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
@@ -255,6 +259,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           </> : <div className="files-empty files-placeholder">Select a file to view or edit.</div>}
         </div>
       </div>
+      {image && enlarged && <ImageLightbox src={image.src} alt={image.path} onClose={() => setEnlarged(false)} />}
     </section>
   );
 }

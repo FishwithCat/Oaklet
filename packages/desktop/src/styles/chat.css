@@ -271,39 +271,6 @@
   white-space: nowrap;
 }
 
-.modal-backdrop.image-preview-backdrop {
-  z-index: 40;
-  background: color-mix(in srgb, #000 70%, transparent);
-  cursor: zoom-out;
-}
-
-.image-preview {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  max-height: 100%;
-  margin: 0;
-}
-
-.image-preview img {
-  display: block;
-  width: min(960px, calc(100vw - 64px));
-  height: min(640px, calc(100vh - 120px));
-  object-fit: contain;
-  border-radius: 8px;
-  filter: drop-shadow(0 12px 30px color-mix(in srgb, #000 45%, transparent));
-}
-
-.image-preview figcaption {
-  max-width: 92vw;
-  color: #fff;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-  text-align: center;
-}
-
 .msg.assistant .bubble {
   flex: 1;
   min-width: 0;

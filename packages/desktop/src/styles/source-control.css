@@ -696,9 +696,24 @@
   background: var(--panel);
 }
 
-.diff-image img {
+.diff-image-button {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.diff-image-button img {
   max-width: 100%;
   max-height: 70vh;
   object-fit: contain;
   border-radius: 6px;
+}
+
+.diff-image-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }

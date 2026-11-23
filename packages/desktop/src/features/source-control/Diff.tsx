@@ -2,12 +2,14 @@ import { useMemo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DownSmallRegular } from "@mingcute/react/core-regular";
 import { DiffLineView } from "../../shared/DiffLineView";
+import { ImageLightbox } from "../../shared/ImageLightbox";
 import { errorText } from "../../shared/error-text";
 import { isImagePath, pageHunks, parseDiff } from "./git-diff";
 
 function ImageDiff({ workspace, path, commit, revision }: { workspace: string; path: string; commit: string | null; revision: number }) {
   const [src, setSrc] = useState("");
   const [error, setError] = useState("");
+  const [enlarged, setEnlarged] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,7 +28,10 @@ function ImageDiff({ workspace, path, commit, revision }: { workspace: string; p
   if (!src) return <p className="diff-binary">Loading image...</p>;
   return (
     <div className="diff-image">
-      <img src={src} alt={path} />
+      <button type="button" className="diff-image-button" title="Enlarge image" aria-label={`Enlarge ${path}`} onClick={() => setEnlarged(true)}>
+        <img src={src} alt={path} />
+      </button>
+      {enlarged && <ImageLightbox src={src} alt={path} onClose={() => setEnlarged(false)} />}
     </div>
   );
 }
