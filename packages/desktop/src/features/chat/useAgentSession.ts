@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
+import { moveItem } from "../../shared/useTabDrag";
 import type { ApprovalChoice, ToolItem } from "./process-model";
 import { createStreamBatch } from "./stream-batch";
 import { isBlankTab, type Item } from "./chat-model";
@@ -323,6 +324,10 @@ export function useAgentSession({
 
   function selectTab(id: string) {
     if (openTabsRef.current.some((tab) => tab.id === id)) activate(id);
+  }
+
+  function moveTab(from: number, to: number) {
+    commitTabs(moveItem(openTabsRef.current, from, to));
   }
 
   function closeTab(id: string) {
@@ -702,6 +707,7 @@ export function useAgentSession({
     history,
     newTab,
     selectTab,
+    moveTab,
     closeTab,
     send,
     confirmPlan,

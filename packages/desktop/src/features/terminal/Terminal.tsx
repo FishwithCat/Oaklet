@@ -1,5 +1,6 @@
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { AddRegular, CloseRegular, TerminalBoxRegular } from "@mingcute/react/core-regular";
+import { moveItem, useTabDrag } from "../../shared/useTabDrag";
 import {
   newSessionId,
   TerminalPane,
@@ -28,6 +29,9 @@ export function Terminal({
   const [selected, setSelected] = useState<string | null>(null);
   const handles = useRef(new Map<string, TerminalPaneHandle>());
   const count = useRef(1);
+  const { draggingId, dragProps } = useTabDrag((from, to) =>
+    setTabs((current) => moveItem(current, from, to)),
+  );
 
   const activeId = selected ?? tabs[0]?.id ?? null;
 
@@ -78,7 +82,10 @@ export function Terminal({
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className={`view-tab${tab.id === activeId ? " active" : ""}`}
+              className={`view-tab${tab.id === activeId ? " active" : ""}${
+                tab.id === draggingId ? " dragging" : ""
+              }`}
+              {...dragProps(tab.id)}
             >
               <button
                 type="button"

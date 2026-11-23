@@ -32,6 +32,7 @@ import type {
   StepUsage,
 } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
+import { useTabDrag } from "../../shared/useTabDrag";
 import oakletIcon from "../../assets/oaklet-icon.png";
 
 const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
@@ -52,6 +53,7 @@ export function Chat({
   activeTabId,
   onSelectTab,
   onNewTab,
+  onMoveTab,
   onCloseTab,
   items,
   firstSeq,
@@ -82,6 +84,7 @@ export function Chat({
   activeTabId: string;
   onSelectTab: (id: string) => void;
   onNewTab: () => void;
+  onMoveTab: (from: number, to: number) => void;
   onCloseTab: (id: string) => void;
   items: Item[];
   firstSeq: number | null;
@@ -134,6 +137,7 @@ export function Chat({
   const welcome = tabs.length <= 1 && items.length === 0 && !hasMore;
   const { selectionAction, selectionButtonRef, clearSelection } =
     useSelectionAction({ active: active && !welcome, containerRef: chatRef });
+  const { draggingId, dragProps } = useTabDrag(onMoveTab);
 
   function pinToBottom() {
     const element = chatRef.current;
@@ -369,7 +373,8 @@ export function Chat({
               key={tab.id}
               className={`view-tab chat-tab${
                 tab.id === activeTabId ? " active" : ""
-              }`}
+              }${tab.id === draggingId ? " dragging" : ""}`}
+              {...dragProps(tab.id)}
             >
               <span
                 className={`tab-status ${tab.status}`}

@@ -154,6 +154,7 @@ textarea:focus-visible {
   align-items: center;
   border-radius: 6px;
   color: var(--muted);
+  user-select: none;
 }
 
 .view-tab:hover {
@@ -163,6 +164,10 @@ textarea:focus-visible {
 .view-tab.active {
   background: var(--accent-soft);
   color: var(--text);
+}
+
+.view-tab.dragging {
+  opacity: 0.5;
 }
 
 .tab-status {

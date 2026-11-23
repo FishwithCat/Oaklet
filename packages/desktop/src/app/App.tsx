@@ -357,6 +357,7 @@ function App() {
           activeTabId={session.activeTabId}
           onSelectTab={session.selectTab}
           onNewTab={session.newTab}
+          onMoveTab={session.moveTab}
           onCloseTab={session.closeTab}
           items={session.items}
           firstSeq={session.firstSeq}
