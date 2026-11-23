@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef } from "react";
-import CodeMirror from "@uiw/react-codemirror";
+import CodeMirror, { keymap, type EditorView } from "@uiw/react-codemirror";
+import { search, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
-import type { EditorView } from "@uiw/react-codemirror";
 import type { ChangedLine } from "../source-control/git-diff";
 import { useResolvedTheme } from "../settings/theme";
 import { changedLinesField, setChangedLines } from "./file-gutter";
+import { FileFindPanel } from "./find-panel";
+
+// Keep the keymap off basicSetup so the panel and its keys share one search extension.
+const BASIC_SETUP = { searchKeymap: false };
 
 /** Split from Files so opening the page does not load the editor bundle. */
 export default function FileEditor({ path, value, syntax, readOnly, marks, onChange }: {
@@ -18,7 +22,13 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
   const theme = useResolvedTheme();
   const view = useRef<EditorView | null>(null);
   const extensions = useMemo(
-    () => [syntax, EditorState.lineSeparator.of("\n"), changedLinesField],
+    () => [
+      syntax,
+      EditorState.lineSeparator.of("\n"),
+      changedLinesField,
+      search({ createPanel: (editor) => new FileFindPanel(editor) }),
+      keymap.of(searchKeymap),
+    ],
     [syntax],
   );
 
@@ -34,6 +44,7 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
       value={value}
       height="100%"
       extensions={extensions}
+      basicSetup={BASIC_SETUP}
       readOnly={readOnly}
       editable={!readOnly}
       aria-label={`File contents: ${path}`}

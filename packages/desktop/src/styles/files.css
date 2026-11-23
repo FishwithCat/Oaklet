@@ -81,3 +81,45 @@ button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { 
 .files-search-dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
 .files-search-row[aria-selected="true"] .files-search-dir { color: inherit; opacity: 0.78; }
 .files-search-status { margin: 0; padding: 12px; color: var(--muted); font-size: 12px; }
+/* Command+F floats over the editor like VS Code's find widget. */
+.files-editor .cm-editor .cm-panels-bottom { position: absolute; top: 10px; right: 22px; bottom: auto; left: auto; width: min(460px, calc(100% - 44px)); border: 0; background: transparent; }
+.file-find { display: flex; flex-direction: column; gap: 4px; padding: 4px 5px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 18px var(--shadow-color); color: var(--text); font-family: var(--sans); font-size: 12px; }
+.file-find-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.file-find-row[hidden] { display: none; }
+.file-find-field { display: flex; flex: 1; align-items: center; min-width: 0; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.file-find-field:focus-within { border-color: var(--accent-border-strong); box-shadow: 0 0 0 1px var(--accent-border); }
+.file-find-input { flex: 1; min-width: 0; height: 100%; padding: 0 6px 0 8px; border: 0; outline: none; background: transparent; color: var(--text); font-family: var(--sans); font-size: 12px; }
+.file-find-input::placeholder { color: var(--muted); }
+.file-find-input:focus,
+.file-find-input:focus-visible { outline: none; }
+.file-find-options { display: flex; flex: none; gap: 1px; padding-right: 3px; }
+.file-find-option { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-family: var(--sans); font-size: 11px; line-height: 1; }
+.file-find-word { text-decoration: underline; text-underline-offset: 2px; }
+.file-find-option:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); color: var(--text); }
+.file-find-option[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.file-find-count { flex: none; margin: 0 3px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.file-find-count:empty { display: none; }
+.file-find-count[data-state="empty"],
+.file-find-count[data-state="error"] { color: var(--red); }
+.file-find-action,
+.file-find-twist { display: grid; flex: none; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); }
+.file-find-twist { width: 18px; }
+.file-find-action svg,
+.file-find-twist svg { width: 14px; height: 14px; }
+.file-find-twist svg { transition: transform 120ms ease; }
+.file-find-twist[aria-expanded="true"] svg { transform: rotate(90deg); }
+.file-find-action:hover:not(:disabled),
+.file-find-twist:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); color: var(--text); }
+.file-find-close { margin-left: 2px; }
+.file-find-spacer { flex: none; width: 18px; }
+.file-find-twist[hidden],
+.file-find-spacer[hidden] { display: none; }
+.file-find-replace .file-find-field { height: 24px; }
+.file-find-button { flex: none; height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--text); font-family: var(--sans); font-size: 11.5px; line-height: 1; }
+.file-find-button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel-2); }
+.file-find-action:focus-visible,
+.file-find-twist:focus-visible,
+.file-find-option:focus-visible,
+.file-find-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 0; }
+.files-editor .cm-editor .cm-searchMatch { border-radius: 2px; background: var(--find-match); }
+.files-editor .cm-editor .cm-searchMatch-selected { background: var(--find-match-active); }
