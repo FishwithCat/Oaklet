@@ -158,7 +158,11 @@ pub async fn session_send(
         Ok((run_id, session)) => {
             // A queued message ends the wake chain a job notice may have started.
             state.chat.live().wakes.remove(&session_id);
-            return Ok(SendResult { run_id, session });
+            return Ok(SendResult {
+                run_id,
+                session,
+                queued: true,
+            });
         }
         // The run ended before the lock; deliver the turn normally.
         Err(turn) => turn,
@@ -184,7 +188,11 @@ pub async fn session_send(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    Ok(SendResult { run_id, session })
+    Ok(SendResult {
+        run_id,
+        session,
+        queued: false,
+    })
 }
 
 #[tauri::command]
@@ -259,7 +267,11 @@ pub async fn session_confirm_plan(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    Ok(SendResult { run_id, session })
+    Ok(SendResult {
+        run_id,
+        session,
+        queued: false,
+    })
 }
 
 #[derive(Clone, Serialize)]

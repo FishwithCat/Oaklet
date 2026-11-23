@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   accumulateUsage,
+  applyAcceptedSend,
   appendNotice,
   applyApproval,
   applyApprovalResolved,
@@ -91,6 +92,50 @@ test("applySteered moves claimed messages to the end of the thread", () => {
     ["assistant", "user"],
   );
   assert.equal(updated.activeRunId, "run-1");
+});
+
+test("a queued steer merges the authoritative queue without replacing the stream", () => {
+  const streaming = [{ kind: "assistant", text: "working", streaming: true }];
+  const pending = [{ id: "p1", mode: "steer", text: "go left" }];
+  const current = session({
+    items: streaming,
+    running: true,
+    activeRunId: "run-1",
+  });
+  const updated = applyAcceptedSend(
+    current,
+    "steer",
+    "run-1",
+    session({
+      items: [],
+      pending,
+      running: true,
+      activeRunId: "run-1",
+    }),
+    true,
+  );
+
+  assert.deepEqual(updated.items, streaming);
+  assert.deepEqual(updated.pending, pending);
+  assert.equal(updated.activeRunId, "run-1");
+});
+
+test("a steer that starts a run brings its user turn into the thread", () => {
+  const updated = applyAcceptedSend(
+    session({ running: true, activeRunId: "old-run" }),
+    "steer",
+    "new-run",
+    session({
+      items: [{ kind: "user", text: "go", seq: 1 }],
+      firstSeq: 1,
+      running: true,
+      activeRunId: "new-run",
+    }),
+    false,
+  );
+
+  assert.deepEqual(updated.items, [{ kind: "user", text: "go", seq: 1 }]);
+  assert.equal(updated.activeRunId, "new-run");
 });
 
 test("mergeWindow brings the pending queue from the persisted view", () => {

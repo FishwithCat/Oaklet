@@ -240,6 +240,7 @@ fn a_steer_joins_the_queue_and_is_claimed_once() {
     });
     assert_eq!(published, 1);
     assert_eq!(taken.len(), 1);
+    assert!(taken[0].created_at > 0);
     assert!(pending.is_empty());
     assert!(!state.has_pending_steer("s1"));
 

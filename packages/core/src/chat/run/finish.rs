@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::{RunContext, RunTrigger, start_run, trim_incomplete_tool_block};
 use crate::chat::transcript::{settle_streaming, settle_unfinished_tools, user_item};
-use crate::chat::{PendingInput, SessionView, Tone, notices::resume_notices};
+use crate::chat::{ChatState, PendingInput, SessionView, Tone, notices::resume_notices};
 use crate::store::{self, EventPayload, NewUserTurn, RunEnd};
 use crate::tools::CancelHandle;
 
@@ -271,12 +271,7 @@ impl RunContext {
             live.runs.remove(&self.run_id);
         }
 
-        let followup = if status == "stopped" || (status == "error" && self.auto_resume) {
-            self.state.chat.clear_pending(&self.session_id);
-            None
-        } else {
-            self.state.chat.take_next_input(&self.session_id)
-        };
+        let followup = take_followup(&self.state.chat, &self.session_id, status, self.auto_resume);
         session.pending = self.state.chat.pending_views(&self.session_id);
         // The follow-up turn is not streamed; show its bubble in this terminal
         // view so it does not disappear between this run and the next one.
@@ -455,6 +450,22 @@ impl RunContext {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+}
+
+/// Take the message that should start a turn after this run, or drop the queue
+/// when the user stopped it or an automatic retry already failed.
+fn take_followup(
+    chat: &ChatState,
+    session_id: &str,
+    status: &str,
+    auto_resume: bool,
+) -> Option<PendingInput> {
+    if status == "stopped" || (status == "error" && auto_resume) {
+        chat.clear_pending(session_id);
+        None
+    } else {
+        chat.take_next_input(session_id)
     }
 }
 

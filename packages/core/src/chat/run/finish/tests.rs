@@ -1,7 +1,7 @@
 use super::*;
 use crate::AppConfig;
 use crate::agent::Usage;
-use crate::chat::{RunHandle, test_support::state};
+use crate::chat::{RunHandle, SendMode, test_support::state};
 use crate::compaction::test_support::user;
 use crate::store::NewUserTurn;
 use crate::tools::CancelHandle;
@@ -478,4 +478,95 @@ async fn a_failed_finish_keeps_the_partial_reply_until_its_window_drains() {
         saved.events
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+fn queue_message(ctx: &RunContext, text: &str) {
+    let turn = NewUserTurn {
+        message: json!({ "role": "user", "content": text }),
+        display: Some(json!({ "text": text })),
+        title: None,
+    };
+    let queued = ctx
+        .state
+        .chat
+        .enqueue_input(
+            &ctx.session_id,
+            "test",
+            SendMode::Steer,
+            format!("pending-{text}"),
+            turn,
+            |_| {},
+        )
+        .unwrap();
+    assert!(queued.is_ok());
+}
+
+#[test]
+fn followup_selection_keeps_the_queue_for_errors_and_drops_it_for_stop() {
+    let (ctx, _store, root) = live_run();
+    queue_message(&ctx, "first");
+    queue_message(&ctx, "second");
+
+    let followup = take_followup(&ctx.state.chat, &ctx.session_id, "done", false)
+        .expect("done should start the first queued turn");
+    assert_eq!(followup.display["text"], "first");
+    assert_eq!(ctx.state.chat.pending_views("s").len(), 1);
+
+    let followup = take_followup(&ctx.state.chat, &ctx.session_id, "error", false)
+        .expect("a failed run should still try the next queued turn");
+    assert_eq!(followup.display["text"], "second");
+    assert!(ctx.state.chat.pending_views("s").is_empty());
+
+    queue_message(&ctx, "retry");
+    assert!(
+        take_followup(&ctx.state.chat, &ctx.session_id, "error", true).is_none(),
+        "an automatic retry must not loop after another error"
+    );
+    assert!(ctx.state.chat.pending_views("s").is_empty());
+
+    queue_message(&ctx, "stop");
+    assert!(
+        take_followup(&ctx.state.chat, &ctx.session_id, "stopped", false).is_none(),
+        "Stop must drop queued messages"
+    );
+    assert!(ctx.state.chat.pending_views("s").is_empty());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn a_steer_is_claimed_once_at_a_step_boundary() {
+    let (ctx, _store, root) = live_run();
+    queue_message(&ctx, "go left");
+    assert!(ctx.has_pending_steer());
+
+    let taken = ctx.take_steer_inputs();
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].display["text"], "go left");
+    assert!(!ctx.has_pending_steer());
+    assert!(
+        ctx.view
+            .lock()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item["kind"] == "user" && item["text"] == "go left")
+    );
+    assert!(ctx.take_steer_inputs().is_empty());
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn stopping_drops_the_queue_without_adding_a_turn() {
+    let (ctx, store, root) = live_run();
+    queue_message(&ctx, "late");
+    ctx.finish_stopped(Vec::new()).await;
+
+    let saved = store.get_session("s").unwrap().unwrap();
+    assert_eq!(saved.turns, 1);
+    assert!(ctx.state.chat.pending_views("s").is_empty());
+    assert!(!saved.events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::Message { message, .. } if message["content"] == "late"
+    )));
+    std::fs::remove_dir_all(root).ok();
 }

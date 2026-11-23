@@ -274,6 +274,31 @@ export function applySteered(
   };
 }
 
+/** Apply the authoritative view a successful send returned to the composer. */
+export function applyAcceptedSend(
+  current: SessionView,
+  mode: SendMode,
+  runId: string,
+  session: SessionView,
+  queued: boolean,
+): SessionView {
+  // A steer normally joins the current run, but the backend starts a normal
+  // run when it has already gone idle. That fresh window is the source of
+  // truth, and it is safe to merge because no new tokens exist yet.
+  if (!session.running || (mode !== "normal" && !queued)) {
+    return mergeWindow(current, session);
+  }
+  return {
+    ...current,
+    pending: session.pending,
+    title: session.title,
+    turns: session.turns,
+    updatedAt: session.updatedAt,
+    running: true,
+    activeRunId: mode === "normal" ? runId : (session.activeRunId ?? runId),
+  };
+}
+
 export function tabStatus(tab: SessionView): ChatTabInfo["status"] {
   const blocked = tab.items.some(
     (item) => item.kind === "tool" && item.status === "awaiting",

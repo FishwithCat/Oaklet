@@ -72,6 +72,9 @@ pub(crate) struct PendingInput {
     pub mode: InputMode,
     pub message: Value,
     pub display: Value,
+    /// Creation time, retained for the durable queue planned for P2.
+    #[allow(dead_code)]
+    pub created_at: i64,
 }
 
 /// The pending row a client renders; model-facing content stays in Rust.
@@ -129,6 +132,8 @@ pub struct SessionSummary {
 pub struct SendResult {
     pub run_id: String,
     pub session: SessionView,
+    /// True when the turn was queued on an existing run instead of starting one.
+    pub queued: bool,
 }
 
 #[derive(Serialize)]
@@ -355,6 +360,7 @@ impl ChatState {
             mode,
             message: turn.message,
             display,
+            created_at: store::now_ms(),
         });
         let views = pending_views(pending);
         let mut view = view.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

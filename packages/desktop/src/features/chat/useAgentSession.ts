@@ -10,6 +10,7 @@ import type { PlanBaseline, PlanCompareData } from "./plan-model";
 import {
   appendNotice,
   accumulateUsage,
+  applyAcceptedSend,
   applyApproval,
   applyApprovalResolved,
   applyContext,
@@ -35,7 +36,7 @@ import { subscribeAgentEvents } from "./agent-events.ts";
 
 type OpenTab = { id: string; number: number };
 
-type SendResult = { runId: string; session: SessionView };
+type SendResult = { runId: string; session: SessionView; queued: boolean };
 
 type CompactResult = {
   session: SessionView;
@@ -410,29 +411,20 @@ export function useAgentSession({
     }
 
     try {
-      const { runId, session } = await invoke<SendResult>("session_send", {
-        sessionId: tab.id,
-        text: trimmed,
-        attachments,
-        mode,
-      });
+      const { runId, session, queued } = await invoke<SendResult>(
+        "session_send",
+        {
+          sessionId: tab.id,
+          text: trimmed,
+          attachments,
+          mode,
+        },
+      );
       if (workspaceRef.current !== workspaceAtSend) return false;
       const current = sessionsRef.current[tab.id];
       // A terminal event may already have replaced the optimistic view.
       if (!current || !current.running) return true;
-      // The run finished before the command response; its view is final.
-      if (!session.running) {
-        putSession(mergeWindow(current, session));
-        return true;
-      }
-      putSession({
-        ...current,
-        title: session.title,
-        turns: session.turns,
-        updatedAt: session.updatedAt,
-        running: true,
-        activeRunId: mode === "normal" ? runId : (session.activeRunId ?? runId),
-      });
+      putSession(applyAcceptedSend(current, mode, runId, session, queued));
       return true;
     } catch (error) {
       if (workspaceRef.current !== workspaceAtSend) return false;
