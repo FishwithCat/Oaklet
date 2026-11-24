@@ -281,6 +281,8 @@ impl LoadSkill {
             guidance.push_str("\n\n");
             guidance.push_str(&local);
         }
+        guidance.push_str("\n\n");
+        guidance.push_str(principles::ATTACK_THE_PREMISE_CUE);
         Self { catalog, guidance }
     }
 }

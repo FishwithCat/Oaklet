@@ -11,6 +11,11 @@ use std::fmt::Write as _;
 /// Built-in names are reserved so a workspace skill cannot impersonate one.
 pub(crate) const PREFIX: &str = "oaklet-principle-";
 
+pub(crate) const ATTACK_THE_PREMISE_CUE: &str = "When the user's request or the latest tool results establish that at least two fixes based on the same assumption \
+     failed the same check, immediately call `skill` with `{\"name\":\"oaklet-principle-attack-the-premise\"}` in its own \
+     tool-call batch if the full instructions are not already in context. Wait for its result before investigating further \
+     or editing. State the shared assumption and run a check that could falsify it before making another fix.";
+
 pub(crate) struct Principle {
     pub slug: &'static str,
     pub title: &'static str,

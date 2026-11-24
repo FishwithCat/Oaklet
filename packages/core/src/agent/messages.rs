@@ -284,6 +284,7 @@ mod tests {
         assert!(prompt.contains("Available skills"));
         assert!(prompt.contains("`review`: Review a change."));
         assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
+        assert!(prompt.contains(crate::tools::principles::ATTACK_THE_PREMISE_CUE));
         assert_eq!(
             principle_index_entries(&prompt),
             crate::tools::principles::PRINCIPLES.len()
@@ -313,6 +314,7 @@ mod tests {
         let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("architecture planning turn"));
         assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
+        assert!(prompt.contains(crate::tools::principles::ATTACK_THE_PREMISE_CUE));
         assert_eq!(
             principle_index_entries(&prompt),
             crate::tools::principles::PRINCIPLES.len()
