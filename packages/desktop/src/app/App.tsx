@@ -160,14 +160,14 @@ function App() {
       ).catch(() => false);
       if (!proceed) return false;
     }
-    if (filesRef.current) {
-      if (!(await filesRef.current.canLeave())) return false;
-      // The open file may not exist, or may have different contents, on the
-      // branch being checked out.
-      filesRef.current.closeDocument();
+    const files = filesRef.current;
+    if (files && !(await files.canLeave())) return false;
+    const switched = await switchBranch(nextBranch);
+    if (switched) {
+      // The open file may have different contents on the new branch.
+      files?.closeDocument();
     }
-
-    return switchBranch(nextBranch);
+    return switched;
   }
 
   function newChat() {
@@ -201,7 +201,7 @@ function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (closing) {
+      if (closing || switchingBranch !== null) {
         event.preventDefault();
         return;
       }
@@ -346,6 +346,7 @@ function App() {
       />
 
       <div
+        inert={switchingBranch !== null}
         className={`main${
           view === "chat" && session.items.length === 0 ? " empty-state" : ""
         }`}
