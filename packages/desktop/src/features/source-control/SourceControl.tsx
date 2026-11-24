@@ -155,6 +155,7 @@ export function SourceControl({
                 empty="No diff for this file."
                 workspace={workspace}
                 commit={null}
+                change={selectedChange}
                 revision={refreshToken}
               />
             </div>

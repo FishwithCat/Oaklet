@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedLines, isImagePath, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
+import { affectedSymbols, changedLines, isImagePath, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -77,6 +77,19 @@ test("gutter marks read a replaced block as modified and an insertion as added",
  three
 `;
   assert.deepEqual(changedLines(parseDiff(insertion)), [{ line: 2, kind: "added" }]);
+});
+
+test("diff symbols use the smallest declaration on each side and ignore context", () => {
+  const { hunks, indexLine } = parseDiff(PATCH)[0];
+  const symbol = (name, startLine, endLine, container = "") =>
+    ({ name, startLine, endLine, container, kind: "function" });
+  const old = [symbol("container", 1, 3), symbol("previous", 2, 2, "container")];
+  const next = [symbol("container", 1, 4), symbol("updated", 2, 2, "container"),
+    symbol("inserted", 3, 3, "container"), symbol("unchanged", 4, 4, "container")];
+  assert.equal(indexLine, "1111111..2222222 100644");
+  assert.deepEqual(affectedSymbols(hunks, old, next), [
+    ["container / previous", "container / updated", "container / inserted"],
+  ]);
 });
 
 test("only webview-supported image extensions get an image preview", () => {

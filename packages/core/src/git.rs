@@ -9,6 +9,8 @@ use crate::SharedState;
 use crate::shell_env::ApplyEnvironment;
 use crate::windows::workspace_for_window;
 
+mod symbols;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCommit {
@@ -250,10 +252,18 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
         ],
     )?;
     let code = status.get(..2).unwrap_or_default();
+    let rename = code
+        .contains('A')
+        .then(|| rename_source(workspace, path))
+        .flatten()
+        .filter(|original| {
+            crate::syntax::Grammar::for_path(path).is_some()
+                || crate::syntax::Grammar::for_path(original).is_some()
+        });
 
     // `git diff HEAD` omits untracked files, and an added file has no HEAD
     // version to compare against. Compare those with an empty file instead.
-    if code == "??" || code.contains('A') {
+    if code == "??" || (code.contains('A') && rename.is_none()) {
         if workspace.join(path).symlink_metadata().is_ok() {
             return run_patch(
                 workspace,
@@ -262,6 +272,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
                     "--no-index",
                     "--no-color",
                     "--no-ext-diff",
+                    "--full-index",
                     "--",
                     NULL_DEVICE,
                     path,
@@ -280,6 +291,7 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
                 "--relative",
                 "--no-color",
                 "--no-ext-diff",
+                "--full-index",
                 "--find-renames",
                 "--",
                 path,
@@ -288,20 +300,56 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
         );
     }
 
-    run_patch(
+    let mut args = vec![
+        "diff",
+        "HEAD",
+        "--relative",
+        "--no-color",
+        "--no-ext-diff",
+        "--full-index",
+        "--find-renames",
+        "--",
+        path,
+    ];
+    if let Some(original) = &rename {
+        args.push(original);
+    }
+    run_patch(workspace, &args, false)
+}
+
+fn rename_source(workspace: &Path, path: &str) -> Option<String> {
+    let prefix = run_git(workspace, &["rev-parse", "--show-prefix"]).ok()?;
+    let prefix = prefix.strip_suffix('\n').unwrap_or(&prefix);
+    let status = run_git(
         workspace,
         &[
-            "diff",
-            "HEAD",
-            "--relative",
-            "--no-color",
-            "--no-ext-diff",
-            "--find-renames",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
             "--",
-            path,
+            ".",
         ],
-        false,
     )
+    .ok()?;
+    let mut records = status.split('\0');
+    while let Some(record) = records.next() {
+        let bytes = record.as_bytes();
+        if bytes.get(2) != Some(&b' ') {
+            continue;
+        }
+        let code = &bytes[..2];
+        if code.contains(&b'R') || code.contains(&b'C') {
+            let original = records.next()?;
+            if code.contains(&b'R') && record[3..].strip_prefix(prefix) == Some(path) {
+                return original
+                    .strip_prefix(prefix)
+                    .filter(|original| valid_relative_path(original))
+                    .map(str::to_owned);
+            }
+        }
+    }
+    None
 }
 
 pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
@@ -317,11 +365,37 @@ pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
             "--patch",
             "--no-color",
             "--no-ext-diff",
+            "--full-index",
             "--first-parent",
             hash,
         ],
         false,
     )
+}
+
+#[tauri::command]
+pub(crate) async fn git_diff_symbols(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    path: Option<String>,
+    hash: Option<String>,
+    file_index: usize,
+    file_header: String,
+    index_line: String,
+) -> Result<Option<symbols::DiffSymbols>, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        symbols::for_diff(
+            &workspace,
+            path.as_deref(),
+            hash.as_deref(),
+            file_index,
+            &file_header,
+            &index_line,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn show_image(workspace: &Path, path: &str, hash: &str) -> Result<String, String> {

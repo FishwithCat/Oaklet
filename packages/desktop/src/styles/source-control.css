@@ -687,6 +687,10 @@
   border-top: 1px solid var(--border);
 }
 
+.diff-symbols { display: flex; flex-wrap: wrap; gap: 4px; max-height: 92px; overflow: auto; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.diff-symbols button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 6px; font-family: var(--mono); font-size: 11px; }
+.diff-hunk-symbols { margin-left: 10px; font-weight: 600; color: var(--text); }
+
 .diff-hunk-head {
   padding: 4px 10px;
   background: var(--accent-soft);

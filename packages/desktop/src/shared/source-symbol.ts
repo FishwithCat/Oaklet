@@ -1,0 +1,15 @@
+export type SourceSymbol = {
+  name: string;
+  kind: string;
+  container: string;
+  startLine: number;
+  endLine: number;
+};
+
+export function supportsOutline(path: string): boolean {
+  return /\.(rs|[cm]?[jt]s|[jt]sx)$/i.test(path);
+}
+
+export function qualifiedSymbol(symbol: SourceSymbol): string {
+  return symbol.container ? `${symbol.container} / ${symbol.name}` : symbol.name;
+}

@@ -70,6 +70,7 @@ pub fn run() {
             git::git_switch,
             git::git_changes,
             git::git_diff,
+            git::git_diff_symbols,
             architecture::architecture_discover,
             architecture::architecture_load,
             terminal::commands::terminal_open,

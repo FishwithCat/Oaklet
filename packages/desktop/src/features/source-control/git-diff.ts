@@ -1,3 +1,5 @@
+import { qualifiedSymbol, supportsOutline, type SourceSymbol } from "../../shared/source-symbol.ts";
+
 export type DiffLine = {
   kind: "add" | "del" | "context" | "meta";
   text: string;
@@ -9,6 +11,9 @@ export type DiffHunk = { header: string; lines: DiffLine[] };
 
 export type DiffFile = {
   path: string;
+  header: string;
+  indexLine?: string;
+  hasSourceOutline?: boolean;
   added: number;
   removed: number;
   binary: boolean;
@@ -50,6 +55,7 @@ export function parseDiff(text: string): DiffFile[] {
       const split = rest.lastIndexOf(" b/");
       file = {
         path: unquotePath(split >= 0 ? rest.slice(split + 3) : rest),
+        header: rest,
         added: 0,
         removed: 0,
         binary: false,
@@ -72,6 +78,9 @@ export function parseDiff(text: string): DiffFile[] {
 
     if (!hunk) {
       if (raw.startsWith("Binary files ")) file.binary = true;
+      if (raw.startsWith("index ")) file.indexLine = raw.slice("index ".length);
+      if ((raw.startsWith("--- ") || raw.startsWith("+++ ")) &&
+          supportsOutline(raw.slice(4).replace(/"?\t?$/, ""))) file.hasSourceOutline = true;
       continue;
     }
 
@@ -95,6 +104,42 @@ export function parseDiff(text: string): DiffFile[] {
   return files;
 }
 
+export function affectedSymbols(
+  hunks: readonly DiffHunk[],
+  old: readonly SourceSymbol[],
+  next: readonly SourceSymbol[],
+): string[][] {
+  const findOld = symbolLookup(old);
+  const findNew = symbolLookup(next);
+  return hunks.map((hunk) => {
+    const names = new Set<string>();
+    for (const line of hunk.lines) {
+      const symbol = line.kind === "add" && line.newLine !== null ? findNew(line.newLine) :
+        line.kind === "del" && line.oldLine !== null ? findOld(line.oldLine) : null;
+      if (symbol) names.add(qualifiedSymbol(symbol));
+    }
+    return [...names];
+  });
+}
+
+function symbolLookup(symbols: readonly SourceSymbol[]) {
+  let index = 0;
+  let active: SourceSymbol[] = [];
+  return (line: number) => {
+    active = active.filter((symbol) => symbol.endLine >= line);
+    while (index < symbols.length && symbols[index].startLine <= line) {
+      const symbol = symbols[index++];
+      if (symbol.endLine >= line) active.push(symbol);
+    }
+    let closest: SourceSymbol | null = null;
+    for (const symbol of active) {
+      if (!closest || symbol.endLine - symbol.startLine <= closest.endLine - closest.startLine) {
+        closest = symbol;
+      }
+    }
+    return closest;
+  };
+}
 export function pageHunks(hunks: DiffHunk[], offset: number, limit: number): DiffHunk[] {
   const page: DiffHunk[] = [];
   let start = 0;
