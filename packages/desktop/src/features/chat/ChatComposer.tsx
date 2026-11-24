@@ -50,6 +50,21 @@ export type ChatComposerHandle = {
 
 type ImageAttachment = Extract<Attachment, { kind: "image" }>;
 
+function resizeComposer(element: HTMLTextAreaElement) {
+  const form = element.form;
+  if (!form) return;
+  const scrollTop = element.scrollTop;
+  element.style.height = "auto";
+  // Measure at the inline width so the extra space after expansion cannot cause a re-collapse.
+  form.removeAttribute("data-expanded");
+  form.toggleAttribute(
+    "data-expanded",
+    element.clientWidth < 200 || element.scrollHeight > element.clientHeight,
+  );
+  element.style.height = `${element.scrollHeight}px`;
+  element.scrollTop = scrollTop;
+}
+
 function UsageLabel({ used, limit }: { used: number; limit: number }) {
   const [shown, setShown] = useState(used);
   const shownRef = useRef(used);
@@ -174,6 +189,7 @@ export function ChatComposer({
   const [mention, setMention] = useState<ActiveMention | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
   const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
@@ -181,6 +197,7 @@ export function ChatComposer({
   const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
   const options = mention ? mentionOptions(mention.query) : [];
+  const mentionOpen = options.length > 0;
   const activeIndex =
     options.length === 0 ? 0 : Math.min(mentionIndex, options.length - 1);
   activeTabIdRef.current = activeTabId;
@@ -217,19 +234,39 @@ export function ChatComposer({
   }, [activeTabId]);
 
   useLayoutEffect(() => {
-    resizeComposer();
-  }, [activeTabId, value]);
+    if (textareaRef.current) resizeComposer(textareaRef.current);
+  }, [activeTabId, showContextGauge, value]);
+
+  useLayoutEffect(() => {
+    const element = textareaRef.current;
+    const form = element?.form;
+    const footer = footerRef.current;
+    if (!element || !form || !footer) return;
+
+    let frame = 0;
+    const widths = new Map<Element, number>();
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const { target, contentRect } of entries) {
+        if (widths.get(target) === contentRect.width) continue;
+        widths.set(target, contentRect.width);
+        changed = true;
+      }
+      if (!changed) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => resizeComposer(element));
+    });
+    observer.observe(form);
+    observer.observe(footer);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
   }), []);
-
-  function resizeComposer() {
-    const element = textareaRef.current;
-    if (!element) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
-  }
 
   async function pasteFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
     // Safari exposes pasted files through `items`; Chromium fills `files`.
@@ -285,10 +322,9 @@ export function ChatComposer({
     setMention(null);
     requestAnimationFrame(() => {
       const element = textareaRef.current;
-      if (!element) return;
+      if (element?.value !== inserted.value) return;
       element.focus();
       element.setSelectionRange(inserted.caret, inserted.caret);
-      resizeComposer();
     });
   }
 
@@ -298,7 +334,6 @@ export function ChatComposer({
     try {
       if (!await onSubmit(attachments)) return;
       setAttachmentError("");
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
     } finally {
       submittingRef.current = false;
     }
@@ -359,7 +394,7 @@ export function ChatComposer({
             {attachmentError}
           </div>
         )}
-        {mention && options.length > 0 && (
+        {mentionOpen && (
           <div
             className="mention-menu"
             id="composer-mentions"
@@ -380,32 +415,40 @@ export function ChatComposer({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => acceptMention(option)}
               >
-                <span className="mention-name">@{option.name}</span>
-                <span className="mention-description">
-                  {option.description}
+                <span className="mention-copy">
+                  <span className="mention-name">@{option.name}</span>
+                  <span className="mention-description">{option.description}</span>
                 </span>
+                <kbd aria-hidden="true">↵</kbd>
               </button>
             ))}
           </div>
+        )}
+        {showContextGauge && (
+          <ContextGauge
+            usage={context}
+            runUsage={usage}
+            running={running}
+            compacting={compacting}
+            onCompact={onCompact}
+          />
         )}
         <textarea
           ref={textareaRef}
           rows={1}
           value={value}
-          placeholder={
-            running ? "Press Enter to steer" : "Press Enter to send"
-          }
+          placeholder={running ? "Steer the current turn…" : "Message Oaklet…"}
+          aria-label="Message"
           aria-autocomplete="list"
-          aria-controls={mention ? "composer-mentions" : undefined}
-          aria-expanded={mention !== null && options.length > 0}
+          aria-controls={mentionOpen ? "composer-mentions" : undefined}
+          aria-expanded={mentionOpen}
           aria-activedescendant={
-            mention && options.length > 0
+            mentionOpen
               ? `composer-mention-${options[activeIndex]?.name}`
               : undefined
           }
           onChange={(event) => {
             onChange(event.target.value);
-            resizeComposer();
             syncMention(event.target.value, event.target.selectionStart);
           }}
           onSelect={(event) =>
@@ -430,8 +473,7 @@ export function ChatComposer({
           onKeyDown={(event) => {
             const composing = compositionRef.current.active();
             if (
-              mention &&
-              options.length > 0 &&
+              mentionOpen &&
               !isImeEvent(event.nativeEvent) &&
               !composing
             ) {
@@ -464,41 +506,37 @@ export function ChatComposer({
             void submit();
           }}
         />
-        <div className="composer-footer">
-          <span className="composer-meta">
-            {(showContextGauge || context) && (
-              <span className="composer-context">
-                {showContextGauge && (
-                  <ContextGauge
-                    usage={context}
-                    runUsage={usage}
-                    running={running}
-                    compacting={compacting}
-                    onCompact={onCompact}
-                  />
-                )}
-                {context && (
-                  <span
-                    className="composer-usage"
-                    title={
-                      stepUsage
-                        ? formatRequestTitle(stepUsage)
-                        : "Current context"
-                    }
-                  >
-                    <UsageLabel
-                      key={activeTabId}
-                      used={context.used}
-                      limit={context.window}
-                    />
-                  </span>
-                )}
-              </span>
+        <div className="composer-footer" ref={footerRef}>
+          <span className="composer-stop-slot">
+            {running && (
+              <button
+                type="button"
+                className="stop icon-button"
+                onClick={onStop}
+                aria-label="Stop"
+                title="Stop"
+              >
+                <PauseFilled size={14} />
+              </button>
             )}
+          </span>
+          <span className="composer-meta">
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}
             </span>
+            {context && (
+              <span
+                className="composer-usage"
+                title={stepUsage ? formatRequestTitle(stepUsage) : "Current context"}
+              >
+                <UsageLabel
+                  key={activeTabId}
+                  used={context.used}
+                  limit={context.window}
+                />
+              </span>
+            )}
             <span className="shortcut-trigger-wrap">
               <button
                 ref={helpButtonRef}
@@ -511,10 +549,9 @@ export function ChatComposer({
                 onClick={() => setHelpOpen(true)}
                 aria-label="Keyboard shortcuts"
                 aria-expanded={helpOpen}
-                aria-controls="shortcuts-help"
+                aria-controls={helpOpen ? "shortcuts-help" : undefined}
               >
-                <QuestionRegular size={11} />
-                Shortcuts
+                <QuestionRegular size={15} aria-hidden="true" />
               </button>
               {helpOpen && (
                 <div
@@ -587,17 +624,6 @@ export function ChatComposer({
               )}
             </span>
           </span>
-          {running && (
-            <button
-              type="button"
-              className="stop icon-button"
-              onClick={onStop}
-              aria-label="Stop"
-              title="Stop"
-            >
-              <PauseFilled size={14} />
-            </button>
-          )}
         </div>
       </form>
       {preview && (

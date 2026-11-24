@@ -483,37 +483,35 @@
 
 .composer-wrap {
   flex: none;
-  padding: 10px 18px 16px;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg) 95%, transparent) 40%);
+  margin-top: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--panel-muted-border);
+  background: var(--bg);
+  transition: border-color 120ms ease;
+}
+
+.composer-wrap:focus-within {
+  border-top-color: var(--panel-muted-border-strong);
 }
 
 .composer {
   position: relative;
-  /* The composer sits outside .chat, so add the mirrored scrollbar width to the
-     thread's 30px inset, then subtract the 17px the process rule hangs into
-     that gutter. This lands the box's left border under the rule. */
-  margin: 0 30px 0 calc(30px + var(--scrollbar-size) - 17px);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 8px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  transition: border-color 120ms ease;
-}
-
-.composer:focus-within {
-  border-color: var(--accent-border-strong);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  margin: 0;
 }
 
 .composer textarea {
+  grid-column: 2;
+  width: 100%;
+  min-width: 0;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
-  padding: 4px 2px;
-  min-height: 24px;
+  padding: 6px 0;
+  min-height: 34px;
   max-height: 180px;
   line-height: 1.5;
   font-size: 14px;
@@ -523,27 +521,37 @@
   color: var(--muted);
 }
 
+.composer[data-expanded] textarea,
+.composer[data-expanded] .composer-footer {
+  grid-column: 2 / -1;
+}
+
+.composer[data-expanded] .composer-meta::before {
+  content: none;
+}
+
 .mention-menu {
   position: absolute;
   z-index: 20;
   bottom: calc(100% + 6px);
-  left: 8px;
+  left: 0;
   width: max-content;
-  min-width: 220px;
-  max-width: min(380px, calc(100% - 16px));
+  min-width: min(220px, 100%);
+  max-width: min(380px, 100%);
   display: flex;
   flex-direction: column;
   padding: 4px;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-muted-border);
   border-radius: 10px;
   box-shadow: 0 12px 32px color-mix(in srgb, #000 24%, transparent);
 }
 
 .mention-option {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
   min-width: 0;
   padding: 6px 8px;
@@ -556,32 +564,41 @@
 }
 
 .mention-option.active {
-  background: var(--panel-muted-strong);
+  background: var(--accent-soft);
+}
+
+.mention-copy {
+  display: grid;
+  gap: 3px;
 }
 
 .mention-name {
-  flex: none;
   color: var(--accent);
   font-family: var(--mono);
   font-size: 12px;
 }
 
 .mention-description {
-  flex: 1 1 auto;
-  overflow: hidden;
-  min-width: 0;
   color: var(--muted);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.mention-option kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--panel-muted-border);
+  border-radius: 4px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
 }
 
 .composer-attachments {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 0;
-  padding: 0 2px;
+  margin: 0 0 5px;
+  padding: 0;
   list-style: none;
 }
 
@@ -676,38 +693,52 @@
 }
 
 .composer-error {
-  padding: 0 2px;
+  grid-column: 1 / -1;
+  margin-bottom: 5px;
   color: var(--red);
   font-size: 11.5px;
 }
 
 .composer-footer {
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  /* Hold the row height so the Stop button appearing mid-run cannot resize
-     the composer. */
-  min-height: 24px;
-  /* Match the textarea's 2px inset so the footer text lines up with the
-     first line of the message above it. */
-  padding: 0 2px;
-  gap: 12px;
+  width: max-content;
+  max-width: 100%;
+  min-height: 34px;
+  margin-inline-start: 10px;
+  gap: 4px;
 }
 
-.composer-footer .stop {
+.composer-stop-slot,
+.composer-footer button.stop {
+  flex: none;
   width: 24px;
   height: 24px;
 }
 
 .composer-meta {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  padding-left: 10px;
+}
+
+.composer-meta::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 16px;
+  border-left: 1px solid var(--panel-muted-border);
+  transform: translateY(-50%);
 }
 
 .composer-model {
-  max-width: min(50vw, 260px);
+  max-width: 200px;
   overflow: hidden;
   color: var(--muted);
   font-family: var(--mono);
@@ -715,13 +746,6 @@
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.composer-context {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  gap: 3px;
 }
 
 .composer-usage {
@@ -735,11 +759,13 @@
 }
 
 .context-meter {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  margin-left: -3px;
-  padding: 3px;
+  grid-column: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 3px 10px 0 0;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -790,13 +816,13 @@
 .shortcut-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 10.5px;
-  line-height: 1;
 }
 
 .shortcut-trigger:hover:not(:disabled) {
@@ -807,7 +833,7 @@
 
 .shortcuts-popover {
   position: absolute;
-  left: 50%;
+  right: 0;
   bottom: calc(100% + 8px);
   z-index: 10;
   width: 180px;
@@ -816,20 +842,19 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 16px 40px color-mix(in srgb, var(--text) 14%, transparent);
-  transform: translateX(-50%);
 }
 
 .shortcuts-popover::after {
   content: "";
   position: absolute;
-  left: 50%;
+  right: 7px;
   bottom: -5px;
   width: 9px;
   height: 9px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  transform: translateX(-50%) rotate(45deg);
+  transform: rotate(45deg);
 }
 
 .shortcuts-popover h3 {
