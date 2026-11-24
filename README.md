@@ -117,7 +117,8 @@ job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
 workspace.
 
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
-can be previewed, and **⌘S** saves.
+can be previewed, and **⌘S** saves. Use **File outline** in a saved Rust,
+JavaScript, or TypeScript file to jump to its declarations.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The

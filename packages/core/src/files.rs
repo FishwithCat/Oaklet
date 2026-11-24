@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{State, WebviewWindow};
 
+use crate::syntax::{self, Grammar, Outline};
 use crate::windows::workspace_for_window;
 use crate::{SharedState, tools::Workspace};
 
@@ -75,6 +76,30 @@ pub async fn files_read(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn files_outline(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    workspace: String,
+    path: String,
+    content: String,
+) -> Result<Outline, String> {
+    let root = self::workspace(&state, &window, &workspace)?;
+    let target = resolve(&root, &path)?;
+    let grammar = Grammar::for_path(&target.to_string_lossy()).ok_or("Unsupported source file.")?;
+    if content.len() > syntax::MAX_SOURCE_BYTES {
+        return Err("Only source files up to 2 MB are supported.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        syntax::outline(grammar, &content, 1_000, || {
+            std::time::Instant::now() >= deadline
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// A file dropped from the OS. Small files become composer attachments; larger

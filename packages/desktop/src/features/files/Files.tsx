@@ -15,6 +15,9 @@ import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
 import { errorText } from "../../shared/error-text";
+import { supportsOutline } from "../../shared/source-symbol";
+import { FileOutline } from "./FileOutline";
+import type { FileEditorHandle } from "./FileEditor";
 import { previewFontShortcut } from "../../app/shortcuts";
 import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../source-control/git-diff";
 import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
@@ -75,6 +78,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [lineMarks, setLineMarks] = useState<{ path: string; marks: readonly ChangedLine[] } | null>(null);
   const [browserWidth, setBrowserWidth] = useState(300);
   const busyRef = useRef(false);
+  const editor = useRef<FileEditorHandle>(null);
   const dirty = document !== null && document.content !== editorText(document.original);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -249,6 +253,11 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                 })}
               </nav>
               <div className="files-actions">
+                {document && supportsOutline(document.path) && (
+                  <FileOutline key={document.path} workspace={workspace} path={document.path}
+                    source={document.original} dirty={dirty} busy={busy}
+                    onJump={(line) => editor.current?.jumpToLine(line)} />
+                )}
                 <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(openPath)}><Refresh3Regular size={14} /></button>
                 {document && isMarkdownPath(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
                 <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); setImage(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
@@ -257,7 +266,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
             {image ? <div className="files-image"><button type="button" className="files-image-button" title="Enlarge image" aria-label={`Enlarge ${image.path}`} onClick={() => setEnlarged(true)}><img src={image.src} alt={image.path} /></button></div> :
               document && (preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
                 <Suspense fallback={<div className="files-editor" />}>
-                  <FileEditor path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                  <FileEditor ref={editor} path={document.path} value={document.content} syntax={syntax} readOnly={busy}
                     marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
                     onChange={(content) => {
                       dirtyRef.current = content !== editorText(document.original);

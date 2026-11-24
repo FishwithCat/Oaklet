@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
-import CodeMirror, { keymap, type EditorView } from "@uiw/react-codemirror";
+import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from "react";
+import CodeMirror, { EditorView, keymap } from "@uiw/react-codemirror";
 import { search, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
 import type { ChangedLine } from "../source-control/git-diff";
@@ -11,13 +11,16 @@ import { FileFindPanel } from "./find-panel";
 const BASIC_SETUP = { searchKeymap: false };
 
 /** Split from Files so opening the page does not load the editor bundle. */
-export default function FileEditor({ path, value, syntax, readOnly, marks, onChange }: {
+export type FileEditorHandle = { jumpToLine: (line: number) => void };
+
+export default function FileEditor({ path, value, syntax, readOnly, marks, onChange, ref }: {
   path: string;
   value: string;
   syntax: Extension;
   readOnly: boolean;
   marks: readonly ChangedLine[];
   onChange: (content: string) => void;
+  ref: Ref<FileEditorHandle>;
 }) {
   const theme = useResolvedTheme();
   const view = useRef<EditorView | null>(null);
@@ -35,6 +38,19 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
   useEffect(() => {
     view.current?.dispatch({ effects: setChangedLines.of(marks) });
   }, [marks]);
+
+  useImperativeHandle(ref, () => ({
+    jumpToLine(line) {
+      const editor = view.current;
+      if (!editor || line < 1 || line > editor.state.doc.lines) return;
+      const position = editor.state.doc.line(line).from;
+      editor.dispatch({
+        selection: { anchor: position },
+        effects: EditorView.scrollIntoView(position, { y: "center" }),
+      });
+      editor.focus();
+    },
+  }), []);
 
   return (
     <CodeMirror

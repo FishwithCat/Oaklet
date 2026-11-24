@@ -61,6 +61,7 @@ pub fn run() {
             files::files_list,
             files::files_find,
             files::files_read,
+            files::files_outline,
             files::files_read_dropped,
             files::files_read_image,
             files::files_save,

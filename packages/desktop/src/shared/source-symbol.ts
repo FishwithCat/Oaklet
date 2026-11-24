@@ -6,6 +6,8 @@ export type SourceSymbol = {
   endLine: number;
 };
 
+export type Outline = { symbols: SourceSymbol[]; hasErrors: boolean; truncated: boolean };
+
 export function supportsOutline(path: string): boolean {
   return /\.(rs|[cm]?[jt]s|[jt]sx)$/i.test(path);
 }
