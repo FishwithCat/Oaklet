@@ -17,13 +17,18 @@ runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 Oaklet currently supports macOS only (Apple Silicon and Intel). Windows and
 Linux are not supported yet.
 
-Download the latest `.dmg` from
-[Releases](https://github.com/FishwithCat/Oaklet/releases/latest), open it, and
-drag Oaklet into Applications. If no build is available there, build from source
-instead (see [CONTRIBUTING.md](CONTRIBUTING.md)). The build is universal
-(Apple Silicon and Intel); without a Developer ID certificate it is ad-hoc
-signed rather than notarized, so macOS warns on the first launch. Open it once,
-then allow it:
+Download the `.dmg` for your Mac from
+[Releases](https://github.com/FishwithCat/Oaklet/releases/latest).
+
+- Use `_aarch64.dmg` on **Apple Silicon (M-series)**.
+- Use `_x64.dmg` on **Intel**.
+
+Older releases may offer a `_universal.dmg` that works on both. Open the `.dmg`
+and drag Oaklet into Applications. If no build is available there, see
+[CONTRIBUTING.md](CONTRIBUTING.md) to build from source.
+
+If macOS blocks the first launch of an ad-hoc signed build, open Oaklet once
+and use the steps for your version of macOS.
 
 - **macOS 15 or newer**: **System Settings → Privacy & Security → Open Anyway**.
 - **macOS 14 or earlier**: right-click Oaklet and choose **Open**.

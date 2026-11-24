@@ -1,7 +1,7 @@
 name: macOS release
 
-# Builds a universal (Apple Silicon + Intel) Oaklet.app and .dmg.
-# Manual runs upload the bundles as a workflow artifact; pushing a v* tag also
+# Builds separate Apple Silicon and Intel Oaklet.app and .dmg bundles.
+# Manual runs upload the bundles as workflow artifacts. Pushing a v* tag also
 # publishes a GitHub Release.
 #
 # Signing and notarization are optional. Add these repository secrets to enable
@@ -18,7 +18,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: macos-release-${{ github.ref }}
@@ -26,10 +26,20 @@ concurrency:
 
 jobs:
   build:
-    # Universal build: Tauri compiles both slices, so either macOS runner works.
-    # macos-14 was retired by GitHub Actions on 2026-11-02.
-    runs-on: macos-15
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - arch: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
 
     steps:
       - uses: actions/checkout@v4
@@ -48,12 +58,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/core
-          key: universal
+          key: ${{ matrix.target }}
 
       - name: Install dependencies
         run: |
@@ -81,41 +91,62 @@ jobs:
               APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
             export APPLE_SIGNING_IDENTITY="-"
           fi
-          pnpm tauri build --ci --target universal-apple-darwin --bundles app,dmg
+          pnpm tauri build --ci --target "$TARGET" --bundles app,dmg
 
-      - name: Verify the signature
+      - name: Verify and collect release files
         run: |
-          app="packages/core/target/universal-apple-darwin/release/bundle/macos/Oaklet.app"
+          bundle="packages/core/target/$TARGET/release/bundle"
+          app="$bundle/macos/Oaklet.app"
+          actual_arch="$(lipo -archs "$app/Contents/MacOS/oaklet")"
+          echo "Expected $ARCH, built $actual_arch"
+          test "$actual_arch" = "$ARCH"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=4 "$app" 2>&1 | grep -E "Identifier=|TeamIdentifier=|Signature=" || true
 
-      - name: Zip the app bundle
-        run: |
+          mkdir -p release-assets
+          cp "$bundle"/dmg/*.dmg release-assets/
           ditto -c -k --sequesterRsrc --keepParent \
-            packages/core/target/universal-apple-darwin/release/bundle/macos/Oaklet.app \
-            Oaklet.app.zip
+            "$app" "release-assets/Oaklet_$ARCH.app.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Oaklet-macos-universal
+          name: Oaklet-macos-${{ matrix.arch }}
           retention-days: 14
           if-no-files-found: error
-          path: |
-            packages/core/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            Oaklet.app.zip
+          path: release-assets/
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Oaklet-macos-*
+          path: release-assets
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: |
-            packages/core/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            Oaklet.app.zip
+            release-assets/Oaklet_*_aarch64.dmg
+            release-assets/Oaklet_*_x64.dmg
+            release-assets/Oaklet_arm64.app.zip
+            release-assets/Oaklet_x86_64.app.zip
+          fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
             ## Install (macOS)
 
-            This build is ad-hoc signed, not notarized, so macOS blocks the first
-            launch. Download the `.dmg`, drag Oaklet into Applications, then:
+            Download the `.dmg` for your Mac.
+
+            - Use `_aarch64.dmg` on Apple Silicon (M-series).
+            - Use `_x64.dmg` on Intel.
+
+            Open the `.dmg` and drag Oaklet into Applications. If macOS blocks
+            the first launch of an ad-hoc signed build, follow the steps below.
 
             1. Try to open Oaklet once.
             2. macOS 15+: System Settings → Privacy & Security → **Open Anyway**.

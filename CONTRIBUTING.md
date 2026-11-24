@@ -81,22 +81,21 @@ Before packaging, run `pnpm --dir packages/architecture-helper build`. Tauri
 embeds only `packages/architecture-helper/dist`; `node_modules` is a build-time
 dependency and is not shipped. The packaged helper is resolved from the app's
 resource directory, while development builds fall back to the helper in the
-Oaklet checkout. The bundle is plain JavaScript, so a universal macOS build does
-not need per-architecture `esbuild` binaries in the shipped app.
+Oaklet checkout. Both macOS builds ship the helper as plain JavaScript.
 
 ### Releasing (macOS, GitHub Actions)
 
-`.github/workflows/macos-release.yml` builds a universal (Apple Silicon + Intel)
-`.dmg` and `.app`:
+`.github/workflows/macos-release.yml` builds separate `.dmg` and `.app.zip` files
+for Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`).
 
-- **Run workflow** in the Actions tab to download the build as a workflow
-  artifact.
+- **Run workflow** in the Actions tab to download a workflow artifact for each
+  architecture.
 - Push a `v*` tag (matching the `version` in `packages/core/tauri.conf.json`)
-  to also publish a GitHub Release.
+  to publish both builds in a single GitHub Release after they pass validation.
 
-The build is **ad-hoc signed**, which needs no Apple Developer account. macOS
-still blocks the first launch, so the release notes tell users to drag Oaklet
-into `/Applications`, try to open it once, then allow it under **System
+By default, both builds use **ad-hoc signing**, which needs no Apple Developer
+account. macOS may block the first launch. The release notes tell users to drag
+Oaklet into `/Applications`, try to open it once, then allow it under **System
 Settings → Privacy & Security → Open Anyway** (macOS 15+) or run
 `xattr -dr com.apple.quarantine /Applications/Oaklet.app`.
 
