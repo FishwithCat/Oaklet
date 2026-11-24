@@ -605,9 +605,33 @@
   border-radius: 5px;
 }
 
+.composer-attachment-thumb {
+  display: block;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  line-height: 0;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
 .composer-attachment img {
   object-fit: cover;
   display: block;
+  transition: opacity 120ms ease;
+}
+
+.composer-attachment-thumb:hover img {
+  opacity: 0.82;
+}
+
+.composer-attachment-thumb:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .composer-attachment-icon {

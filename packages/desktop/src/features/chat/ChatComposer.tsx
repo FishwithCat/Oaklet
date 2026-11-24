@@ -20,6 +20,7 @@ import {
   isSendEnter,
 } from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
+import { ImageLightbox } from "../../shared/ImageLightbox";
 import {
   formatBytes,
   readAttachment,
@@ -46,6 +47,8 @@ import type { ContextUsage, RunUsage, StepUsage } from "./session-model";
 export type ChatComposerHandle = {
   focus: () => void;
 };
+
+type ImageAttachment = Extract<Attachment, { kind: "image" }>;
 
 function UsageLabel({ used, limit }: { used: number; limit: number }) {
   const [shown, setShown] = useState(used);
@@ -166,6 +169,7 @@ export function ChatComposer({
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
+  const [preview, setPreview] = useState<ImageAttachment | null>(null);
   const [reading, setReading] = useState(false);
   const [mention, setMention] = useState<ActiveMention | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -209,6 +213,7 @@ export function ChatComposer({
   useLayoutEffect(() => {
     setHelpOpen(false);
     setAttachmentError("");
+    setPreview(null);
   }, [activeTabId]);
 
   useLayoutEffect(() => {
@@ -316,7 +321,15 @@ export function ChatComposer({
                 key={`${attachment.name}-${index}`}
               >
                 {attachment.kind === "image" ? (
-                  <img src={attachment.thumbnail} alt="" />
+                  <button
+                    type="button"
+                    className="composer-attachment-thumb"
+                    aria-label={`Preview ${attachment.name}`}
+                    title="Preview image"
+                    onClick={() => setPreview(attachment)}
+                  >
+                    <img src={attachment.thumbnail} alt="" />
+                  </button>
                 ) : (
                   <span className="composer-attachment-icon" aria-hidden="true">
                     <FileRegular size={14} />
@@ -608,6 +621,13 @@ export function ChatComposer({
           </div>
         </div>
       </form>
+      {preview && (
+        <ImageLightbox
+          src={preview.dataUrl}
+          alt={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </div>
   );
 }
