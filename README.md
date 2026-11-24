@@ -100,14 +100,14 @@ The agent has `read_file`, `file_outline`, `read_image`, `write_file`, `edit_fil
 it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `history_read`.
 
-`file_outline` lists declarations and line ranges from saved Rust, JavaScript,
-and TypeScript files, including JSX and TSX, so the agent can read the relevant
-implementation by line range.
+`file_outline` lists declarations and line ranges from saved Rust, JavaScript
+(including JSX), TypeScript (including TSX), Python, and Java files, so the
+agent can read the relevant implementation by line range.
 
 `structural_search` finds `invoke(...)` calls in JavaScript or TypeScript and
 function definitions marked with `#[tauri::command]` or `#[test]` in Rust.
 File edit tools report suspected syntax errors introduced by successful edits
-in supported source files.
+in the same languages as `file_outline`.
 
 ## Workspace views
 
@@ -123,7 +123,7 @@ workspace.
 
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
 can be previewed, and **⌘S** saves. Use **File outline** in a saved Rust,
-JavaScript, or TypeScript file to jump to its declarations.
+JavaScript, TypeScript, Python, or Java file to jump to its declarations.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The

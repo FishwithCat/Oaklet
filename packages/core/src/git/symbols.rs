@@ -332,6 +332,23 @@ mod tests {
         let patch = diff(&root, "新 file.ts").unwrap();
         let symbols = changes("新 file.ts", &patch).unwrap();
         assert_eq!(symbols.new[0].name, "added");
+
+        for (path, source) in [
+            ("worker.py", "def run():\n    return 1\n"),
+            (
+                "Worker.java",
+                "class Worker {\n    int run() { return 1; }\n}\n",
+            ),
+        ] {
+            save(path, source);
+            let patch = diff(&root, path).unwrap();
+            let symbols = changes(path, &patch).unwrap();
+            assert!(symbols.old.is_empty(), "{path}");
+            assert!(
+                symbols.new.iter().any(|symbol| symbol.name == "run"),
+                "{path}"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }

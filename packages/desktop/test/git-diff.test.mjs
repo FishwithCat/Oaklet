@@ -92,6 +92,19 @@ test("diff symbols use the smallest declaration on each side and ignore context"
   ]);
 });
 
+test("diffs enable source outlines for Python and Java files", () => {
+  for (const path of ["script.py", "Service.java"]) {
+    const patch = `diff --git a/${path} b/${path}
+--- a/${path}
++++ b/${path}
+@@ -1 +1 @@
+-before
++after
+`;
+    assert.equal(parseDiff(patch)[0].hasSourceOutline, true, path);
+  }
+});
+
 test("only webview-supported image extensions get an image preview", () => {
   for (const path of ["a.png", "a.PNG", "dir/b.jpg", "b.jpeg", "c.gif", "d.webp"]) {
     assert.equal(isImagePath(path), true, path);

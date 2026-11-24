@@ -7,7 +7,14 @@ use crate::syntax::Grammar;
 const LISTED: usize = 6;
 
 pub(super) fn checks_path(path: &str) -> bool {
-    Grammar::for_path(path).is_some()
+    Grammar::for_path(path).is_some_and(checks_comments)
+}
+
+fn checks_comments(grammar: Grammar) -> bool {
+    matches!(
+        grammar,
+        Grammar::Rust | Grammar::JavaScript | Grammar::TypeScript | Grammar::Tsx
+    )
 }
 
 fn parsed_comments<'a>(grammar: Grammar, text: &'a str, tree: &Tree) -> Vec<(usize, &'a str)> {
@@ -69,7 +76,11 @@ pub(super) fn check_edit(
         });
     };
     let after_tree = after_language.parse(after, || false)?;
-    let comments = parsed_comments(after_language, after, &after_tree);
+    let comments = if checks_comments(after_language) {
+        parsed_comments(after_language, after, &after_tree)
+    } else {
+        Vec::new()
+    };
     let mut before_tree = None;
     if let Some((before_path, before_text)) = before
         && let Some(before_language) = Grammar::for_path(before_path)
@@ -88,7 +99,8 @@ pub(super) fn check_edit(
     }
     let mut existing = HashMap::new();
     if let Some((before_path, before_text)) = before
-        && let Some(before_language) = Grammar::for_path(before_path)
+        && let Some(before_language) =
+            Grammar::for_path(before_path).filter(|&grammar| checks_comments(grammar))
         && let Some(tree) = &before_tree
     {
         for (_, comment) in parsed_comments(before_language, before_text, tree) {

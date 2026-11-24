@@ -15,6 +15,8 @@ pub(crate) enum Grammar {
     JavaScript,
     TypeScript,
     Tsx,
+    Python,
+    Java,
 }
 
 impl Grammar {
@@ -25,6 +27,8 @@ impl Grammar {
             "js" | "jsx" | "cjs" | "mjs" => Self::JavaScript,
             "ts" | "cts" | "mts" => Self::TypeScript,
             "tsx" => Self::Tsx,
+            "py" => Self::Python,
+            "java" => Self::Java,
             _ => return None,
         })
     }
@@ -35,6 +39,8 @@ impl Grammar {
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Self::Python => tree_sitter_python::LANGUAGE.into(),
+            Self::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 
@@ -68,11 +74,15 @@ impl Grammar {
         static JS: OnceLock<Result<Query, String>> = OnceLock::new();
         static TS: OnceLock<Result<Query, String>> = OnceLock::new();
         static TSX: OnceLock<Result<Query, String>> = OnceLock::new();
+        static PYTHON: OnceLock<Result<Query, String>> = OnceLock::new();
+        static JAVA: OnceLock<Result<Query, String>> = OnceLock::new();
         let (cache, patterns) = match self {
             Self::Rust => (&RUST, RUST_DECLARATIONS),
             Self::JavaScript => (&JS, JS_DECLARATIONS),
             Self::TypeScript => (&TS, ""),
             Self::Tsx => (&TSX, ""),
+            Self::Python => (&PYTHON, PYTHON_DECLARATIONS),
+            Self::Java => (&JAVA, JAVA_DECLARATIONS),
         };
         cache
             .get_or_init(|| {
@@ -128,6 +138,27 @@ const TS_DECLARATIONS: &str = r#"
 ] @declaration
 "#;
 
+const PYTHON_DECLARATIONS: &str = r#"
+[
+  (class_definition name: (identifier) @name)
+  (function_definition name: (identifier) @name)
+] @declaration
+"#;
+
+const JAVA_DECLARATIONS: &str = r#"
+[
+  (class_declaration name: (identifier) @name)
+  (interface_declaration name: (identifier) @name)
+  (enum_declaration name: (identifier) @name)
+  (record_declaration name: (identifier) @name)
+  (annotation_type_declaration name: (identifier) @name)
+  (annotation_type_element_declaration name: (identifier) @name)
+  (constructor_declaration name: (identifier) @name)
+  (compact_constructor_declaration name: (identifier) @name)
+  (method_declaration name: (identifier) @name)
+] @declaration
+"#;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Symbol {
@@ -157,7 +188,10 @@ pub(crate) enum Structure {
 impl Structure {
     pub(crate) fn supports(self, grammar: Grammar) -> bool {
         match self {
-            Self::InvokeCall => grammar != Grammar::Rust,
+            Self::InvokeCall => matches!(
+                grammar,
+                Grammar::JavaScript | Grammar::TypeScript | Grammar::Tsx
+            ),
             Self::TauriCommand | Self::RustTest => grammar == Grammar::Rust,
         }
     }
@@ -320,7 +354,7 @@ pub(crate) fn outline(
 fn declaration_start(node: Node<'_>) -> usize {
     let mut start = node;
     if let Some(parent) = node.parent() {
-        if parent.kind() == "export_statement" {
+        if matches!(parent.kind(), "export_statement" | "decorated_definition") {
             start = parent;
         } else if matches!(
             parent.kind(),
@@ -355,15 +389,33 @@ fn symbol_kind(node: Node<'_>) -> &'static str {
         {
             "method"
         }
-        "method_definition" | "method_signature" | "abstract_method_signature" => "method",
+        "function_definition" => {
+            let mut ancestor = node.parent();
+            while let Some(parent) = ancestor {
+                match parent.kind() {
+                    "class_definition" => return "method",
+                    "function_definition" => break,
+                    _ => ancestor = parent.parent(),
+                }
+            }
+            "function"
+        }
+        "method_definition"
+        | "method_signature"
+        | "abstract_method_signature"
+        | "method_declaration"
+        | "annotation_type_element_declaration" => "method",
+        "constructor_declaration" | "compact_constructor_declaration" => "constructor",
         "struct_item" => "struct",
         "enum_item" | "enum_declaration" => "enum",
         "union_item" => "union",
         "trait_item" => "trait",
         "type_item" | "associated_type" | "type_alias_declaration" => "type",
         "mod_item" | "internal_module" => "module",
-        "class_declaration" | "abstract_class_declaration" => "class",
+        "class_declaration" | "abstract_class_declaration" | "class_definition" => "class",
         "interface_declaration" => "interface",
+        "record_declaration" => "record",
+        "annotation_type_declaration" => "annotation",
         "variable_declarator"
             if node
                 .child_by_field_name("value")
@@ -394,9 +446,17 @@ fn container(node: Node<'_>, source: &str) -> String {
             "function_item"
             | "function_declaration"
             | "generator_function_declaration"
+            | "function_definition"
             | "class_declaration"
             | "abstract_class_declaration"
+            | "class_definition"
             | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "annotation_type_declaration"
+            | "constructor_declaration"
+            | "compact_constructor_declaration"
+            | "method_declaration"
             | "method_definition"
             | "mod_item"
             | "trait_item"

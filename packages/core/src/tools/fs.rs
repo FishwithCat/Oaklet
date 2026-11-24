@@ -725,6 +725,37 @@ mod tests {
     }
 
     #[test]
+    fn reports_python_and_java_syntax_errors_while_accepting_comments() {
+        let (ctx, root, _handle) = context("python-java-syntax");
+        for (path, source) in [
+            ("answer.py", "# An answer\ndef answer():\n    return (42)\n"),
+            (
+                "Answer.java",
+                "/** An answer */\nclass Answer {\n    int answer() { return (42); }\n}\n",
+            ),
+        ] {
+            let write = write_file(&ctx, json!({ "path": path, "content": source })).unwrap();
+            assert!(
+                !write.text.contains("Possible syntax errors"),
+                "{}",
+                write.text
+            );
+
+            let edit = edit_file(
+                &ctx,
+                json!({ "path": path, "old_string": "(42)", "new_string": "(42" }),
+            )
+            .unwrap();
+            assert!(edit.text.contains(&format!("{path}:3:")), "{}", edit.text);
+            assert_eq!(
+                std::fs::read_to_string(root.join(path)).unwrap(),
+                source.replace("(42)", "(42"),
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn does_not_overwrite_non_utf8_source_files() {
         let (ctx, root, _handle) = context("non-utf8-source");
         let path = root.join("main.rs");

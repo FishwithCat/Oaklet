@@ -35,7 +35,7 @@ impl Tool for FileOutline {
     }
 
     fn description(&self) -> &'static str {
-        "List declarations and their inclusive line ranges in one saved Rust, JavaScript, or TypeScript workspace file, including JSX and TSX."
+        "List declarations and their inclusive line ranges in a saved Rust, JavaScript (including JSX), TypeScript (including TSX), Python, or Java workspace file."
     }
 
     fn parameters(&self) -> Value {
@@ -195,6 +195,56 @@ mod tests {
                 "view.tsx",
                 "type Props = { title: string };\nexport const View = ({ title }: Props) => (\n  <div>{title}</div>\n);",
                 vec![("Props", "type", "", 1, 1), ("View", "function", "", 2, 4)],
+            ),
+            (
+                "worker.py",
+                concat!(
+                    "@register\n",
+                    "class Worker:\n",
+                    "    @logged\n",
+                    "    async def run(self):\n",
+                    "        def inner():\n",
+                    "            return 1\n",
+                    "        return inner()\n",
+                    "\n",
+                    "async def top():\n",
+                    "    return 2\n",
+                ),
+                vec![
+                    ("Worker", "class", "", 1, 7),
+                    ("run", "method", "Worker", 3, 7),
+                    ("inner", "function", "Worker / run", 5, 6),
+                    ("top", "function", "", 9, 10),
+                ],
+            ),
+            (
+                "Outer.java",
+                concat!(
+                    "@interface Marker { int value(); }\n",
+                    "interface Action { void run(); }\n",
+                    "enum Mode { ON; void stop() {} }\n",
+                    "class Outer {\n",
+                    "    Outer() {}\n",
+                    "    record Inner(int value) {\n",
+                    "        Inner {}\n",
+                    "        @Deprecated\n",
+                    "        int read() { return value; }\n",
+                    "    }\n",
+                    "}\n",
+                ),
+                vec![
+                    ("Marker", "annotation", "", 1, 1),
+                    ("value", "method", "Marker", 1, 1),
+                    ("Action", "interface", "", 2, 2),
+                    ("run", "method", "Action", 2, 2),
+                    ("Mode", "enum", "", 3, 3),
+                    ("stop", "method", "Mode", 3, 3),
+                    ("Outer", "class", "", 4, 11),
+                    ("Outer", "constructor", "Outer", 5, 5),
+                    ("Inner", "record", "Outer", 6, 10),
+                    ("Inner", "constructor", "Outer / Inner", 7, 7),
+                    ("read", "method", "Outer / Inner", 8, 9),
+                ],
             ),
         ];
         for (path, source, expected) in cases {
