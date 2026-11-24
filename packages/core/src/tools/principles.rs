@@ -158,18 +158,6 @@ pub(crate) const PRINCIPLES: &[Principle] = &[
         body: include_str!("principles/explain-the-number.md"),
     },
     Principle {
-        slug: "guard-the-context-window",
-        title: "Guard the Context Window",
-        trigger: "Before deciding how to inspect logs, files, or tool results that would fill the available context, especially when you only need one identifier or range.",
-        body: include_str!("principles/guard-the-context-window.md"),
-    },
-    Principle {
-        slug: "never-block-on-the-human",
-        title: "Never Block on the Human",
-        trigger: "Before asking about an execution choice already within the user's scope when it is reversible and requires no approval.",
-        body: include_str!("principles/never-block-on-the-human.md"),
-    },
-    Principle {
         slug: "encode-lessons-in-structure",
         title: "Encode Lessons in Structure",
         trigger: "Before repeating an instruction or review correction when an invariant, test, or write-time check can enforce it.",
@@ -224,7 +212,7 @@ mod tests {
 
     /// The pstack titles this build ships. Keeping the list in the test means a
     /// dropped or renamed principle fails instead of silently shrinking.
-    const EXPECTED: [&str; 24] = [
+    const EXPECTED: [&str; 22] = [
         "Laziness Protocol",
         "Foundational Thinking",
         "Redesign from First Principles",
@@ -246,8 +234,6 @@ mod tests {
         "Sequence Work into Verifiable Units",
         "Test Behavior, Not Implementation",
         "Explain the Number",
-        "Guard the Context Window",
-        "Never Block on the Human",
         "Encode Lessons in Structure",
     ];
 
