@@ -285,6 +285,7 @@ mod tests {
         assert!(prompt.contains("`review`: Review a change."));
         assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
         assert!(prompt.contains(crate::tools::principles::ATTACK_THE_PREMISE_CUE));
+        assert!(prompt.contains(crate::tools::principles::EXPLAIN_THE_NUMBER_CUE));
         assert_eq!(
             principle_index_entries(&prompt),
             crate::tools::principles::PRINCIPLES.len()
@@ -315,6 +316,7 @@ mod tests {
         assert!(prompt.contains("architecture planning turn"));
         assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
         assert!(prompt.contains(crate::tools::principles::ATTACK_THE_PREMISE_CUE));
+        assert!(prompt.contains(crate::tools::principles::EXPLAIN_THE_NUMBER_CUE));
         assert_eq!(
             principle_index_entries(&prompt),
             crate::tools::principles::PRINCIPLES.len()

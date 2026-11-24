@@ -283,6 +283,8 @@ impl LoadSkill {
         }
         guidance.push_str("\n\n");
         guidance.push_str(principles::ATTACK_THE_PREMISE_CUE);
+        guidance.push_str("\n\n");
+        guidance.push_str(principles::EXPLAIN_THE_NUMBER_CUE);
         Self { catalog, guidance }
     }
 }
