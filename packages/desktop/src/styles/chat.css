@@ -685,17 +685,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Hold the row height so the Stop button appearing mid-run cannot resize
+     the composer. */
+  min-height: 24px;
   /* Match the textarea's 2px inset so the footer text lines up with the
      first line of the message above it. */
   padding: 0 2px;
   gap: 12px;
 }
 
-.composer-actions {
-  display: flex;
-  align-items: center;
-  flex: none;
-  gap: 6px;
+.composer-footer .stop {
+  width: 24px;
+  height: 24px;
 }
 
 .composer-meta {

@@ -13,7 +13,7 @@ import {
   FlowerpotRegular,
   QuestionRegular,
 } from "@mingcute/react/core-regular";
-import { PauseFilled, SendFilled } from "@mingcute/react/core-filled";
+import { PauseFilled } from "@mingcute/react/core-filled";
 import {
   createCompositionGuard,
   isImeEvent,
@@ -392,7 +392,9 @@ export function ChatComposer({
           ref={textareaRef}
           rows={1}
           value={value}
-          placeholder="Ask Oaklet to build, fix, or explain something..."
+          placeholder={
+            running ? "Press Enter to steer" : "Press Enter to send"
+          }
           aria-autocomplete="list"
           aria-controls={mention ? "composer-mentions" : undefined}
           aria-expanded={mention !== null && options.length > 0}
@@ -585,40 +587,17 @@ export function ChatComposer({
               )}
             </span>
           </span>
-          <div className="composer-actions">
-            {running && (
-              <button
-                type="button"
-                className="stop icon-button"
-                onClick={onStop}
-                aria-label="Stop"
-                title="Stop"
-              >
-                <PauseFilled size={14} />
-              </button>
-            )}
+          {running && (
             <button
-              type="submit"
-              className="primary icon-button"
-              disabled={
-                compacting ||
-                reading ||
-                (!value.trim() && attachments.length === 0)
-              }
-              aria-label={
-                compacting ? "Compacting context" : running ? "Steer" : "Send"
-              }
-              title={
-                compacting
-                  ? "Compacting context…"
-                  : running
-                    ? "Steer the current turn"
-                    : "Send"
-              }
+              type="button"
+              className="stop icon-button"
+              onClick={onStop}
+              aria-label="Stop"
+              title="Stop"
             >
-              <SendFilled size={16} />
+              <PauseFilled size={14} />
             </button>
-          </div>
+          )}
         </div>
       </form>
       {preview && (
