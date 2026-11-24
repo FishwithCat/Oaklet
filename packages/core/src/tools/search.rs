@@ -20,12 +20,12 @@ use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, Workspace, par
 
 const MAX_GLOB_RESULTS: usize = 100;
 const MAX_GLOB_SCAN: usize = 20_000;
-const MAX_GREP_MATCHES: usize = 250;
+pub(super) const MAX_GREP_MATCHES: usize = 250;
 const MAX_GREP_PER_FILE: usize = 20;
 const MAX_GREP_FILES: usize = 100;
 const MAX_GREP_FILE_BYTES: u64 = 2_000_000;
 const MAX_LINE_CHARS: usize = 2_000;
-const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn walker(root: &Path, include_hidden: bool) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
@@ -48,7 +48,7 @@ pub(crate) fn walker(root: &Path, include_hidden: bool) -> WalkBuilder {
     builder
 }
 
-fn compile_glob(pattern: &str) -> Result<GlobMatcher, ToolError> {
+pub(super) fn compile_glob(pattern: &str) -> Result<GlobMatcher, ToolError> {
     if pattern.trim().is_empty() {
         return Err(ToolError::InvalidArguments(
             "pattern must not be empty.".into(),
@@ -61,7 +61,7 @@ fn compile_glob(pattern: &str) -> Result<GlobMatcher, ToolError> {
         .map_err(|error| ToolError::InvalidArguments(format!("invalid glob: {error}")))
 }
 
-fn matches(glob: &GlobMatcher, relative: &Path) -> bool {
+pub(super) fn matches(glob: &GlobMatcher, relative: &Path) -> bool {
     glob.is_match(relative)
         || relative
             .file_name()
@@ -325,7 +325,7 @@ fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
         workspace,
         cancel,
         &root,
-        include.as_ref(),
+        |relative| include.as_ref().is_none_or(|glob| matches(glob, relative)),
         |relative, text| {
             let budget = if mode == GrepMode::Content {
                 MAX_GREP_PER_FILE.min(MAX_GREP_MATCHES.saturating_sub(shown))
@@ -444,11 +444,11 @@ pub(super) fn scan_text_files(
     workspace: &Workspace,
     cancel: &super::Cancel,
     root: &Path,
-    include: Option<&GlobMatcher>,
+    accepts: impl Fn(&Path) -> bool,
     mut visit: impl FnMut(&Path, &str) -> bool,
 ) -> Result<bool, ToolError> {
     let deadline = Instant::now() + SEARCH_TIMEOUT;
-    for result in walker(root, false).build() {
+    for result in walker(root, false).sort_by_file_path(Path::cmp).build() {
         if cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
@@ -462,7 +462,7 @@ pub(super) fn scan_text_files(
             continue;
         }
         let relative = relative_path(workspace, entry.path());
-        if include.is_some_and(|glob| !matches(glob, relative)) {
+        if !accepts(relative) {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {

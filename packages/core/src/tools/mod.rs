@@ -31,6 +31,7 @@ mod plan;
 mod plan_diff;
 mod plan_present;
 pub(crate) mod principles;
+mod structure;
 pub(crate) use plan_diff::draft_path;
 pub(crate) mod search;
 mod shell;
@@ -789,6 +790,7 @@ impl ToolRegistry {
                 Box::new(fs::ListDir),
                 Box::new(search::Glob),
                 Box::new(search::Grep),
+                Box::new(structure::StructuralSearch),
                 Box::new(shell::RunCommand),
                 Box::new(jobs::JobList),
                 Box::new(jobs::JobOutput),
@@ -1445,6 +1447,7 @@ mod tests {
                 "list_dir",
                 "glob",
                 "grep",
+                "structural_search",
                 "run_command",
                 "job_list",
                 "job_output",

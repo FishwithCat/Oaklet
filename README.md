@@ -95,7 +95,7 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   **Summary model** requires its own **Summary context window** in Settings.
 
 The agent has `read_file`, `file_outline`, `read_image`, `write_file`, `edit_file`,
-`apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,
+`apply_patch`, `list_dir`, `glob`, `grep`, `structural_search`, `run_command`, `job_list`,
 `job_output`, `job_kill`, `web_fetch`, and `likec4_mcp`; depending on your setup
 it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `history_read`.
@@ -103,6 +103,9 @@ it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `file_outline` lists declarations and line ranges from saved Rust, JavaScript,
 and TypeScript files, including JSX and TSX, so the agent can read the relevant
 implementation by line range.
+
+`structural_search` finds `invoke(...)` calls in JavaScript or TypeScript and
+function definitions marked with `#[tauri::command]` or `#[test]` in Rust.
 
 ## Workspace views
 

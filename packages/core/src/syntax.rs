@@ -146,6 +146,124 @@ pub(crate) struct Outline {
     pub(crate) truncated: bool,
 }
 
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Structure {
+    InvokeCall,
+    TauriCommand,
+    RustTest,
+}
+
+impl Structure {
+    pub(crate) fn supports(self, grammar: Grammar) -> bool {
+        match self {
+            Self::InvokeCall => grammar != Grammar::Rust,
+            Self::TauriCommand | Self::RustTest => grammar == Grammar::Rust,
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::InvokeCall => "invoke call",
+            Self::TauriCommand => "Tauri command definition",
+            Self::RustTest => "Rust test definition",
+        }
+    }
+
+    pub(crate) fn lines(
+        self,
+        grammar: Grammar,
+        source: &str,
+        limit: usize,
+        interrupted: impl Fn() -> bool,
+    ) -> Result<Vec<usize>, String> {
+        let tree = grammar.parse(source, &interrupted)?;
+        let root = tree.root_node();
+        let mut result = Vec::new();
+        walk_nodes(root, |node| {
+            if interrupted() {
+                return false;
+            }
+            let found = match self {
+                Self::InvokeCall => invoke_call(node, source).then_some(node),
+                Self::TauriCommand | Self::RustTest => self.attribute_function(node, source),
+            };
+            if let Some(found) = found {
+                result.push(found.start_position().row + 1);
+            }
+            result.len() < limit
+        });
+        if interrupted() {
+            return Err("Syntax analysis was interrupted.".into());
+        }
+        Ok(result)
+    }
+
+    fn attribute_function<'tree>(self, node: Node<'tree>, source: &str) -> Option<Node<'tree>> {
+        if node.kind() != "attribute_item" {
+            return None;
+        }
+        let attribute = node.named_child(0)?.named_child(0)?;
+        let identifier_is = |node: Node<'_>, expected: &str| &source[node.byte_range()] == expected;
+        let matches = match self {
+            Self::TauriCommand => {
+                attribute.kind() == "scoped_identifier"
+                    && attribute
+                        .child_by_field_name("path")
+                        .is_some_and(|node| identifier_is(node, "tauri"))
+                    && attribute
+                        .child_by_field_name("name")
+                        .is_some_and(|node| identifier_is(node, "command"))
+            }
+            Self::RustTest => attribute.kind() == "identifier" && identifier_is(attribute, "test"),
+            Self::InvokeCall => false,
+        };
+        if !matches {
+            return None;
+        }
+        let mut next = node.next_named_sibling()?;
+        while matches!(
+            next.kind(),
+            "attribute_item" | "line_comment" | "block_comment"
+        ) {
+            next = next.next_named_sibling()?;
+        }
+        (next.kind() == "function_item").then_some(next)
+    }
+}
+
+fn invoke_call(node: Node<'_>, source: &str) -> bool {
+    if node.kind() != "call_expression" {
+        return false;
+    }
+    let Some(callee) = node.child_by_field_name("function") else {
+        return false;
+    };
+    let name = match callee.kind() {
+        "identifier" => Some(callee),
+        "member_expression" => callee.child_by_field_name("property"),
+        _ => None,
+    };
+    name.is_some_and(|name| &source[name.byte_range()] == "invoke")
+}
+
+pub(crate) fn walk_nodes(root: Node<'_>, mut visit: impl FnMut(Node<'_>) -> bool) {
+    let mut cursor = root.walk();
+    loop {
+        if !visit(cursor.node()) {
+            return;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
 pub(crate) fn outline(
     grammar: Grammar,
     source: &str,
