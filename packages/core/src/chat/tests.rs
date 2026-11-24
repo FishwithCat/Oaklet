@@ -274,9 +274,7 @@ fn a_queued_message_waits_for_the_next_turn() {
     assert!(taken.is_empty());
     assert_eq!(pending.len(), 1);
 
-    let next = state.take_next_input("s1").unwrap();
-    assert_eq!(next.display["text"].as_str(), Some("later"));
-    assert!(state.pending_views("s1").is_empty());
+    assert_eq!(pending[0].text, "later");
 }
 
 #[test]

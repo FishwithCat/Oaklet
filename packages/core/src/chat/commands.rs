@@ -179,7 +179,6 @@ pub async fn session_send(
         turn,
         cancel,
         cancel_handle,
-        false,
     )?;
     // A user message ends the wake chain a job notice may have started.
     state.chat.live().wakes.remove(&session_id);
@@ -260,7 +259,6 @@ pub async fn session_confirm_plan(
         turn,
         cancel,
         cancel_handle,
-        false,
     )?;
     state.chat.live().wakes.remove(&session_id);
     let session = view

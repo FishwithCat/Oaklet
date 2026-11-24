@@ -501,35 +501,52 @@ fn queue_message(ctx: &RunContext, text: &str) {
     assert!(queued.is_ok());
 }
 
-#[test]
-fn followup_selection_keeps_the_queue_for_errors_and_drops_it_for_stop() {
-    let (ctx, _store, root) = live_run();
+#[tokio::test]
+async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
+    let (ctx, store, root) = live_run();
     queue_message(&ctx, "first");
     queue_message(&ctx, "second");
 
-    let followup = take_followup(&ctx.state.chat, &ctx.session_id, "done", false)
-        .expect("done should start the first queued turn");
-    assert_eq!(followup.display["text"], "first");
-    assert_eq!(ctx.state.chat.pending_views("s").len(), 1);
+    let blocker = rusqlite::Connection::open(root.join("oaklet.db")).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    ctx.finish_done(Vec::new()).await;
+    assert!(ctx.state.chat.live().unsaved.contains_key("r"));
+    assert!(ctx.state.chat.live().runs.is_empty());
+    assert_eq!(ctx.state.chat.pending_views("s").len(), 2);
+    assert_eq!(store.get_session("s").unwrap().unwrap().turns, 1);
+    blocker.execute_batch("ROLLBACK").unwrap();
+    assert!(ctx.prepare_resume("/tmp").is_err());
+    ctx.state.chat.drain(Some("test")).await.unwrap();
 
-    let followup = take_followup(&ctx.state.chat, &ctx.session_id, "error", false)
-        .expect("a failed run should still try the next queued turn");
-    assert_eq!(followup.display["text"], "second");
-    assert!(ctx.state.chat.pending_views("s").is_empty());
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(ctx.prepare_resume("/tmp").is_err());
+    assert_eq!(ctx.state.chat.pending_views("s").len(), 2);
+    assert_eq!(store.get_session("s").unwrap().unwrap().turns, 1);
+    blocker.execute_batch("ROLLBACK").unwrap();
 
-    queue_message(&ctx, "retry");
+    let next = ctx.prepare_resume("/tmp").unwrap().unwrap();
+    let view = next.ctx.view.lock().unwrap();
+    assert_eq!(view.pending.len(), 1);
+    assert_eq!(view.pending[0].text, "second");
+    assert_eq!(view.items.last().unwrap()["text"], "first");
+    assert_eq!(store.get_session("s").unwrap().unwrap().turns, 2);
+    drop(view);
+    assert!(ctx.prepare_resume("/tmp").is_err());
+    assert_eq!(ctx.state.chat.pending_views("s")[0].text, "second");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn a_failed_automatic_turn_does_not_start_another() {
+    let (mut ctx, store, root) = live_run();
+    ctx.auto_resume = true;
+    queue_message(&ctx, "leftover");
+    ctx.finish_error(Vec::new(), "provider error").await;
     assert!(
-        take_followup(&ctx.state.chat, &ctx.session_id, "error", true).is_none(),
+        ctx.state.chat.pending_views("s").is_empty(),
         "an automatic retry must not loop after another error"
     );
-    assert!(ctx.state.chat.pending_views("s").is_empty());
-
-    queue_message(&ctx, "stop");
-    assert!(
-        take_followup(&ctx.state.chat, &ctx.session_id, "stopped", false).is_none(),
-        "Stop must drop queued messages"
-    );
-    assert!(ctx.state.chat.pending_views("s").is_empty());
+    assert_eq!(store.get_session("s").unwrap().unwrap().turns, 1);
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -6,10 +6,12 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{RunContext, RunTrigger, start_run, trim_incomplete_tool_block};
-use crate::chat::transcript::{settle_streaming, settle_unfinished_tools, user_item};
-use crate::chat::{ChatState, PendingInput, SessionView, Tone, notices::resume_notices};
-use crate::store::{self, EventPayload, NewUserTurn, RunEnd};
+use super::{
+    PreparedRun, RunContext, RunInput, RunTrigger, prepare_run, trim_incomplete_tool_block,
+};
+use crate::chat::transcript::{settle_streaming, settle_unfinished_tools};
+use crate::chat::{SessionView, Tone, notices::resume_notices};
+use crate::store::{self, EventPayload, RunEnd};
 use crate::tools::CancelHandle;
 
 #[derive(Clone, Serialize)]
@@ -250,38 +252,63 @@ impl RunContext {
             Err(error) => (None, Some(format!("Could not save the session: {error}"))),
         };
         let mut session = session.unwrap_or(final_view);
-        if status == "done"
-            && let Some(save_error) = &save_error
-        {
+        if let Some(save_error) = &save_error {
             session.items.push(json!({
                 "kind": "notice",
                 "tone": Tone::Error,
                 "text": format!(
-                    "The reply finished but could not be saved: {save_error}"
+                    "The reply could not be saved: {save_error}"
                 ),
             }));
         }
 
+        let discard_pending =
+            status == "stopped" || (save_error.is_none() && status == "error" && self.auto_resume);
         {
             let mut live = self.state.chat.live();
             if save_error.is_some() {
                 live.unsaved
                     .insert(self.run_id.clone(), (self.window_label.clone(), end));
             }
+            if discard_pending {
+                live.pending.remove(&self.session_id);
+            }
             live.runs.remove(&self.run_id);
         }
 
-        let followup = take_followup(&self.state.chat, &self.session_id, status, self.auto_resume);
+        let mut followup = None;
         session.pending = self.state.chat.pending_views(&self.session_id);
-        // The follow-up turn is not streamed; show its bubble in this terminal
-        // view so it does not disappear between this run and the next one.
-        if let Some(input) = &followup {
-            let text = input
-                .display
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            session.items.push(user_item(text, Some(&input.display)));
+        if save_error.is_none() && !discard_pending && !session.pending.is_empty() {
+            match self.prepare_resume(&session.workspace) {
+                Ok(run) => followup = run,
+                Err(error) => {
+                    crate::log::key(format_args!(
+                        "[oaklet] queued message not delivered: {error}"
+                    ));
+                    session.items.push(json!({
+                        "kind": "notice",
+                        "tone": Tone::Error,
+                        "text": format!("Queued message is still pending: {error}"),
+                    }));
+                }
+            }
+        }
+        if let Some(run) = &followup {
+            let next = run.ctx.view.lock().unwrap_or_else(|p| p.into_inner());
+            // Keep the full settled reply, even if it exceeds one transcript page.
+            session.items.extend(
+                next.items
+                    .iter()
+                    .filter(|item| {
+                        item.get("seq").and_then(Value::as_i64) == Some(run.ctx.start_seq)
+                    })
+                    .cloned(),
+            );
+            session.pending.clone_from(&next.pending);
+            session.active_run_id.clone_from(&next.active_run_id);
+            session.turns = next.turns;
+            session.updated_at = next.updated_at;
+            session.running = true;
         }
 
         if let Some(save_error) = &save_error {
@@ -290,7 +317,7 @@ impl RunContext {
 
         match status {
             "done" => {
-                if let Some(save_error) = save_error {
+                if let Some(save_error) = &save_error {
                     self.emit(
                         "agent:error",
                         ErrorEvent {
@@ -332,51 +359,37 @@ impl RunContext {
             ),
         }
 
-        // A message that arrived after the last step gets one more turn before
-        // job notices do; the new run picks the remaining queue up itself.
-        let resumed = followup.is_some_and(|input| self.start_resume(input));
-        // Anything that settled after this run's last step still reaches the
-        // session, in one turn instead of one per job.
-        if !resumed && status != "stopped" {
+        // Publish the committed user message before the new run can stream.
+        if let Some(run) = followup {
+            run.spawn(self.app().clone());
+        } else if save_error.is_none()
+            && status != "stopped"
+            && self.state.chat.pending_views(&self.session_id).is_empty()
+        {
             resume_notices(self);
         }
     }
 
     /// Open one more turn for a message left after this run.
-    fn start_resume(&self, input: PendingInput) -> bool {
-        let Some(meta) = self.store().session_meta(&self.session_id).ok().flatten() else {
-            return false;
-        };
-        let Ok(mut config) = self.state.config.lock().map(|config| config.clone()) else {
-            return false;
-        };
-        config.workspace = meta.workspace;
-        let turn = NewUserTurn {
-            message: input.message,
-            display: Some(input.display),
-            title: None,
-        };
+    fn prepare_resume(&self, workspace: &str) -> Result<Option<PreparedRun>, String> {
+        let mut config = self
+            .state
+            .config
+            .lock()
+            .map_err(|_| "Agent state is unavailable.".to_string())?
+            .clone();
+        config.workspace = workspace.to_string();
         let (cancel_handle, cancel) = CancelHandle::new();
-        match start_run(
-            self.app(),
+        prepare_run(
             self.state(),
             self.window_label(),
             &self.session_id,
             RunTrigger::User,
             config,
-            turn,
+            RunInput::Queued,
             cancel,
             cancel_handle,
-            true,
-        ) {
-            Ok(_) => true,
-            Err(error) => {
-                crate::log::key(format_args!(
-                    "[oaklet] queued message not delivered: {error}"
-                ));
-                false
-            }
-        }
+        )
     }
 
     /// Persist a pending plan when this turn ended in planning rather than edits.
@@ -450,22 +463,6 @@ impl RunContext {
                 _ => None,
             })
             .unwrap_or_default()
-    }
-}
-
-/// Take the message that should start a turn after this run, or drop the queue
-/// when the user stopped it or an automatic retry already failed.
-fn take_followup(
-    chat: &ChatState,
-    session_id: &str,
-    status: &str,
-    auto_resume: bool,
-) -> Option<PendingInput> {
-    if status == "stopped" || (status == "error" && auto_resume) {
-        chat.clear_pending(session_id);
-        None
-    } else {
-        chat.take_next_input(session_id)
     }
 }
 

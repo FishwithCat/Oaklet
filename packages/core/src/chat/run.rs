@@ -31,6 +31,11 @@ pub(super) enum RunTrigger {
     Plan(u64),
 }
 
+enum RunInput {
+    Direct(NewUserTurn),
+    Queued,
+}
+
 /// Register a run for an already-built user turn and spawn the agent loop. The
 /// caller decides what the turn means: a typed message or a job notice.
 #[allow(clippy::too_many_arguments)]
@@ -44,8 +49,41 @@ pub(super) fn start_run(
     turn: NewUserTurn,
     cancel: crate::tools::Cancel,
     cancel_handle: CancelHandle,
-    auto_resume: bool,
 ) -> Result<(String, Arc<Mutex<SessionView>>), String> {
+    let run = prepare_run(
+        state,
+        window,
+        session_id,
+        trigger,
+        config,
+        RunInput::Direct(turn),
+        cancel,
+        cancel_handle,
+    )?
+    .expect("A direct run always has an input");
+    let result = (run.ctx.run_id.clone(), run.ctx.view.clone());
+    run.spawn(app.clone());
+    Ok(result)
+}
+
+struct PreparedRun {
+    ctx: RunContext,
+    config: crate::AppConfig,
+    messages: Vec<Value>,
+    cancel: crate::tools::Cancel,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_run(
+    state: &SharedState,
+    window: &str,
+    session_id: &str,
+    trigger: RunTrigger,
+    config: crate::AppConfig,
+    input: RunInput,
+    cancel: crate::tools::Cancel,
+    cancel_handle: CancelHandle,
+) -> Result<Option<PreparedRun>, String> {
     let store = state.chat.store.clone();
     let run_id = state.next_id();
     let selected_model = {
@@ -61,8 +99,23 @@ pub(super) fn start_run(
 
     // Hold the live lock across the short SQLite write so two clients cannot
     // both start a run for the same session.
+    let auto_resume = matches!(input, RunInput::Queued);
     let (view, start_seq, messages, access, plan_state, plan_turn) = {
         let mut live = state.chat.live();
+        let turn = match input {
+            RunInput::Direct(turn) => turn,
+            RunInput::Queued => {
+                let Some(input) = live.pending.get(session_id).and_then(|queue| queue.first())
+                else {
+                    return Ok(None);
+                };
+                NewUserTurn {
+                    message: input.message.clone(),
+                    display: Some(input.display.clone()),
+                    title: None,
+                }
+            }
+        };
         let confirming_plan = matches!(trigger, RunTrigger::Plan(_));
         if confirming_plan {
             live.check_plan_confirmation(session_id, window, &cancel)?;
@@ -98,6 +151,16 @@ pub(super) fn start_run(
                 store.begin_run(session_id, &run_id, &turn, store::now_ms())?
             }
         };
+        if auto_resume {
+            let queue = live
+                .pending
+                .get_mut(session_id)
+                .expect("Queued input under the live lock");
+            queue.remove(0);
+            if queue.is_empty() {
+                live.pending.remove(session_id);
+            }
+        }
         // `prior_messages` is the surface before this user turn, read in the
         // same transaction that appended it. Trim an incomplete tool block
         // before adding the new turn so the request stays valid.
@@ -138,7 +201,7 @@ pub(super) fn start_run(
     let planning = if plan_turn { selected_model } else { None };
 
     let ctx = RunContext {
-        app: Some(app.clone()),
+        app: None,
         state: state.clone(),
         session_id: session_id.to_string(),
         run_id: run_id.clone(),
@@ -165,17 +228,34 @@ pub(super) fn start_run(
         records_plan: plan_turn,
         auto_resume,
     };
-    let recovery_ctx = ctx.clone();
-    let recovery_messages = messages.clone();
-    tauri::async_runtime::spawn(async move {
-        settle_on_panic(
-            crate::agent::run(config, messages, cancel, ctx),
-            recovery_ctx,
-            recovery_messages,
-        )
-        .await;
-    });
-    Ok((run_id, view))
+    Ok(Some(PreparedRun {
+        ctx,
+        config,
+        messages,
+        cancel,
+    }))
+}
+
+impl PreparedRun {
+    fn spawn(self, app: AppHandle) {
+        let Self {
+            mut ctx,
+            config,
+            messages,
+            cancel,
+        } = self;
+        ctx.app = Some(app);
+        let recovery_ctx = ctx.clone();
+        let recovery_messages = messages.clone();
+        tauri::async_runtime::spawn(async move {
+            settle_on_panic(
+                crate::agent::run(config, messages, cancel, ctx),
+                recovery_ctx,
+                recovery_messages,
+            )
+            .await;
+        });
+    }
 }
 
 /// Keep a panicking agent task from leaving its run stuck as `running`.

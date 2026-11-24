@@ -438,39 +438,6 @@ impl ChatState {
             .unwrap_or_default()
     }
 
-    /// Drop every queued message, including the rows shown in the live view.
-    pub(crate) fn clear_pending(&self, session_id: &str) {
-        let mut live = self.live();
-        let view = live
-            .runs
-            .values()
-            .find(|handle| handle.session_id == session_id)
-            .map(|handle| handle.view.clone());
-        live.pending.remove(session_id);
-        if let Some(view) = view {
-            view.lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pending
-                .clear();
-        }
-    }
-
-    /// Remove the oldest queued message, for a turn started after a run ended.
-    pub(crate) fn take_next_input(&self, session_id: &str) -> Option<PendingInput> {
-        let mut live = self.live();
-        let input = {
-            let queue = live.pending.get_mut(session_id)?;
-            if queue.is_empty() {
-                return None;
-            }
-            queue.remove(0)
-        };
-        if live.pending.get(session_id).is_some_and(Vec::is_empty) {
-            live.pending.remove(session_id);
-        }
-        Some(input)
-    }
-
     /// True while any chat in this window is still producing a turn.
     pub fn window_busy(&self, window: &str) -> bool {
         let live = self.live();
@@ -513,8 +480,18 @@ impl ChatState {
     }
 
     fn view(&self, window: store::SessionWindow) -> SessionView {
-        let compacting = self.live().compacting.contains_key(&window.id);
-        view_from_window(window, compacting)
+        let (compacting, pending) = {
+            let live = self.live();
+            (
+                live.compacting.contains_key(&window.id),
+                live.pending
+                    .get(&window.id)
+                    .map(|queue| pending_views(queue)),
+            )
+        };
+        let mut view = view_from_window(window, compacting);
+        view.pending = pending.unwrap_or_default();
+        view
     }
 
     fn live_view(&self, session_id: &str) -> Option<SessionView> {

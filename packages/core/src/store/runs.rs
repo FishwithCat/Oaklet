@@ -116,11 +116,11 @@ impl Store {
             params![run_id, session_id, now],
         )
         .map_err(|error| format!("Could not record the run: {error}"))?;
+        let window = Self::get_window_with(&tx, session_id, None, PAGE_EVENTS)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
         tx.commit()
             .map_err(|error| format!("Could not start the run: {error}"))?;
 
-        let window = Self::get_window_with(&conn, session_id, None, PAGE_EVENTS)?
-            .ok_or_else(|| "This session no longer exists.".to_string())?;
         Ok(RunStart {
             window,
             start_seq,
