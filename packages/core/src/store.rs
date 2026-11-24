@@ -8,6 +8,7 @@
 
 mod events;
 mod history;
+mod maintenance;
 mod migrations;
 mod projection;
 mod runs;
@@ -15,6 +16,7 @@ mod sessions;
 mod types;
 
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +25,7 @@ use rusqlite::{Connection, OptionalExtension};
 #[cfg(test)]
 pub(crate) use events::tool_trims;
 pub(crate) use events::{checkpoint, is_checkpoint};
+pub use maintenance::WorkspaceUsage;
 #[cfg(test)]
 pub use types::CompactionRecord;
 pub use types::{
@@ -38,6 +41,7 @@ pub const PAGE_EVENTS: usize = 200;
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -72,6 +76,7 @@ impl Store {
         restrict_permissions(path);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: Some(path.to_path_buf()),
         })
     }
 
@@ -83,6 +88,7 @@ impl Store {
         migrations::migrate(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: None,
         })
     }
 

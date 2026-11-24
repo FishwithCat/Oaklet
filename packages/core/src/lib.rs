@@ -14,6 +14,7 @@ mod repeat;
 mod shell_env;
 mod shutdown;
 mod spill;
+mod storage;
 mod store;
 mod syntax;
 mod terminal;
@@ -43,6 +44,8 @@ pub fn run() {
             shutdown::close_workspace,
             config::save_config,
             connection::test_connection,
+            storage::storage_usage,
+            storage::storage_purge,
             chat::commands::session_create,
             chat::commands::session_list,
             chat::commands::session_get,

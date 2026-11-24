@@ -643,6 +643,74 @@ fn refuses_a_pre_v0_database_without_resetting() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+#[test]
+fn reports_session_storage_per_workspace() {
+    let store = store();
+    store.create_session("a1", "/tmp/a", 1).unwrap();
+    store.create_session("a2", "/tmp/a", 2).unwrap();
+    store.create_session("b1", "/tmp/b", 3).unwrap();
+    store
+        .begin_run("a1", "r1", &turn("one", Some("one")), 4)
+        .unwrap();
+
+    let usage = store.usage().unwrap();
+    assert_eq!(usage.sessions, 3);
+    assert_eq!(usage.messages, 1);
+    assert_eq!(usage.database_bytes, 0);
+
+    let first = &usage.workspaces[0];
+    assert_eq!(first.workspace, "/tmp/a");
+    assert_eq!(first.sessions, 2);
+    assert_eq!(first.messages, 1);
+    assert!(first.bytes > 0);
+    assert_eq!(first.updated_at, 4);
+
+    let second = &usage.workspaces[1];
+    assert_eq!(second.workspace, "/tmp/b");
+    assert_eq!(second.sessions, 1);
+    assert_eq!(second.messages, 0);
+    assert_eq!(second.bytes, 0);
+}
+
+#[test]
+fn purge_removes_one_workspace_or_every_session() {
+    let store = store();
+    store.create_session("a1", "/tmp/a", 1).unwrap();
+    store.create_session("a2", "/tmp/a", 2).unwrap();
+    store.create_session("b1", "/tmp/b", 3).unwrap();
+    store
+        .begin_run("a1", "r1", &turn("one", Some("one")), 4)
+        .unwrap();
+    store
+        .begin_run("b1", "r2", &turn("two", Some("two")), 5)
+        .unwrap();
+
+    assert!(store.has_workspace("/tmp/a").unwrap());
+    assert!(!store.has_workspace("/tmp/missing").unwrap());
+
+    let mut removed = store.purge(Some("/tmp/a")).unwrap();
+    removed.sort();
+    assert_eq!(removed, ["a1", "a2"]);
+    assert!(store.get_session("a1").unwrap().is_none());
+    assert!(!store.has_workspace("/tmp/a").unwrap());
+    assert_eq!(
+        store
+            .list_sessions("/tmp/b")
+            .unwrap()
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["b1"]
+    );
+    assert_eq!(store.usage().unwrap().sessions, 1);
+
+    assert_eq!(store.purge(None).unwrap(), ["b1"]);
+    let usage = store.usage().unwrap();
+    assert_eq!(usage.sessions, 0);
+    assert_eq!(usage.messages, 0);
+    assert!(usage.workspaces.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn keeps_store_files_owner_only() {

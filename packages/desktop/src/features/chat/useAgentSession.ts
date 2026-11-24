@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { errorText } from "../../shared/error-text";
 import { moveItem } from "../../shared/useTabDrag";
 import type { ApprovalChoice, ToolItem } from "./process-model";
@@ -320,6 +321,49 @@ export function useAgentSession({
     return () => {
       disposed = true;
       batch.clear();
+      release?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | null = null;
+
+    function startOver(workspace: string) {
+      reset();
+      void (async () => {
+        try {
+          const created = await invoke<SessionView>("session_create");
+          if (workspaceRef.current !== workspace) return;
+          if (openTabsRef.current.length > 0) return;
+          addTab(created);
+        } catch (error) {
+          if (workspaceRef.current === workspace) {
+            showError(errorText(error));
+          }
+        }
+      })();
+    }
+
+    listen<{ workspace: string | null }>("sessions://purged", ({ payload }) => {
+      if (disposed) return;
+      const workspace = workspaceRef.current;
+      if (!workspace) return;
+      if (payload.workspace !== null && payload.workspace !== workspace) return;
+      startOver(workspace);
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else release = unlisten;
+      })
+      .catch((error) => {
+        if (!disposed) {
+          console.error(`Could not watch history deletes: ${errorText(error)}`);
+        }
+      });
+
+    return () => {
+      disposed = true;
       release?.();
     };
   }, []);

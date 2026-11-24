@@ -9,6 +9,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { CloseRegular } from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
+import { DataSettings } from "./DataSettings";
 import { McpSettings } from "./McpSettings";
 import {
   formatMcpConfig,
@@ -21,7 +22,7 @@ import {
 } from "./config";
 import { applyTheme, type Theme } from "./theme";
 
-type SettingsTab = "model" | "web" | "commands" | "mcp" | "appearance";
+type SettingsTab = "model" | "web" | "commands" | "mcp" | "appearance" | "data";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -43,7 +44,20 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
   { id: "appearance", label: "Appearance" },
+  { id: "data", label: "Data" },
 ];
+
+const SUBTITLES: Record<SettingsTab, string> = {
+  model: "Choose the OpenAI-compatible model provider Oaklet should use.",
+  web: "Choose the key and endpoint the web_search tool uses.",
+  commands: "Choose whether the agent asks before running commands.",
+  mcp: "Connect MCP servers and choose which ones the agent can use.",
+  appearance: "Choose how Oaklet looks. Auto follows your system appearance.",
+  data: "Review the history stored on this machine and delete what you no longer need.",
+};
+
+const FIRST_RUN_SUBTITLE =
+  "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine.";
 
 const THEMES: { id: Theme; label: string; hint: string }[] = [
   { id: "light", label: "Light", hint: "Always use the light palette." },
@@ -86,6 +100,7 @@ export function SettingsPanel({
     commands: null,
     mcp: null,
     appearance: null,
+    data: null,
   });
 
   useEffect(() => {
@@ -209,17 +224,7 @@ export function SettingsPanel({
             {firstRun && tab === "model" ? "Connect a model" : "Settings"}
           </h2>
           <p className="modal-sub">
-            {tab === "model"
-              ? firstRun
-                ? "Oaklet uses any OpenAI-compatible chat completions API. DeepSeek is the default. Your key stays on this machine."
-                : "Choose the OpenAI-compatible model provider Oaklet should use."
-              : tab === "web"
-                ? "Choose the key and endpoint the web_search tool uses."
-                : tab === "commands"
-                  ? "Choose whether the agent asks before running commands."
-                  : tab === "mcp"
-                    ? "Connect MCP servers and choose which ones the agent can use."
-                    : "Choose how Oaklet looks. Auto follows your system appearance."}
+            {firstRun && tab === "model" ? FIRST_RUN_SUBTITLE : SUBTITLES[tab]}
           </p>
         </div>
 
@@ -252,7 +257,16 @@ export function SettingsPanel({
           </div>
 
           <div className="settings-content">
-            {tab === "model" ? (
+            {tab === "data" ? (
+              <section
+                id="settings-panel-data"
+                role="tabpanel"
+                aria-labelledby="settings-tab-data"
+                tabIndex={0}
+              >
+                <DataSettings />
+              </section>
+            ) : tab === "model" ? (
               <section
                 id="settings-panel-model"
                 role="tabpanel"
@@ -535,12 +549,20 @@ export function SettingsPanel({
         {error && <p className="error-text settings-error">{error}</p>}
 
         <div className="modal-actions settings-actions">
-          <button type="button" onClick={close} disabled={saving}>
-            Cancel
-          </button>
-          <button className="primary" type="submit" disabled={saving}>
-            {saving ? "Saving..." : "Save"}
-          </button>
+          {tab === "data" ? (
+            <button type="button" onClick={close} disabled={saving}>
+              Close
+            </button>
+          ) : (
+            <>
+              <button type="button" onClick={close} disabled={saving}>
+                Cancel
+              </button>
+              <button className="primary" type="submit" disabled={saving}>
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </>
+          )}
         </div>
       </form>
     </div>

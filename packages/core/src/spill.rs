@@ -142,6 +142,43 @@ fn session_directory(session_id: &str) -> String {
     format!("session-{hash:016x}")
 }
 
+pub(crate) fn usage(root: &Path) -> (u64, usize) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let mut bytes = 0;
+    let mut files = 0;
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(is_session_directory) {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let Ok(session_files) = fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for file in session_files.flatten() {
+            if !file.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if let Ok(metadata) = file.metadata() {
+                bytes += metadata.len();
+                files += 1;
+            }
+        }
+    }
+    (bytes, files)
+}
+
+pub(crate) fn remove_session(root: &Path, session_id: &str) {
+    let directory = root.join(session_directory(session_id));
+    if !fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
+        return;
+    }
+    let _ = fs::remove_dir_all(directory);
+}
+
 /// Whether `name` is one of this module's session directories.
 fn is_session_directory(name: &str) -> bool {
     name.strip_prefix("session-")
@@ -226,7 +263,9 @@ fn clip_tail(text: &str, max_chars: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{RETENTION, cleanup, preview, save, segment, session_directory};
+    use super::{
+        RETENTION, cleanup, preview, remove_session, save, segment, session_directory, usage,
+    };
     use crate::tools::test_support::temp_root;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
@@ -280,6 +319,31 @@ mod tests {
         let second = save(&root, "run-1", "b", "y").unwrap();
         assert_eq!(first.path.parent(), second.path.parent());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn measures_and_removes_one_session_directory() {
+        let root = temp_root("spill-usage");
+        let first = save(&root, "run-1", "a", "hello").unwrap();
+        let second = save(&root, "run-2", "b", "hello world").unwrap();
+        std::fs::write(root.join("stray.txt"), "ignored").unwrap();
+        assert_eq!(usage(&root), (16, 2));
+
+        remove_session(&root, "run-1");
+        assert!(!first.path.exists());
+        assert!(second.path.exists());
+        assert_eq!(usage(&root), (11, 1));
+
+        remove_session(&root, "run-1");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reports_no_usage_without_a_spill_root() {
+        let root = temp_root("spill-missing-root");
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(usage(&root), (0, 0));
+        remove_session(&root, "run-1");
     }
 
     #[test]

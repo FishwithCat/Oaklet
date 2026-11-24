@@ -284,6 +284,15 @@ impl ChatState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
+    pub fn any_busy(&self) -> bool {
+        let live = self.live();
+        !live.runs.is_empty() || live.operations().next().is_some()
+    }
+
     fn reserve_plan_confirmation<'a>(
         &'a self,
         session_id: &'a str,
