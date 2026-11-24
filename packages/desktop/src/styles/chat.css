@@ -483,7 +483,6 @@
 
 .composer-wrap {
   flex: none;
-  margin-top: 8px;
   padding: 9px 12px;
   border-top: 1px solid var(--panel-muted-border);
   background: var(--bg);
