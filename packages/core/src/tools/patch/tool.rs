@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use super::commit::commit;
 use super::parse::{PatchOperation, parse_patch};
 use super::plan::{ResolvedPatch, plan, preflight};
+use crate::tools::diagnostics::append_warnings;
 use crate::tools::diff::{FileDiff, compute_diffs};
 use crate::tools::{Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
@@ -169,12 +170,13 @@ pub(super) fn apply_patch(ctx: &ToolContext, args: Value) -> Result<ToolOutput, 
         ToolError::InvalidArguments(format!("Invalid patch at line {line}: {reason}"))
     })?;
     let plan = plan(ctx, operations)?;
-    preflight(&plan, &ctx.cancel)?;
+    let warnings = preflight(&plan, &ctx.cancel)?;
     let before = plan
         .iter()
         .map(|operation| std::fs::read_to_string(&operation.source).ok())
         .collect::<Vec<_>>();
-    let output = commit(&plan, &ctx.cancel)?;
+    let mut output = commit(&plan, &ctx.cancel)?;
+    append_warnings(&mut output, warnings);
     Ok(ToolOutput::with_diffs(
         output,
         applied_diffs(&plan, &before),

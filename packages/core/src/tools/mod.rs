@@ -18,6 +18,7 @@ use tokio::sync::watch;
 use crate::spill;
 
 mod comments;
+mod diagnostics;
 mod diff;
 mod fs;
 pub(crate) mod history;

@@ -106,6 +106,8 @@ implementation by line range.
 
 `structural_search` finds `invoke(...)` calls in JavaScript or TypeScript and
 function definitions marked with `#[tauri::command]` or `#[test]` in Rust.
+File edit tools report suspected syntax errors introduced by successful edits
+in supported source files.
 
 ## Workspace views
 

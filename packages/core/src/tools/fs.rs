@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::comments;
+use super::diagnostics::{append_warnings, new_warnings};
 use super::diff::{FileDiff, compute_diffs};
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput, Workspace, parse_args};
 
@@ -315,12 +316,15 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     } else {
         None
     };
-    comments::refuse_new_comments(
+    let original = before.as_deref().map(|text| (display.as_str(), text));
+    let syntax =
+        comments::check_edit(&display, original, &args.content, None).map_err(ToolError::Failed)?;
+    let warnings = new_warnings(
         &display,
-        before.as_deref().map(|text| (display.as_str(), text)),
+        original.map(|(path, text)| (path, text, syntax.before.as_ref())),
         &args.content,
-    )
-    .map_err(ToolError::Failed)?;
+        syntax.after.as_ref(),
+    );
     write_atomic(&path, &args.content, false)
         .map_err(|error| format!("Cannot write file: {error}"))?;
     let diffs = if existed && before.is_none() {
@@ -328,10 +332,9 @@ fn write_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
     } else {
         compute_diffs(&display, before.as_deref(), &args.content)
     };
-    Ok(ToolOutput::with_diffs(
-        format!("Wrote {} bytes to {}", args.content.len(), display),
-        diffs,
-    ))
+    let mut output = format!("Wrote {} bytes to {}", args.content.len(), display);
+    append_warnings(&mut output, warnings);
+    Ok(ToolOutput::with_diffs(output, diffs))
 }
 
 pub struct EditFile;
@@ -442,18 +445,23 @@ fn edit_file(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         text.replacen(args.old_string.as_str(), &args.new_string, 1)
     };
     let display = ctx.workspace.relative(&path).display().to_string();
-    comments::refuse_new_comments(&display, Some((&display, &text)), &updated)
+    let syntax = comments::check_edit(&display, Some((&display, &text)), &updated, None)
         .map_err(ToolError::Failed)?;
+    let warnings = new_warnings(
+        &display,
+        Some((&display, &text, syntax.before.as_ref())),
+        &updated,
+        syntax.after.as_ref(),
+    );
     write_atomic(&path, &updated, false).map_err(|error| format!("Cannot write file: {error}"))?;
     let diffs = compute_diffs(&display, Some(&text), &updated);
-    Ok(ToolOutput::with_diffs(
-        format!(
-            "Replaced {} occurrence(s) in {}",
-            if args.replace_all { count } else { 1 },
-            display
-        ),
-        diffs,
-    ))
+    let mut output = format!(
+        "Replaced {} occurrence(s) in {}",
+        if args.replace_all { count } else { 1 },
+        display
+    );
+    append_warnings(&mut output, warnings);
+    Ok(ToolOutput::with_diffs(output, diffs))
 }
 
 pub struct ListDir;
@@ -552,6 +560,40 @@ mod tests {
     use serde_json::json;
 
     use super::{edit_file, list_dir, read_file, write_atomic, write_file};
+
+    #[test]
+    fn reports_new_syntax_errors_after_successful_write_and_edit() {
+        let (ctx, root, _cancel) = crate::tools::test_support::context("edit-syntax");
+        let broken = "function broken() { return (1; }";
+        let created = write_file(
+            &ctx,
+            serde_json::json!({ "path": "app.ts", "content": broken }),
+        )
+        .unwrap();
+        assert!(created.text.contains("app.ts:1:"), "{}", created.text);
+        assert_eq!(
+            std::fs::read_to_string(root.join("app.ts")).unwrap(),
+            broken
+        );
+
+        let shifted = write_file(
+            &ctx,
+            serde_json::json!({ "path": "app.ts", "content": format!("const prefix = 0;\n{broken}") }),
+        ).unwrap();
+        assert!(
+            !shifted.text.contains("Possible syntax errors"),
+            "{}",
+            shifted.text
+        );
+
+        let edited = edit_file(
+            &ctx,
+            serde_json::json!({ "path": "app.ts", "old_string": "const prefix = 0;", "new_string": "const prefix = (0;" }),
+        ).unwrap();
+        assert!(edited.text.contains("app.ts:1:"), "{}", edited.text);
+        assert!(!edited.text.contains("app.ts:2:"), "{}", edited.text);
+        let _ = std::fs::remove_dir_all(root);
+    }
     use crate::tools::test_support::context;
 
     #[test]

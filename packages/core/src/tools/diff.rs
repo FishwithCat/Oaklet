@@ -85,6 +85,35 @@ fn content_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
+pub(super) fn line_changes(old: &str, new: &str) -> Vec<(Option<usize>, bool)> {
+    let old = content_lines(old);
+    let new = content_lines(new);
+    let mut lines = vec![(None, true); new.len() + 1];
+    let mut last_after: Option<usize> = None;
+    let mut deleted = false;
+    for step in diff_steps(&old, &new) {
+        match step {
+            Step::Equal(old, new) => {
+                lines[new] = (Some(old), deleted);
+                last_after = Some(new);
+                deleted = false;
+            }
+            Step::Insert(new) => last_after = Some(new),
+            Step::Delete(_) => {
+                deleted = true;
+                if let Some(last_after) = last_after {
+                    lines[last_after].1 = true;
+                }
+            }
+        }
+    }
+    lines[new.len()] = (
+        Some(old.len()),
+        deleted || last_after.is_some_and(|line| lines[line].1),
+    );
+    lines
+}
+
 /// Line steps with a common-prefix/suffix trim and a bounded LCS in the middle.
 fn diff_steps(old: &[&str], new: &[&str]) -> Vec<Step> {
     let mut steps = Vec::new();

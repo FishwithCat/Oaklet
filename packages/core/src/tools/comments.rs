@@ -1,39 +1,19 @@
 use std::collections::HashMap;
-use std::path::Path;
 
-use tree_sitter::{Language, Parser};
+use tree_sitter::Tree;
+
+use crate::syntax::Grammar;
 
 const LISTED: usize = 6;
 
-fn language(path: &str) -> Option<Language> {
-    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "rs" => tree_sitter_rust::LANGUAGE.into(),
-        "js" | "jsx" | "cjs" | "mjs" => tree_sitter_javascript::LANGUAGE.into(),
-        "ts" | "cts" | "mts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        _ => return None,
-    })
-}
-
 pub(super) fn checks_path(path: &str) -> bool {
-    language(path).is_some()
+    Grammar::for_path(path).is_some()
 }
 
-fn parsed_comments<'a>(
-    language: &Language,
-    text: &'a str,
-) -> Result<Vec<(usize, &'a str)>, String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(language)
-        .map_err(|error| format!("Cannot initialize the comment parser: {error}"))?;
-    let tree = parser
-        .parse(text, None)
-        .ok_or("Cannot parse code comments.")?;
+fn parsed_comments<'a>(grammar: Grammar, text: &'a str, tree: &Tree) -> Vec<(usize, &'a str)> {
     let mut cursor = tree.walk();
     let mut comments = Vec::new();
-    let rust = *language == tree_sitter_rust::LANGUAGE.into();
+    let rust = grammar == Grammar::Rust;
     loop {
         let node = cursor.node();
         if matches!(node.kind(), "comment" | "line_comment" | "block_comment") {
@@ -46,7 +26,7 @@ fn parsed_comments<'a>(
         }
         while !cursor.goto_next_sibling() {
             if !cursor.goto_parent() {
-                return Ok(comments);
+                return comments;
             }
         }
     }
@@ -71,23 +51,47 @@ fn is_directive(comment: &str, rust: bool) -> bool {
     .any(|prefix| comment.starts_with(prefix))
 }
 
-pub(super) fn refuse_new_comments(
+pub(super) struct EditSyntax {
+    pub(super) before: Option<Tree>,
+    pub(super) after: Option<Tree>,
+}
+
+pub(super) fn check_edit(
     path: &str,
     before: Option<(&str, &str)>,
     after: &str,
-) -> Result<(), String> {
-    let Some(after_language) = language(path) else {
-        return Ok(());
+    previous_tree: Option<&Tree>,
+) -> Result<EditSyntax, String> {
+    let Some(after_language) = Grammar::for_path(path) else {
+        return Ok(EditSyntax {
+            before: None,
+            after: None,
+        });
     };
-    let comments = parsed_comments(&after_language, after)?;
+    let after_tree = after_language.parse(after, || false)?;
+    let comments = parsed_comments(after_language, after, &after_tree);
+    let mut before_tree = None;
+    if let Some((before_path, before_text)) = before
+        && let Some(before_language) = Grammar::for_path(before_path)
+        && (!comments.is_empty() || after_tree.root_node().has_error())
+    {
+        before_tree = Some(match previous_tree {
+            Some(tree) => tree.clone(),
+            None => before_language.parse(before_text, || false)?,
+        });
+    }
     if comments.is_empty() {
-        return Ok(());
+        return Ok(EditSyntax {
+            before: before_tree,
+            after: Some(after_tree),
+        });
     }
     let mut existing = HashMap::new();
     if let Some((before_path, before_text)) = before
-        && let Some(before_language) = language(before_path)
+        && let Some(before_language) = Grammar::for_path(before_path)
+        && let Some(tree) = &before_tree
     {
-        for (_, comment) in parsed_comments(&before_language, before_text)? {
+        for (_, comment) in parsed_comments(before_language, before_text, tree) {
             *existing
                 .entry(comment.lines().map(str::trim).collect::<Vec<_>>())
                 .or_insert(0usize) += 1;
@@ -109,7 +113,10 @@ pub(super) fn refuse_new_comments(
         }
     }
     if added == 0 {
-        return Ok(());
+        return Ok(EditSyntax {
+            before: before_tree,
+            after: Some(after_tree),
+        });
     }
     if added > LISTED {
         listed.push(format!("- ...and {} more", added - LISTED));
@@ -123,7 +130,15 @@ pub(super) fn refuse_new_comments(
 
 #[cfg(test)]
 mod tests {
-    use super::refuse_new_comments;
+    use super::check_edit;
+
+    fn refuse_new_comments(
+        path: &str,
+        before: Option<(&str, &str)>,
+        after: &str,
+    ) -> Result<(), String> {
+        check_edit(path, before, after, None).map(|_| ())
+    }
 
     #[test]
     fn reports_actual_comments_with_line_numbers() {

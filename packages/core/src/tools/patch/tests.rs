@@ -445,3 +445,18 @@ fn refuses_to_delete_a_symlink_source() {
     assert_eq!(text(root.join("target.txt")), "keep\n");
     std::fs::remove_dir_all(&root).ok();
 }
+#[test]
+fn syntax_warnings_describe_the_final_patch_state_in_each_file() {
+    let (ctx, root, _cancel) = crate::tools::test_support::context("patch-syntax");
+    let patch = "*** Begin Patch\n*** Add File: fixed.ts\n+const x = (1;\n*** Update File: fixed.ts\n@@\n-const x = (1;\n+const x = 1;\n*** Add File: first.ts\n+const y = (2;\n*** Update File: first.ts\n@@\n const y = (2;\n+const tail = 0;\n*** Add File: second.rs\n+fn second() {\n*** End Patch";
+    let result = super::tool::apply_patch(&ctx, serde_json::json!({ "input": patch })).unwrap();
+    assert!(result.text.contains("Possible syntax errors"));
+    assert!(result.text.contains("first.ts:1:"), "{}", result.text);
+    assert!(result.text.contains("second.rs:1:"), "{}", result.text);
+    assert!(!result.text.contains("fixed.ts:"), "{}", result.text);
+    assert_eq!(
+        std::fs::read_to_string(root.join("fixed.ts")).unwrap(),
+        "const x = 1;\n"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

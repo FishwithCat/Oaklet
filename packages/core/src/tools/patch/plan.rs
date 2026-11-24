@@ -1,11 +1,15 @@
 //! Resolve patch paths against the workspace and check every hunk before
 //! anything is written.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+
+use tree_sitter::Tree;
 
 use super::apply::{apply_hunks, mismatch_message, normalize_lf};
 use super::parse::PatchOperation;
+use crate::tools::comments;
+use crate::tools::diagnostics::new_warnings;
 use crate::tools::fs::MAX_FILE_BYTES;
 use crate::tools::{Cancel, ToolContext, ToolError};
 
@@ -166,13 +170,91 @@ enum Simulated {
 
 struct Preflight {
     states: HashMap<PathBuf, Simulated>,
+    edits: BTreeMap<PathBuf, Edit>,
+}
+
+struct Edit {
+    original: Option<Original>,
+    tree: Tree,
+    display: String,
+}
+
+struct Original {
+    path: String,
+    text: String,
+    tree: Option<Tree>,
 }
 
 impl Preflight {
     fn new() -> Self {
         Self {
             states: HashMap::new(),
+            edits: BTreeMap::new(),
         }
+    }
+
+    fn check_edit(
+        &mut self,
+        operation: &ResolvedPatch,
+        before: Option<&str>,
+        after: &str,
+    ) -> Result<(), String> {
+        let display = operation.destination_display();
+        let previous = self.edits.get(&operation.source).map(|edit| &edit.tree);
+        let syntax = comments::check_edit(
+            display,
+            before.map(|text| (operation.source_display.as_str(), text)),
+            after,
+            previous,
+        )?;
+        let prior = self.edits.remove(&operation.source);
+        if let Some(tree) = syntax.after {
+            let original = match prior {
+                Some(edit) => edit.original,
+                None => before.map(|text| Original {
+                    path: operation.source_display.clone(),
+                    text: text.into(),
+                    tree: syntax.before,
+                }),
+            };
+            let target = operation
+                .destination
+                .as_ref()
+                .map_or(&operation.source, |(path, _)| path);
+            self.edits.insert(
+                target.clone(),
+                Edit {
+                    original,
+                    tree,
+                    display: display.into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for (path, edit) in &self.edits {
+            if let Some(Simulated::File(after)) = self.states.get(path) {
+                warnings.extend(new_warnings(
+                    &edit.display,
+                    edit.original.as_ref().map(|original| {
+                        (
+                            original.path.as_str(),
+                            original.text.as_str(),
+                            original.tree.as_ref(),
+                        )
+                    }),
+                    after,
+                    Some(&edit.tree),
+                ));
+                if warnings.len() > 6 {
+                    break;
+                }
+            }
+        }
+        warnings
     }
 
     fn state(&mut self, path: &Path, display: &str) -> Result<Simulated, String> {
@@ -207,11 +289,7 @@ impl Preflight {
             PatchOperation::Add { content, .. } => {
                 match self.state(&operation.source, &operation.source_display)? {
                     Simulated::Missing => {
-                        crate::tools::comments::refuse_new_comments(
-                            &operation.source_display,
-                            None,
-                            content,
-                        )?;
+                        self.check_edit(operation, None, content)?;
                         self.states
                             .insert(operation.source.clone(), Simulated::File(content.clone()));
                         Ok(())
@@ -229,6 +307,7 @@ impl Preflight {
             PatchOperation::Delete { .. } => {
                 match self.state(&operation.source, &operation.source_display)? {
                     Simulated::File(_) => {
+                        self.edits.remove(&operation.source);
                         self.states
                             .insert(operation.source.clone(), Simulated::Missing);
                         Ok(())
@@ -265,11 +344,7 @@ impl Preflight {
                 };
                 let after = apply_hunks(&before, hunks)
                     .map_err(|failure| mismatch_message(&operation.source_display, &failure))?;
-                crate::tools::comments::refuse_new_comments(
-                    &operation.source_display,
-                    Some((&operation.source_display, &before)),
-                    &after,
-                )?;
+                self.check_edit(operation, Some(&before), &after)?;
                 self.states
                     .insert(operation.source.clone(), Simulated::File(after));
                 Ok(())
@@ -320,11 +395,7 @@ impl Preflight {
                 }
                 let after = apply_hunks(&before, hunks)
                     .map_err(|failure| mismatch_message(&operation.source_display, &failure))?;
-                crate::tools::comments::refuse_new_comments(
-                    destination_display,
-                    Some((&operation.source_display, &before)),
-                    &after,
-                )?;
+                self.check_edit(operation, Some(&before), &after)?;
                 self.states
                     .insert(destination.clone(), Simulated::File(after));
                 self.states
@@ -335,7 +406,7 @@ impl Preflight {
     }
 }
 
-pub(super) fn preflight(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<(), ToolError> {
+pub(super) fn preflight(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<Vec<String>, ToolError> {
     let mut check = Preflight::new();
     let mut refusals = Vec::new();
     for operation in plan {
@@ -351,7 +422,7 @@ pub(super) fn preflight(plan: &[ResolvedPatch], cancel: &Cancel) -> Result<(), T
         }
     }
     if refusals.is_empty() {
-        Ok(())
+        Ok(check.warnings())
     } else {
         Err(ToolError::Failed(format!(
             "Patch rejected before any change ({} problems):\n{}",
