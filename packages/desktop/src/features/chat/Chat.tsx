@@ -442,23 +442,6 @@ export function Chat({
     </div>
   );
 
-  if (welcome) {
-    return (
-      <>
-        <main
-          className="chat"
-          hidden={!active}
-          ref={chatRef}
-          onScroll={onScroll}
-        >
-          {empty}
-        </main>
-        {composer}
-        {dropHint}
-      </>
-    );
-  }
-
   return (
     <>
       <header className="view-head" hidden={!active || !showTabs}>
@@ -564,12 +547,14 @@ export function Chat({
         )}
       </main>
 
-      <ChatFind
-        active={active}
-        tabId={activeTabId}
-        containerRef={chatRef}
-        items={items}
-      />
+      {!welcome && (
+        <ChatFind
+          active={active}
+          tabId={activeTabId}
+          containerRef={chatRef}
+          items={items}
+        />
+      )}
 
       {active && selectionAction && (
         <button
