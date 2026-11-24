@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type Ref } from "react";
 import CodeMirror, { EditorView, keymap } from "@uiw/react-codemirror";
 import { search, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
@@ -13,13 +13,14 @@ const BASIC_SETUP = { searchKeymap: false };
 /** Split from Files so opening the page does not load the editor bundle. */
 export type FileEditorHandle = { jumpToLine: (line: number) => void };
 
-export default function FileEditor({ path, value, syntax, readOnly, marks, onChange, ref }: {
+export default function FileEditor({ path, value, syntax, readOnly, marks, onChange, onReadyChange, ref }: {
   path: string;
   value: string;
   syntax: Extension;
   readOnly: boolean;
   marks: readonly ChangedLine[];
   onChange: (content: string) => void;
+  onReadyChange: (path: string | null) => void;
   ref: Ref<FileEditorHandle>;
 }) {
   const theme = useResolvedTheme();
@@ -39,6 +40,8 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
     view.current?.dispatch({ effects: setChangedLines.of(marks) });
   }, [marks]);
 
+  useLayoutEffect(() => () => onReadyChange(null), [onReadyChange]);
+
   useImperativeHandle(ref, () => ({
     jumpToLine(line) {
       const editor = view.current;
@@ -54,7 +57,6 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
 
   return (
     <CodeMirror
-      key={path}
       className="files-editor"
       theme={theme}
       value={value}
@@ -66,6 +68,7 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
       aria-label={`File contents: ${path}`}
       onCreateEditor={(editor) => {
         view.current = editor;
+        onReadyChange(path);
         // The view can be created a commit after this component's effect runs.
         editor.dispatch({ effects: setChangedLines.of(marks) });
       }}

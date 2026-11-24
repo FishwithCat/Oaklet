@@ -75,6 +75,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [preview, setPreview] = useState(false);
   const [previewFontSize, setPreviewFontSize] = useState(PREVIEW_FONT_SIZE_DEFAULT);
   const [syntax, setSyntax] = useState<Extension>([]);
+  const [editorReadyPath, setEditorReadyPath] = useState<string | null>(null);
   const [lineMarks, setLineMarks] = useState<{ path: string; marks: readonly ChangedLine[] } | null>(null);
   const [browserWidth, setBrowserWidth] = useState(300);
   const busyRef = useRef(false);
@@ -255,7 +256,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
               <div className="files-actions">
                 {document && supportsOutline(document.path) && (
                   <FileOutline key={document.path} workspace={workspace} path={document.path}
-                    source={document.original} dirty={dirty} busy={busy}
+                    source={document.original} dirty={dirty} busy={busy || editorReadyPath !== document.path}
                     onJump={(line) => editor.current?.jumpToLine(line)} />
                 )}
                 <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(openPath)}><Refresh3Regular size={14} /></button>
@@ -266,7 +267,8 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
             {image ? <div className="files-image"><button type="button" className="files-image-button" title="Enlarge image" aria-label={`Enlarge ${image.path}`} onClick={() => setEnlarged(true)}><img src={image.src} alt={image.path} /></button></div> :
               document && (preview ? <div className="files-preview" style={{ "--files-preview-font-size": `${previewFontSize}px` } as CSSProperties}><MarkdownText text={document.content} /></div> :
                 <Suspense fallback={<div className="files-editor" />}>
-                  <FileEditor ref={editor} path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                  <FileEditor key={document.path} ref={editor} path={document.path} value={document.content} syntax={syntax} readOnly={busy}
+                    onReadyChange={setEditorReadyPath}
                     marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
                     onChange={(content) => {
                       dirtyRef.current = content !== editorText(document.original);
