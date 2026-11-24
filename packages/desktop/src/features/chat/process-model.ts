@@ -56,6 +56,7 @@ export type ToolCategory = "read" | "write" | "edit" | "command" | "web" | "tool
 
 const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   read_file: "read",
+  file_outline: "read",
   read_image: "read",
   list_dir: "read",
   glob: "read",
@@ -82,6 +83,7 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "Read file",
+  file_outline: "Read code outline",
   read_image: "Read image",
   list_dir: "List folder",
   glob: "Find files",

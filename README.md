@@ -94,11 +94,15 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   tool-output trims remain recoverable even if a later summary fails. A separate
   **Summary model** requires its own **Summary context window** in Settings.
 
-The agent has `read_file`, `read_image`, `write_file`, `edit_file`,
+The agent has `read_file`, `file_outline`, `read_image`, `write_file`, `edit_file`,
 `apply_patch`, `list_dir`, `glob`, `grep`, `run_command`, `job_list`,
 `job_output`, `job_kill`, `web_fetch`, and `likec4_mcp`; depending on your setup
 it also has `skill`, MCP server tools, `web_search`, and, after compaction,
 `history_read`.
+
+`file_outline` lists declarations and line ranges from saved Rust, JavaScript,
+and TypeScript files, including JSX and TSX, so the agent can read the relevant
+implementation by line range.
 
 ## Workspace views
 

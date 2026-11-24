@@ -25,6 +25,7 @@ pub(crate) mod image;
 pub(crate) mod jobs;
 mod likec4;
 mod mcp;
+mod outline;
 mod patch;
 mod plan;
 mod plan_diff;
@@ -780,6 +781,7 @@ impl ToolRegistry {
                 Box::new(plan::AssessChange),
                 Box::new(plan_present::PresentPlan),
                 Box::new(fs::ReadFile),
+                Box::new(outline::FileOutline),
                 Box::new(image::ReadImage),
                 Box::new(fs::WriteFile),
                 Box::new(fs::EditFile),
@@ -1131,7 +1133,7 @@ mod tests {
         assert_eq!(unique.len(), roots.len());
     }
 
-    struct Allow;
+    pub(super) struct Allow;
 
     impl Approver for Allow {
         fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, ApprovalDecision> {
@@ -1435,6 +1437,7 @@ mod tests {
             names,
             vec![
                 "read_file",
+                "file_outline",
                 "read_image",
                 "write_file",
                 "edit_file",
@@ -1479,6 +1482,7 @@ mod tests {
     fn only_read_only_tools_are_concurrency_safe() {
         let registry = ToolRegistry::new();
         assert!(registry.is_concurrency_safe("read_file"));
+        assert!(registry.is_concurrency_safe("file_outline"));
         assert!(registry.is_concurrency_safe("read_image"));
         assert!(registry.is_concurrency_safe("list_dir"));
         assert!(registry.is_concurrency_safe("glob"));
@@ -1518,6 +1522,7 @@ mod tests {
         for allowed in [
             "assess_change",
             "read_file",
+            "file_outline",
             "read_image",
             "list_dir",
             "glob",

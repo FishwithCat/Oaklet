@@ -15,6 +15,7 @@ mod shell_env;
 mod shutdown;
 mod spill;
 mod store;
+mod syntax;
 mod terminal;
 mod tools;
 mod windows;
