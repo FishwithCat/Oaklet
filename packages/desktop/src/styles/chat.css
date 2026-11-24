@@ -661,6 +661,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Match the textarea's 2px inset so the footer text lines up with the
+     first line of the message above it. */
+  padding: 0 2px;
   gap: 12px;
 }
 

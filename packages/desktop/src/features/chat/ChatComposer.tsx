@@ -451,33 +451,35 @@ export function ChatComposer({
         />
         <div className="composer-footer">
           <span className="composer-meta">
-            <span className="composer-context">
-              {showContextGauge && (
-                <ContextGauge
-                  usage={context}
-                  runUsage={usage}
-                  running={running}
-                  compacting={compacting}
-                  onCompact={onCompact}
-                />
-              )}
-              {context && (
-                <span
-                  className="composer-usage"
-                  title={
-                    stepUsage
-                      ? formatRequestTitle(stepUsage)
-                      : "Current context"
-                  }
-                >
-                  <UsageLabel
-                    key={activeTabId}
-                    used={context.used}
-                    limit={context.window}
+            {(showContextGauge || context) && (
+              <span className="composer-context">
+                {showContextGauge && (
+                  <ContextGauge
+                    usage={context}
+                    runUsage={usage}
+                    running={running}
+                    compacting={compacting}
+                    onCompact={onCompact}
                   />
-                </span>
-              )}
-            </span>
+                )}
+                {context && (
+                  <span
+                    className="composer-usage"
+                    title={
+                      stepUsage
+                        ? formatRequestTitle(stepUsage)
+                        : "Current context"
+                    }
+                  >
+                    <UsageLabel
+                      key={activeTabId}
+                      used={context.used}
+                      limit={context.window}
+                    />
+                  </span>
+                )}
+              </span>
+            )}
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}
