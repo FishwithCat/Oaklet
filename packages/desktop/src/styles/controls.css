@@ -181,12 +181,15 @@ textarea:focus-visible {
 
 .tab-status.working {
   background: var(--green);
-  animation: tab-status-blink 1.2s ease-in-out infinite;
+  animation: tab-status-pulse 1.6s ease-out infinite;
 }
 
-@keyframes tab-status-blink {
-  50% {
-    opacity: 0.3;
+@keyframes tab-status-pulse {
+  from {
+    box-shadow: 0 0 0 0 var(--accent-border-strong);
+  }
+  to {
+    box-shadow: 0 0 0 3px transparent;
   }
 }
 
@@ -195,7 +198,7 @@ textarea:focus-visible {
 }
 
 .tab-status.done {
-  background: var(--palette-secondary);
+  background: var(--palette-tertiary);
 }
 
 .view-tab-label {
