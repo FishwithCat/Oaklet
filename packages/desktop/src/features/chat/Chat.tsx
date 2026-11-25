@@ -435,8 +435,8 @@ export function Chat({
 
   return (
     <>
-      <header className="view-head" hidden={!active || !showTabs}>
-        <span className="view-icon" aria-hidden="true">
+      <header className="view-bar tab-bar" hidden={!active || !showTabs}>
+        <span className="view-bar-icon" aria-hidden="true">
           <Message4Regular size={14} />
         </span>
         <div className="view-tabs" role="tablist" aria-label="Chats">

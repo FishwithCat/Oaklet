@@ -81,8 +81,8 @@ export function Terminal({
 
   return (
     <section className="terminal" hidden={!active} aria-label="Terminal">
-      <header className="view-head">
-        <span className="view-icon" aria-hidden="true">
+      <header className="view-bar tab-bar">
+        <span className="view-bar-icon" aria-hidden="true">
           <TerminalBoxRegular size={14} />
         </span>
         <div className="view-tabs" role="tablist" aria-label="Terminals">

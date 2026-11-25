@@ -10,25 +10,12 @@
   display: none;
 }
 
-.terminal .view-tabs {
-  gap: 4px;
-}
-
-.terminal .view-tab:not(.active) {
-  background: var(--panel-muted);
-}
-
-.terminal .view-tab:not(.active):hover {
-  background: var(--panel-muted-strong);
-}
-
 :where(.terminal) .view-tab-close {
   opacity: 0.55;
 }
 
 .terminal-tab-title {
   box-sizing: border-box;
-  border-radius: 0;
 }
 
 .terminal-tab-title:focus-visible {

@@ -82,13 +82,13 @@ export function SourceControl({
 
   return (
     <section className="sc" hidden={!active} aria-label="Source control">
-      <header className="view-bar sc-tabs">
+      <header className="view-bar tab-bar">
         <span className="view-bar-icon" aria-hidden="true">
           <GitBranch2Regular size={14} />
         </span>
         <button
           type="button"
-          className={`sc-tab${tab === "changes" ? " active" : ""}`}
+          className={`view-tab${tab === "changes" ? " active" : ""}`}
           onClick={() => { setLanding(null); setTab("changes"); }}
           aria-pressed={tab === "changes"}
         >
@@ -97,7 +97,7 @@ export function SourceControl({
         </button>
         <button
           type="button"
-          className={`sc-tab${tab === "commits" ? " active" : ""}`}
+          className={`view-tab${tab === "commits" ? " active" : ""}`}
           onClick={() => { setLanding(null); setTab("commits"); }}
           aria-pressed={tab === "commits"}
         >

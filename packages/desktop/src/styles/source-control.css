@@ -231,39 +231,6 @@
   white-space: pre-wrap;
 }
 
-.view-bar.sc-tabs {
-  gap: 2px;
-  padding-inline: 10px;
-}
-
-.sc-tabs .sc-tab {
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 8px 7px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 500;
-}
-
-.sc-tabs .sc-tab:hover:not(:disabled) {
-  border-color: transparent;
-  border-bottom-color: var(--border-strong);
-  background: transparent;
-  color: var(--text);
-}
-
-.sc-tabs .sc-tab.active,
-.sc-tabs .sc-tab.active:hover:not(:disabled) {
-  border-bottom-color: var(--accent);
-  color: var(--accent);
-}
-
 .sc-tab-count {
   display: inline-grid;
   place-items: center;
