@@ -10,6 +10,15 @@
   display: none;
 }
 
+.terminal-tab-title {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+.terminal-tab-title:focus-visible {
+  outline: none;
+}
+
 .terminal-pane {
   position: relative;
   flex: 1;

@@ -1,5 +1,6 @@
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { AddRegular, CloseRegular, TerminalBoxRegular } from "@mingcute/react/core-regular";
+import { createCompositionGuard, isImeEvent } from "../../app/shortcuts";
 import { moveItem, useTabDrag } from "../../shared/useTabDrag";
 import {
   newSessionId,
@@ -27,6 +28,8 @@ export function Terminal({
     { id: newSessionId(), title: "Terminal 1" },
   ]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; width: number } | null>(null);
+  const [composition] = useState(createCompositionGuard);
   const handles = useRef(new Map<string, TerminalPaneHandle>());
   const count = useRef(1);
   const { draggingId, dragProps } = useTabDrag((from, to) =>
@@ -51,6 +54,10 @@ export function Terminal({
     const tab = { id: newSessionId(), title: `Terminal ${count.current}` };
     setTabs((current) => [...current, tab]);
     setSelected(tab.id);
+  }
+
+  function beginRename(id: string, label: HTMLButtonElement) {
+    setEditing({ id, width: label.getBoundingClientRect().width });
   }
 
   function closeTab(id: string) {
@@ -85,20 +92,62 @@ export function Terminal({
               className={`view-tab${tab.id === activeId ? " active" : ""}${
                 tab.id === draggingId ? " dragging" : ""
               }`}
-              {...dragProps(tab.id)}
+              {...(tab.id !== editing?.id ? dragProps(tab.id) : {})}
             >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab.id === activeId}
-                className="view-tab-label"
-                onClick={() => {
-                  setSelected(tab.id);
-                  handles.current.get(tab.id)?.focus();
-                }}
-              >
-                {tab.title}
-              </button>
+              {tab.id === editing?.id ? (
+                <input
+                  className="view-tab-label terminal-tab-title"
+                  style={{ width: editing.width }}
+                  aria-label="Terminal tab title"
+                  defaultValue={tab.title}
+                  autoFocus
+                  onFocus={(event) => {
+                    composition.reset();
+                    event.currentTarget.select();
+                  }}
+                  onCompositionStart={composition.start}
+                  onCompositionEnd={composition.end}
+                  onBlur={(event) => {
+                    const title = event.currentTarget.value.trim();
+                    if (title && title !== tab.title) {
+                      setTabs((current) => current.map((item) =>
+                        item.id === tab.id ? { ...item, title } : item,
+                      ));
+                    }
+                    setEditing(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== "Escape") return;
+                    if (isImeEvent(event.nativeEvent) || composition.active()) return;
+                    event.preventDefault();
+                    const input = event.currentTarget;
+                    if (event.key === "Escape") input.value = tab.title;
+                    input.blur();
+                    if (activeId) handles.current.get(activeId)?.focus();
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab.id === activeId}
+                  aria-keyshortcuts="F2"
+                  className="view-tab-label"
+                  title={`${tab.title} · Double-click to rename`}
+                  onClick={() => {
+                    setSelected(tab.id);
+                    handles.current.get(tab.id)?.focus();
+                  }}
+                  onDoubleClick={(event) => beginRename(tab.id, event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "F2") return;
+                    event.preventDefault();
+                    beginRename(tab.id, event.currentTarget);
+                  }}
+                >
+                  {tab.title}
+                </button>
+              )}
               <button
                 type="button"
                 className="view-tab-close"

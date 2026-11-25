@@ -284,7 +284,6 @@ export function TerminalPane({
       }
       fitToHost();
       await start();
-      if (!disposed) term.focus();
     })();
 
     teardownRef.current = () => {
@@ -315,6 +314,7 @@ export function TerminalPane({
 
   useEffect(() => {
     if (!active) return;
+    termRef.current?.focus();
     const frame = requestAnimationFrame(() => {
       const host = hostRef.current;
       const term = termRef.current;
@@ -323,7 +323,6 @@ export function TerminalPane({
         fitRef.current?.fit();
         syncScrollbar(term);
       }
-      term?.focus();
     });
     return () => cancelAnimationFrame(frame);
   }, [active]);
