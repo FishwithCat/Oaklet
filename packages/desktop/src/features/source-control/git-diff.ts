@@ -7,7 +7,16 @@ export type DiffLine = {
   newLine: number | null;
 };
 
-export type DiffHunk = { header: string; lines: DiffLine[] };
+type LineRange = { start: number; count: number };
+
+export type DiffHunk = {
+  header: string;
+  old: LineRange;
+  new: LineRange;
+  lines: DiffLine[];
+};
+
+export type ContextRange = { oldStart: number; newStart: number; count: number };
 
 export type DiffFile = {
   path: string;
@@ -30,7 +39,7 @@ export function isImagePath(path: string): boolean {
 /** A line in the new file that differs from its previous version. */
 export type ChangedLine = { line: number; kind: "added" | "modified" };
 
-const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 function unquotePath(path: string): string {
   if (!path.startsWith('"') || !path.endsWith('"')) return path;
@@ -67,11 +76,16 @@ export function parseDiff(text: string): DiffFile[] {
     }
     if (!file) continue;
 
-    if (raw.startsWith("@@")) {
-      const match = HUNK.exec(raw);
-      oldLine = match ? Number(match[1]) : 0;
-      newLine = match ? Number(match[2]) : 0;
-      hunk = { header: raw, lines: [] };
+    const range = raw.startsWith("@@") ? HUNK.exec(raw) : null;
+    if (range) {
+      oldLine = Number(range[1]);
+      newLine = Number(range[3]);
+      hunk = {
+        header: raw,
+        old: { start: oldLine, count: Number(range[2] ?? 1) },
+        new: { start: newLine, count: Number(range[4] ?? 1) },
+        lines: [],
+      };
       file.hunks.push(hunk);
       continue;
     }
@@ -140,16 +154,43 @@ function symbolLookup(symbols: readonly SourceSymbol[]) {
     return closest;
   };
 }
-export function pageHunks(hunks: DiffHunk[], offset: number, limit: number): DiffHunk[] {
-  const page: DiffHunk[] = [];
+export function pageHunks(hunks: DiffHunk[], offset: number, limit: number) {
+  const page: (DiffHunk & { index: number; offset: number })[] = [];
   let start = 0;
-  for (const hunk of hunks) {
-    const lines = hunk.lines.slice(Math.max(0, offset - start), Math.max(0, offset + limit - start));
-    if (lines.length) page.push({ ...hunk, lines });
+  for (const [index, hunk] of hunks.entries()) {
+    const from = Math.max(0, offset - start);
+    const lines = hunk.lines.slice(from, Math.max(0, offset + limit - start));
+    if (lines.length) page.push({ ...hunk, lines, index, offset: from });
     start += hunk.lines.length;
     if (start >= offset + limit) break;
   }
   return page;
+}
+
+export function hunkOffsets(hunks: readonly DiffHunk[]) {
+  let lineCount = 0;
+  const offsets = hunks.map(({ lines }) => {
+    const offset = lineCount;
+    lineCount += lines.length;
+    return offset;
+  });
+  return { offsets, lineCount };
+}
+
+export function contextGap(
+  before: DiffHunk | undefined,
+  after: DiffHunk | undefined,
+  oldLength: number,
+  newLength: number,
+): ContextRange | null {
+  const end = ({ start, count }: LineRange) => start + Math.max(1, count);
+  const first = ({ start, count }: LineRange) => start + Number(count === 0);
+  const oldStart = before ? end(before.old) : 1;
+  const newStart = before ? end(before.new) : 1;
+  const oldEnd = after ? first(after.old) : oldLength + 1;
+  const newEnd = after ? first(after.new) : newLength + 1;
+  const count = oldEnd - oldStart;
+  return count > 0 && count === newEnd - newStart ? { oldStart, newStart, count } : null;
 }
 
 /**

@@ -16,7 +16,46 @@ export type GitLog = {
   hasTrackedChanges: boolean;
 };
 
-export type ChangeInfo = { path: string; status: string; unstaged: boolean };
+export type ReviewFile = {
+  path: string;
+  status: string;
+  oldPath?: string | null;
+  added?: number | null;
+  removed?: number | null;
+};
+
+export type ChangeInfo = ReviewFile & { unstaged: boolean };
+
+export function filterCommits(commits: readonly CommitInfo[], query: string): readonly CommitInfo[] {
+  const term = query.trim().toLowerCase();
+  if (!term) return commits;
+  const words = term.split(/\s+/);
+  return commits.filter((commit) => {
+    const text = [commit.hash, commit.shortHash, commit.subject, commit.body, commit.author, commit.email, ...commit.refs]
+      .join("\n").toLowerCase();
+    return words.every((word) => text.includes(word));
+  });
+}
+
+export function sortReviewFiles(files: readonly ReviewFile[]): ReviewFile[] {
+  const byPath = new Map<string, ReviewFile>();
+  for (const file of files) {
+    if (!byPath.has(file.path)) byPath.set(file.path, file);
+  }
+  return [...byPath.values()].sort((a, b) => a.path < b.path ? -1 : Number(a.path > b.path));
+}
+
+export function filterReviewFiles(files: readonly ReviewFile[], query: string): ReviewFile[] {
+  const term = query.trim().toLowerCase();
+  return files.filter(({ path, oldPath }) =>
+    path.toLowerCase().includes(term) || oldPath?.toLowerCase().includes(term),
+  );
+}
+
+export function chooseReviewPath(files: readonly ReviewFile[], selected: string | null): string | null {
+  if (!selected) return files[0]?.path ?? null;
+  return files.find((file) => file.path >= selected)?.path ?? files[files.length - 1]?.path ?? null;
+}
 
 export function filterBranches(
   branches: readonly string[],

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { affectedSymbols, changedLines, isImagePath, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
+import { affectedSymbols, changedLines, contextGap, hunkOffsets, isImagePath, pageHunks, parseDiff } from "../src/features/source-control/git-diff.ts";
+
+import { chooseReviewPath, filterReviewFiles, sortReviewFiles } from "../src/features/source-control/git-model.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -112,4 +114,53 @@ test("only webview-supported image extensions get an image preview", () => {
   for (const path of ["a.svg", "a.bmp", "a.txt", "png", "a.png.txt"]) {
     assert.equal(isImagePath(path), false, path);
   }
+});
+
+test("a late hunk can be rendered by its offset without rendering the preceding pages", () => {
+  const lines = Array.from({ length: 260 }, (_, i) => `+row ${i + 1}`).join("\n");
+  const [file] = parseDiff(`diff --git a/large.txt b/large.txt
+@@ -0,0 +1,260 @@
+${lines}
+@@ -480 +740 @@
+-old value
++new value
+`);
+  const { offsets, lineCount } = hunkOffsets(file.hunks);
+  assert.deepEqual(offsets, [0, 260]);
+  assert.equal(lineCount, 262);
+  const [hunk] = pageHunks(file.hunks, offsets[1], 200);
+  assert.equal(hunk.index, 1);
+  assert.equal(hunk.offset, 0);
+  assert.equal(hunk.lines[1].newLine, 740);
+  assert.deepEqual(pageHunks(file.hunks, 60, 200)[0].lines, file.hunks[0].lines.slice(60));
+});
+
+test("context gaps preserve both sides' line numbers across insertions and file boundaries", () => {
+  const [file] = parseDiff(`diff --git a/x.txt b/x.txt
+@@ -2,0 +3 @@
++insertion
+@@ -100,2 +101,2 @@
+-old
++new
+ stable
+`);
+  const [first, last] = file.hunks;
+  assert.deepEqual(contextGap(undefined, first, 130, 131), { oldStart: 1, newStart: 1, count: 2 });
+  assert.deepEqual(contextGap(first, last, 130, 131), { oldStart: 3, newStart: 4, count: 97 });
+  assert.deepEqual(contextGap(last, undefined, 130, 131), { oldStart: 102, newStart: 103, count: 29 });
+  assert.equal(contextGap(last, undefined, 101, 102), null);
+});
+
+test("review files sort by path, match rename sources, and retain or advance selection on refresh", () => {
+  const files = sortReviewFiles([
+    { path: "src/结果.ts", status: "modified" },
+    { path: "README.md", status: "modified" },
+    { path: "docs/new name.md", oldPath: "docs/Old name.md", status: "renamed" },
+  ]);
+  assert.deepEqual(files.map((file) => file.path), ["README.md", "docs/new name.md", "src/结果.ts"]);
+  assert.deepEqual(filterReviewFiles(files, "OLD NAME"), [files[1]]);
+  assert.equal(chooseReviewPath(files, files[1].path), files[1].path);
+  assert.equal(chooseReviewPath([files[0], files[2]], files[1].path), files[2].path);
+  assert.equal(chooseReviewPath(files.slice(0, 2), files[2].path), files[1].path);
+  assert.equal(chooseReviewPath([], files[2].path), null);
 });

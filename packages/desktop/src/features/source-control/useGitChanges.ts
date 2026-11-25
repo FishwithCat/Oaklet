@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
 import type { ChangeInfo } from "./git-model";
 
-type LoadedChanges = { workspace: string; changes: ChangeInfo[] };
+type LoadedChanges = { workspace: string; revision: number; changes: ChangeInfo[] };
 
 /**
  * The single source of uncommitted changes. App calls this once so the sidebar
@@ -19,7 +19,7 @@ export function useGitChanges({
   refreshToken: number;
 }) {
   const [loaded, setLoaded] = useState<LoadedChanges | null>(null);
-  const [changesError, setChangesError] = useState("");
+  const [failure, setFailure] = useState<{ workspace: string; revision: number; message: string } | null>(null);
   // Keep the previous result while a refresh is in flight so the badge does not
   // unmount between polls; a different workspace still reads as unknown.
   const changes = loaded?.workspace === workspace ? loaded.changes : null;
@@ -27,18 +27,22 @@ export function useGitChanges({
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    setChangesError("");
     invoke<ChangeInfo[]>("git_changes")
       .then((next) => {
-        if (!cancelled) setLoaded({ workspace, changes: next });
+        if (!cancelled) {
+          setLoaded({ workspace, revision: refreshToken, changes: next });
+          setFailure(null);
+        }
       })
       .catch((error) => {
-        if (!cancelled) setChangesError(errorText(error));
+        if (!cancelled) setFailure({ workspace, revision: refreshToken, message: errorText(error) });
       });
     return () => {
       cancelled = true;
     };
   }, [enabled, workspace, refreshToken]);
 
-  return { changes, changeCount: changes?.length ?? null, changesError };
+  const changesReady = !!changes && loaded?.revision === refreshToken;
+  const changesError = failure?.workspace === workspace && failure.revision === refreshToken ? failure.message : "";
+  return { changes, changeCount: changes?.length ?? null, changesError, changesReady };
 }

@@ -291,27 +291,297 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 7px;
   width: var(--sc-list-width, 300px);
   min-width: 150px;
   max-width: 35%;
   min-height: 0;
-  overflow-y: auto;
-  padding: 6px;
+  padding: 8px;
   border-right: 1px solid var(--border);
 }
 
-.commit {
+.sc-commit-info {
+  position: relative;
   flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sc-control {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.sc-control:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.sc-control[type="search"] {
+  appearance: none;
+}
+
+.sc-file-filter {
+  flex: none;
+}
+
+.sc-commit-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.sc-commit-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.sc-commit-trigger svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.sc-commit-trigger:hover:not(:disabled),
+.sc-commit-trigger[aria-expanded="true"] {
+  border-color: var(--accent-border-strong);
+  background: var(--panel-2);
+}
+
+.sc-commit-subject,
+.sc-commit-author {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-commit-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.sc-commit-meta code {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.sc-commit-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10;
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-height: min(320px, 55vh);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px var(--shadow-color);
+}
+
+.sc-commit-menu > input {
+  flex: none;
+}
+
+.sc-commit-results {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sc-commit-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.sc-commit-option:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+.sc-commit-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sc-commit-empty {
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.sc-commit-meta > .sc-commit-details-trigger {
+  margin-left: auto;
+}
+
+.sc-commit-meta > .sc-commit-details-trigger,
+.sc-commit-hash-row .icon-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+}
+
+.sc-commit-details-trigger[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sc-commit-details-panel {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 16px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(400px, 52vw);
+  max-height: min(440px, 68vh);
+  border: 1px solid var(--panel-muted-border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px var(--shadow-color);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: normal;
+  overflow: hidden;
+}
+
+.sc-commit-details-panel:focus {
+  outline: none;
+}
+
+.sc-commit-message {
+  min-height: 0;
+  padding: 14px 16px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.sc-commit-message:focus-visible {
+  outline: 1px solid var(--panel-muted-border-strong);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+
+.sc-commit-message h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.sc-commit-message p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.sc-commit-details-footer {
+  flex: none;
+  display: grid;
+  gap: 3px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--panel-muted-border);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.sc-commit-byline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+
+.sc-commit-byline time {
+  white-space: nowrap;
+}
+
+.sc-commit-hash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sc-commit-hash-row code {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.sc-commit-copy-error {
+  color: var(--red);
+}
+
+.sc-commit-refs {
+  display: flex;
+  flex-wrap: wrap;
   gap: 3px;
   min-width: 0;
-  padding: 8px 9px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
+}
+
+.commit-ref {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 5px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-file-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sc-list > .sc-note {
+  padding: 8px;
 }
 
 .change {
@@ -321,7 +591,7 @@
   gap: 8px;
   width: 100%;
   min-width: 0;
-  padding: 7px 9px;
+  padding: 6px 7px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -342,16 +612,37 @@
 .change-path {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.45;
+  line-height: 1.4;
+}
+
+.change-name,
+.change-directory,
+.change-previous {
+  display: block;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.change.active .change-path {
+.change-name {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.change-directory,
+.change-previous {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.change.active .change-name {
   color: var(--accent);
+}
+
+.change .diff-stat {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .change-status {
@@ -390,128 +681,16 @@
   color: var(--yellow);
 }
 
-.commit:hover:not(:disabled) {
-  border-color: transparent;
-  background: var(--panel-2);
-}
-
-.commit.active,
-.commit.active:hover:not(:disabled) {
-  border-color: transparent;
-  background: var(--accent-soft);
-}
-
-.commit-subject-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.commit-subject {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 1.4;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commit.active .commit-subject {
-  color: var(--accent);
-}
-
-.commit-refs {
-  display: flex;
-  flex: none;
-  gap: 3px;
-  min-width: 0;
-  max-width: 55%;
-  overflow: hidden;
-}
-
-.commit-ref {
-  max-width: 100%;
-  overflow: hidden;
-  padding: 0 5px;
-  border: 1px solid var(--accent-border);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 9px;
-  line-height: 1.55;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commit-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.commit-meta code {
-  padding: 0 3px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--text) 4.5%, transparent);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.commit-dot {
-  color: var(--border-strong);
-}
-
 .sc-detail {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
 }
 
-.commit-head {
-  padding: 16px 18px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.commit-head h2 {
-  margin: 0 0 6px;
-  font-size: 15px;
-  font-weight: 620;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.commit-body {
-  margin: 0 0 10px;
-  max-width: 72ch;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.commit-meta-row {
-  margin: 0;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.commit-meta-row code {
-  color: var(--accent);
+.sc-detail:focus {
+  outline: none;
 }
 
 .sc-note {
@@ -550,71 +729,23 @@
 
 .diff {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.diff-summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 2px;
-  color: var(--muted);
-  font-size: 11.5px;
+.diff-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
 }
 
-.diff-file-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.diff-file-picker-label {
-  flex: none;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-}
-
-.diff-file-picker-control {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.diff-file-picker select {
-  appearance: none;
-  min-width: 0;
-  max-width: 100%;
-  height: 26px;
-  padding: 0 26px 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.diff-file-picker select:hover {
-  border-color: var(--border-strong);
-}
-
-.diff-file-picker select:focus-visible {
-  outline: none;
-  border-color: var(--accent-border-strong);
-}
-
-.diff-file-picker-caret {
-  position: absolute;
-  right: 9px;
-  color: var(--muted);
-  pointer-events: none;
+.diff-scroll:focus-visible,
+.diff-hunk-head:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .diff-stat {
@@ -633,27 +764,50 @@
   color: var(--red);
 }
 
-.diff-file {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
 .diff-file-head {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel-muted-strong);
+  gap: 8px;
+  padding: 2px 10px;
+  border-bottom: 1px solid var(--panel-muted-border);
+  background: var(--panel);
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.4;
 }
 
 .diff-path {
+  flex: 1;
   min-width: 0;
-  overflow-wrap: anywhere;
+}
+
+.diff-path > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-navigation {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.diff-navigation .icon-button {
+  width: 26px;
+  height: 24px;
+}
+
+.diff-navigation .icon-button:focus-visible {
+  outline-offset: -1px;
+}
+
+.diff-position {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .diff-more {
@@ -672,8 +826,22 @@
   text-align: center;
 }
 
-.diff-more:hover:not(:disabled) {
+.diff-more:hover:not([aria-disabled="true"]) {
   background: var(--accent-soft);
+}
+
+.diff-more[aria-disabled="true"] {
+  color: var(--muted);
+  cursor: default;
+}
+
+.diff-gap .diff-more {
+  background: var(--panel-muted);
+}
+
+.diff-scroll > .diff-more:first-child,
+.diff-scroll > .diff-gap:first-child > .diff-more:first-child {
+  border-top: 0;
 }
 
 .diff-more-count {
@@ -687,11 +855,11 @@
   border-top: 1px solid var(--border);
 }
 
-.diff-symbols { display: flex; flex-wrap: wrap; gap: 4px; max-height: 92px; overflow: auto; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-.diff-symbols button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 6px; font-family: var(--mono); font-size: 11px; }
 .diff-hunk-symbols { margin-left: 10px; font-weight: 600; color: var(--text); }
 
 .diff-hunk-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 4px 10px;
   background: var(--accent-soft);
   color: var(--muted);

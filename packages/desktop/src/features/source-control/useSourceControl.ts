@@ -1,136 +1,103 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "../../shared/error-text";
-import type { ChangeInfo, GitLog } from "./git-model";
+import { chooseReviewPath, sortReviewFiles, type ChangeInfo, type GitLog, type ReviewFile } from "./git-model";
+
+type RequestArgs = Record<string, unknown>;
+const LOG_ARGS = { includeCommits: true };
+
+export type ReviewTarget = {
+  path: string;
+  hash: string | null;
+  oldPath: string | null;
+  status: string;
+};
+
+function useRequest<T>(command: string, args: RequestArgs | null, revision = 0) {
+  const [result, setResult] = useState<{
+    args: RequestArgs; revision: number; value: T | null; error: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!args) return;
+    let cancelled = false;
+    invoke<T>(command, args)
+      .then((value) => {
+        if (!cancelled) setResult({ args, revision, value, error: "" });
+      })
+      .catch((error) => {
+        if (!cancelled) setResult({ args, revision, value: null, error: errorText(error) });
+      });
+    return () => { cancelled = true; };
+  }, [command, args, revision]);
+
+  const current = result?.args === args ? result : null;
+  const ready = current?.revision === revision;
+  return { value: current?.value ?? null, error: ready ? current.error : "", ready };
+}
+
+function useSelection(files: ReviewFile[] | null) {
+  const [selected, select] = useState<string | null>(null);
+  const path = files ? chooseReviewPath(files, selected) : null;
+  const file = files?.find((entry) => entry.path === path) ?? null;
+
+  useLayoutEffect(() => {
+    if (files && path !== selected) select(path);
+  }, [files, path, selected]);
+
+  return { file, select };
+}
 
 export function useSourceControl({
   active,
   changes,
+  changesReady,
   refreshToken,
-  onRefresh,
 }: {
   active: boolean;
   changes: ChangeInfo[] | null;
+  changesReady: boolean;
   refreshToken: number;
-  onRefresh: () => void;
 }) {
   const [tab, setTab] = useState<"changes" | "commits">("changes");
-  const [log, setLog] = useState<GitLog | null>(null);
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
-  const [selectedChange, setSelectedChange] = useState<string | null>(null);
-  const [patch, setPatch] = useState("");
-  const [patchFor, setPatchFor] = useState<string | null>(null);
-  const [diffError, setDiffError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!active || tab !== "commits") {
-      setLoading(false);
-      setError("");
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError("");
-
-    invoke<GitLog>("git_log", { includeCommits: true })
-      .then((nextLog) => {
-        if (cancelled) return;
-        setLog(nextLog);
-        if (tab === "commits") {
-          setSelectedCommit((current) =>
-            current && nextLog.commits.some((commit) => commit.hash === current)
-              ? current
-              : (nextLog.commits[0]?.hash ?? null),
-          );
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setLog(null);
-        setSelectedCommit(null);
-        setError(errorText(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active, tab, refreshToken]);
-
-  useEffect(() => {
-    if (!changes) return;
-    setSelectedChange((current) =>
-      current && changes.some((change) => change.path === current)
-        ? current
-        : (changes[0]?.path ?? null),
-    );
-  }, [changes]);
-
-  const target = tab === "commits" ? selectedCommit : selectedChange;
-  const targetKey = target === null ? null : `${tab}:${target}`;
-
-  useEffect(() => {
-    if (!active || !target) {
-      setPatch("");
-      setPatchFor(null);
-      setDiffError("");
-      return;
-    }
-
-    let cancelled = false;
-    setPatch("");
-    setPatchFor(null);
-    setDiffError("");
-    const key = `${tab}:${target}`;
-
-    const request =
-      tab === "commits"
-        ? invoke<string>("git_show", { hash: target })
-        : invoke<string>("git_diff", { path: target });
-
-    request
-      .then((text) => {
-        if (cancelled) return;
-        setPatch(text);
-        setPatchFor(key);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setDiffError(errorText(err));
-        setPatchFor(key);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active, tab, target, refreshToken]);
-
-  const commits = log?.commits ?? [];
-  const commit = commits.find((entry) => entry.hash === selectedCommit) ?? null;
-  const change =
-    changes?.find((entry) => entry.path === selectedChange) ?? null;
-  const diffReady = targetKey !== null && patchFor === targetKey;
+  const log = useRequest<GitLog>("git_log", active && tab === "commits" ? LOG_ARGS : null, refreshToken);
+  const commits = log.value?.commits ?? [];
+  const commit = commits.find((entry) => entry.hash === selectedCommit) ?? commits[0] ?? null;
+  const commitHash = commit?.hash;
+  useLayoutEffect(() => {
+    if (commitHash && commitHash !== selectedCommit) setSelectedCommit(commitHash);
+  }, [commitHash, selectedCommit]);
+  const commitArgs = useMemo(() => commitHash ? { hash: commitHash } : null, [commitHash]);
+  const commitFiles = useRequest<ReviewFile[]>("git_commit_files", commitArgs, refreshToken);
+  const committed = useMemo(
+    () => commitFiles.value && sortReviewFiles(commitFiles.value),
+    [commitFiles.value],
+  );
+  const uncommitted = useMemo(() => changes && sortReviewFiles(changes), [changes]);
+  const change = useSelection(uncommitted);
+  const history = useSelection(committed);
+  const selection = tab === "changes" ? change : history;
+  const files = tab === "changes" ? uncommitted : committed;
+  const path = selection.file?.path;
+  const oldPath = selection.file?.oldPath ?? null;
+  const status = selection.file?.status;
+  const hash = tab === "commits" ? (commitHash ?? null) : null;
+  const target = useMemo<ReviewTarget | null>(
+    () => active && path && status ? { path, hash, oldPath, status } : null,
+    [active, path, hash, oldPath, status],
+  );
+  const canLoadPatch = tab === "commits" || changesReady;
+  const patchArgs = useMemo(() => target && canLoadPatch ? { target } : null, [target, canLoadPatch]);
+  const patch = useRequest<string>("git_review_diff", patchArgs, refreshToken);
 
   return {
-    tab,
-    setTab,
-    hasLog: log !== null || changes !== null,
-    commits,
-    commit,
-    change,
-    selectedCommit,
-    selectCommit: setSelectedCommit,
-    selectedChange,
-    selectChange: setSelectedChange,
-    patch,
-    diffReady,
-    diffError,
-    loading,
-    error,
-    refresh: onRefresh,
+    tab, setTab, commits, commit, setSelectedCommit, files, selection, target,
+    patch: patch.ready ? patch.value : null,
+    diffError: patch.error,
+    error: tab === "commits" ? log.error : "",
+    loading: tab === "commits" && !log.ready,
+    loadingFiles: tab === "commits" && !commitFiles.ready,
+    filesError: commitFiles.error,
   };
 }

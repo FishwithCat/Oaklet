@@ -9,6 +9,7 @@ use crate::SharedState;
 use crate::shell_env::ApplyEnvironment;
 use crate::windows::workspace_for_window;
 
+pub(crate) mod review;
 mod symbols;
 
 #[derive(Serialize)]
@@ -39,6 +40,7 @@ pub struct GitChange {
     path: String,
     status: String,
     unstaged: bool,
+    old_path: Option<String>,
 }
 
 /// Field/record separators keep subjects and multi-line bodies unambiguous.
@@ -56,6 +58,7 @@ fn run_git_bytes(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .arg(workspace)
         .args(args);
     command.apply_environment();
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     let output = command
         .output()
         .map_err(|error| format!("Could not run git: {error}"))?;
@@ -89,6 +92,7 @@ fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String,
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.apply_environment();
+    command.env("GIT_OPTIONAL_LOCKS", "0");
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not run git: {error}"))?;
@@ -233,6 +237,10 @@ pub fn changes(workspace: &Path) -> Result<Vec<GitChange>, String> {
 }
 
 pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
+    worktree_patch(workspace, path, false)
+}
+
+fn worktree_patch(workspace: &Path, path: &str, review: bool) -> Result<String, String> {
     if !valid_relative_path(path) {
         return Err("Invalid file path.".into());
     }
@@ -257,60 +265,43 @@ pub fn diff(workspace: &Path, path: &str) -> Result<String, String> {
         .then(|| rename_source(workspace, path))
         .flatten()
         .filter(|original| {
-            crate::syntax::Grammar::for_path(path).is_some()
+            review
+                || crate::syntax::Grammar::for_path(path).is_some()
                 || crate::syntax::Grammar::for_path(original).is_some()
         });
 
     // `git diff HEAD` omits untracked files, and an added file has no HEAD
     // version to compare against. Compare those with an empty file instead.
+    let options = ["--no-color", "--no-ext-diff", "--full-index"];
+    let mut options = options.to_vec();
+    if review {
+        options.extend([
+            "--no-textconv",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--unified=3",
+        ]);
+    }
+
     if code == "??" || (code.contains('A') && rename.is_none()) {
         if workspace.join(path).symlink_metadata().is_ok() {
-            return run_patch(
-                workspace,
-                &[
-                    "diff",
-                    "--no-index",
-                    "--no-color",
-                    "--no-ext-diff",
-                    "--full-index",
-                    "--",
-                    NULL_DEVICE,
-                    path,
-                ],
-                true,
-            );
+            let mut args = vec!["diff", "--no-index"];
+            args.extend(&options);
+            args.extend(["--", NULL_DEVICE, path]);
+            return run_patch(workspace, &args, true);
         }
 
         // Added to the index and then deleted from the worktree: show the
         // still-staged version rather than a missing-file error.
-        return run_patch(
-            workspace,
-            &[
-                "diff",
-                "--cached",
-                "--relative",
-                "--no-color",
-                "--no-ext-diff",
-                "--full-index",
-                "--find-renames",
-                "--",
-                path,
-            ],
-            false,
-        );
+        let mut args = vec!["diff", "--cached", "--relative", "--find-renames"];
+        args.extend(&options);
+        args.extend(["--", path]);
+        return run_patch(workspace, &args, false);
     }
 
-    let mut args = vec![
-        "diff",
-        "HEAD",
-        "--relative",
-        "--no-color",
-        "--no-ext-diff",
-        "--full-index",
-        "--find-renames",
-        "--",
-        path,
-    ];
+    let mut args = vec!["diff", "HEAD", "--relative", "--find-renames"];
+    args.extend(&options);
+    args.extend(["--", path]);
     if let Some(original) = &rename {
         args.push(original);
     }
@@ -350,76 +341,6 @@ fn rename_source(workspace: &Path, path: &str) -> Option<String> {
         }
     }
     None
-}
-
-pub fn show(workspace: &Path, hash: &str) -> Result<String, String> {
-    if !valid_hash(hash) {
-        return Err("Invalid commit hash.".into());
-    }
-
-    run_patch(
-        workspace,
-        &[
-            "show",
-            "--format=",
-            "--patch",
-            "--no-color",
-            "--no-ext-diff",
-            "--full-index",
-            "--first-parent",
-            hash,
-        ],
-        false,
-    )
-}
-
-#[tauri::command]
-pub(crate) async fn git_diff_symbols(
-    window: WebviewWindow,
-    state: State<'_, SharedState>,
-    path: Option<String>,
-    hash: Option<String>,
-    file_index: usize,
-    file_header: String,
-    index_line: String,
-) -> Result<Option<symbols::DiffSymbols>, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        symbols::for_diff(
-            &workspace,
-            path.as_deref(),
-            hash.as_deref(),
-            file_index,
-            &file_header,
-            &index_line,
-        )
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-pub fn show_image(workspace: &Path, path: &str, hash: &str) -> Result<String, String> {
-    if !valid_hash(hash) {
-        return Err("Invalid commit hash.".into());
-    }
-    if !valid_relative_path(path) {
-        return Err("Invalid file path.".into());
-    }
-
-    let object = format!("{hash}:{path}");
-    let size: u64 = run_git(workspace, &["cat-file", "-s", &object])?
-        .trim()
-        .parse()
-        .map_err(|_| "Could not read the image.".to_string())?;
-    if size > crate::tools::image::MAX_IMAGE_BYTES {
-        return Err(format!(
-            "Image is {size} bytes; the limit is {}. Resize it first.",
-            crate::tools::image::MAX_IMAGE_BYTES
-        ));
-    }
-
-    let bytes = run_git_bytes(workspace, &["cat-file", "blob", &object])?;
-    crate::tools::image::data_url(&bytes)
 }
 
 fn valid_hash(hash: &str) -> bool {
@@ -483,6 +404,10 @@ fn parse_status(output: &str, prefix: &str) -> Vec<GitChange> {
             path: path.to_string(),
             status: status.to_string(),
             unstaged: code != "??" && record.as_bytes().get(1) != Some(&b' '),
+            old_path: original
+                .and_then(|original| original.strip_prefix(prefix))
+                .filter(|original| *original != path)
+                .map(str::to_owned),
         });
     }
 
@@ -545,31 +470,6 @@ pub(crate) async fn git_log(
     tauri::async_runtime::spawn_blocking(move || log(&workspace, include_commits))
         .await
         .map_err(|error| format!("Could not read git history: {error}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn git_show(
-    window: WebviewWindow,
-    state: State<'_, SharedState>,
-    hash: String,
-) -> Result<String, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
-    tauri::async_runtime::spawn_blocking(move || show(&workspace, &hash))
-        .await
-        .map_err(|error| format!("Could not read the commit: {error}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn git_show_image(
-    window: WebviewWindow,
-    state: State<'_, SharedState>,
-    hash: String,
-    path: String,
-) -> Result<String, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
-    tauri::async_runtime::spawn_blocking(move || show_image(&workspace, &path, &hash))
-        .await
-        .map_err(|error| format!("Could not read the image: {error}"))?
 }
 
 #[tauri::command]
@@ -845,44 +745,6 @@ mod tests {
                 .unwrap()
                 .contains("+new file")
         );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn image_preview_reads_supported_blobs_from_a_commit() {
-        let root = crate::tools::test_support::temp_root("git-image");
-        std::fs::write(root.join("pixel.png"), b"\x89PNG\r\n\x1a\npixels").unwrap();
-        std::fs::write(root.join("notes.txt"), "text").unwrap();
-        super::run_git(&root, &["init", "-b", "main"]).unwrap();
-        super::run_git(&root, &["add", "."]).unwrap();
-        super::run_git(
-            &root,
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "-m",
-                "Image",
-            ],
-        )
-        .unwrap();
-        let hash = super::run_git(&root, &["rev-parse", "HEAD"])
-            .unwrap()
-            .trim()
-            .to_string();
-
-        assert!(
-            super::show_image(&root, "pixel.png", &hash)
-                .unwrap()
-                .starts_with("data:image/png;base64,")
-        );
-        assert!(super::show_image(&root, "notes.txt", &hash).is_err());
-        assert!(super::show_image(&root, "../pixel.png", &hash).is_err());
-        assert!(super::show_image(&root, "pixel.png", "not-a-hash").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

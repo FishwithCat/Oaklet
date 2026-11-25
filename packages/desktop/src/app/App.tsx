@@ -102,7 +102,7 @@ function App() {
     if (config) session.reloadAllowance();
   }, [config?.allowAllCommands]);
 
-  const { changes, changeCount, changesError } = useGitChanges({
+  const { changes, changeCount, changesError, changesReady } = useGitChanges({
     enabled: config !== null && workspace !== null,
     workspace: workspace ?? "",
     refreshToken: workspaceTick + savedTick,
@@ -404,7 +404,8 @@ function App() {
           workspace={workspace}
           changes={changes}
           changesError={changesError}
-          refreshToken={workspaceTick}
+          changesReady={changesReady}
+          refreshToken={workspaceTick + savedTick}
           onRefresh={() => setWorkspaceTick((value) => value + 1)}
         />
 

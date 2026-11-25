@@ -47,9 +47,22 @@
 
   .sc-list {
     width: auto;
-    max-height: 38%;
+    max-width: none;
+    max-height: 45%;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .sc-commit-details-panel {
+    top: 100%;
+    right: 0;
+    left: auto;
+    width: min(400px, 100%);
+    max-height: min(400px, 64vh);
+  }
+
+  .sc-body > .pane-resizer {
+    display: none;
   }
 
   .empty h1 {
