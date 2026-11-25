@@ -53,6 +53,7 @@ export type ChatHandle = {
 export function Chat({
   ref,
   active,
+  overlayOpen,
   tabs,
   activeTabId,
   onSelectTab,
@@ -85,6 +86,7 @@ export function Chat({
 }: {
   ref?: Ref<ChatHandle>;
   active: boolean;
+  overlayOpen: boolean;
   tabs: ChatTabInfo[];
   activeTabId: string;
   onSelectTab: (id: string) => void;
@@ -411,6 +413,7 @@ export function Chat({
       showContextGauge={shouldShowContextGauge(context, items.length > 0)}
       model={model}
       welcome={welcome}
+      autoFocus={!overlayOpen}
       attachments={attachments}
       onChange={updateDraft}
       onAddAttachments={addAttachments}

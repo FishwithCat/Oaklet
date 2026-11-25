@@ -354,6 +354,7 @@ function App() {
         <Chat
           ref={chatRef}
           active={view === "chat"}
+          overlayOpen={settingsOpen || historyOpen || skillsOpen}
           tabs={session.tabs}
           activeTabId={session.activeTabId}
           onSelectTab={session.selectTab}

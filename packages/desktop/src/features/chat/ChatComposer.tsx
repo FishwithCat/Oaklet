@@ -147,6 +147,7 @@ export function ChatComposer({
   showContextGauge,
   model,
   welcome,
+  autoFocus,
   attachments,
   onChange,
   onAddAttachments,
@@ -166,6 +167,7 @@ export function ChatComposer({
   showContextGauge: boolean;
   model: string;
   welcome?: boolean;
+  autoFocus?: boolean;
   attachments: Attachment[];
   onChange: (value: string) => void;
   onAddAttachments: (attachments: Attachment[], tabId?: string) => void;
@@ -223,6 +225,13 @@ export function ChatComposer({
     setAttachmentError("");
     setPreview(null);
   }, [activeTabId]);
+
+  // The welcome tab has nothing else to interact with, so typing can start
+  // immediately instead of requiring a click into the composer.
+  useEffect(() => {
+    if (!welcome || !autoFocus) return;
+    textareaRef.current?.focus();
+  }, [activeTabId, autoFocus, welcome]);
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposer(textareaRef.current);
