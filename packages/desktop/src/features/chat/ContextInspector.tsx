@@ -2,14 +2,12 @@ import {
   contextSegmentWidths,
   formatContextLabel,
   formatContextPercent,
-  formatRequestTitle,
   formatTokens,
 } from "./chat-model";
 import type {
   ContextSegment,
   ContextSegmentKind,
   ContextUsage,
-  StepUsage,
 } from "./session-model";
 
 const SEGMENT_LABELS: Record<ContextSegmentKind, string> = {
@@ -39,13 +37,7 @@ function SegmentRow({ segment }: { segment: ContextSegment }) {
   );
 }
 
-export function ContextInspector({
-  usage,
-  stepUsage,
-}: {
-  usage: ContextUsage;
-  stepUsage: StepUsage | null;
-}) {
+export function ContextInspector({ usage }: { usage: ContextUsage }) {
   const widths = contextSegmentWidths(usage.segments, usage.window);
   return (
     <div
@@ -77,18 +69,10 @@ export function ContextInspector({
               </li>
             ))}
           </ul>
-          <p className="context-inspector-note">
-            Estimated split, scaled to the request total.
-          </p>
         </>
       ) : (
         <p className="context-inspector-note">
           No breakdown for this context yet.
-        </p>
-      )}
-      {stepUsage && (
-        <p className="context-inspector-note">
-          {formatRequestTitle(stepUsage)}
         </p>
       )}
     </div>

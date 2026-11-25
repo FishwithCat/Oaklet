@@ -566,7 +566,7 @@ export function ChatComposer({
                   </button>
                 )}
                 {usageOpen && context && (
-                  <ContextInspector usage={context} stepUsage={stepUsage} />
+                  <ContextInspector usage={context} />
                 )}
               </span>
             )}
