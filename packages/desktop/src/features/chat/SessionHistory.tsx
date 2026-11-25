@@ -4,6 +4,9 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { errorText } from "../../shared/error-text";
 import { HistoryRegular } from "@mingcute/react/core-regular";
 import type { SessionSummary } from "./session-model";
 
@@ -11,19 +14,66 @@ export function SessionHistory({
   sessions,
   onPick,
   onClose,
+  onArchive,
 }: {
   sessions: SessionSummary[];
   onPick: (id: string) => void;
   onClose: () => void;
+  onArchive: (id: string, archived: boolean) => Promise<string | null>;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const [archived, setArchived] = useState(false);
+  const [archiveRows, setArchiveRows] = useState<SessionSummary[]>([]);
+  const [archiveStatus, setArchiveStatus] = useState("");
+  const [updating, setUpdating] = useState(false);
+  const entries = archived ? archiveRows : sessions;
+  const archiveRequest = useRef(0);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ message: string }>("worktree://archive", ({ payload }) => {
+      if (!disposed) setArchiveStatus(payload.message);
+    }).then((release) => {
+      if (disposed) release();
+      else unlisten = release;
+    }).catch(console.error);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  async function refreshArchived() {
+    const sequence = ++archiveRequest.current;
+    try {
+      const next = await invoke<SessionSummary[]>("session_list", { archived: true });
+      if (sequence === archiveRequest.current) setArchiveRows(next);
+    } catch (error) {
+      if (sequence === archiveRequest.current) setArchiveStatus(errorText(error));
+    }
+  }
+
+  async function archive(session: SessionSummary) {
+    setUpdating(true);
+    setArchiveStatus(archived ? "Restoring chat…" : "Archiving chat…");
+    try {
+      const result = await onArchive(session.id, !archived);
+      if (archived) await refreshArchived();
+      setArchiveStatus(result ?? (archived ? "Chat restored." : "Chat archived."));
+    } catch (error) {
+      setArchiveStatus(errorText(error));
+    } finally {
+      setUpdating(false);
+    }
+  }
 
   const needle = query.trim().toLowerCase();
   const matches = needle
-    ? sessions.filter((session) => session.title.toLowerCase().includes(needle))
-    : sessions;
+    ? entries.filter((session) => session.title.toLowerCase().includes(needle))
+    : entries;
   const selected = Math.min(active, matches.length - 1);
 
   useEffect(() => {
@@ -50,7 +100,7 @@ export function SessionHistory({
     } else if (event.key === "Enter") {
       event.preventDefault();
       const session = matches[selected];
-      if (session) onPick(session.id);
+      if (session && !archived) onPick(session.id);
     }
   }
 
@@ -90,8 +140,8 @@ export function SessionHistory({
 
         {matches.length === 0 ? (
           <p className="session-empty">
-            {sessions.length === 0
-              ? "No saved sessions yet."
+            {entries.length === 0
+              ? (archived ? "No archived sessions." : "No saved sessions yet.")
               : "No matching sessions."}
           </p>
         ) : (
@@ -111,7 +161,7 @@ export function SessionHistory({
                   aria-selected={index === selected}
                   className={`session-row${index === selected ? " active" : ""}`}
                   onMouseEnter={() => setActive(index)}
-                  onClick={() => onPick(session.id)}
+                  onClick={() => archived ? setActive(index) : onPick(session.id)}
                 >
                   <HistoryRegular
                     className="session-row-icon"
@@ -127,6 +177,21 @@ export function SessionHistory({
             })}
           </ul>
         )}
+        <div className="session-history-actions">
+          <button type="button" aria-pressed={archived} disabled={updating} onClick={() => {
+            if (!archived) void refreshArchived();
+            setArchived(!archived);
+            setActive(0);
+            setArchiveStatus("");
+          }}>Archived</button>
+          {selected >= 0 && (
+            <button type="button" disabled={updating || matches[selected].running || matches[selected].compacting}
+              onClick={() => void archive(matches[selected])}>
+              {archived ? "Unarchive selected" : "Archive selected"}
+            </button>
+          )}
+          {archiveStatus && <span role="status">{archiveStatus}</span>}
+        </div>
       </div>
     </div>
   );

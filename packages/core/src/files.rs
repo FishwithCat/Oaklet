@@ -7,7 +7,6 @@ use serde::Serialize;
 use tauri::{State, WebviewWindow};
 
 use crate::syntax::{self, Grammar, Outline};
-use crate::windows::workspace_for_window;
 use crate::{SharedState, tools::Workspace};
 
 const MAX_BYTES: u64 = 2_000_000;
@@ -29,10 +28,7 @@ fn workspace(
     window: &WebviewWindow,
     expected: &str,
 ) -> Result<Workspace, String> {
-    let current = workspace_for_window(state, window.label())?;
-    if current.as_path() != Path::new(expected) {
-        return Err("The workspace changed. Open the file again.".into());
-    }
+    crate::chat::worktree::view_directory(state, window.label(), Some(expected))?;
     Workspace::new(expected)
 }
 

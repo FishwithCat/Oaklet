@@ -18,10 +18,12 @@ type Tab = { id: string; title: string };
 export function Terminal({
   ref,
   active,
+  workspace,
   onClose,
 }: {
   ref?: Ref<TerminalHandle>;
   active: boolean;
+  workspace: string;
   onClose: () => void;
 }) {
   const [tabs, setTabs] = useState<Tab[]>(() => [
@@ -174,6 +176,7 @@ export function Terminal({
       {tabs.map((tab) => (
         <TerminalPane
           key={tab.id}
+          workspace={workspace}
           active={active && tab.id === activeId}
           ref={(handle) => {
             if (handle) handles.current.set(tab.id, handle);

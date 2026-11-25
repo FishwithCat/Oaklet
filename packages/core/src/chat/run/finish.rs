@@ -378,7 +378,9 @@ impl RunContext {
             .lock()
             .map_err(|_| "Agent state is unavailable.".to_string())?
             .clone();
-        config.workspace = workspace.to_string();
+        config.workspace = self
+            .store()
+            .worktree_directory(&self.session_id, workspace)?;
         let (cancel_handle, cancel) = CancelHandle::new();
         prepare_run(
             self.state(),

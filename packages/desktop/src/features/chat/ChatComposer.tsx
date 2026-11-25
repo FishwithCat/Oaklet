@@ -190,7 +190,7 @@ export function ChatComposer({
   const helpPopoverRef = useRef<HTMLDivElement>(null);
   const usageRef = useRef<HTMLSpanElement>(null);
   const compositionRef = useRef(createCompositionGuard());
-  const submittingRef = useRef(false);
+  const submittingRef = useRef(new Set<string>());
   const modelLabel = formatModelId(model);
   const options = mention ? mentionOptions(mention.query) : [];
   const mentionOpen = options.length > 0;
@@ -343,13 +343,13 @@ export function ChatComposer({
   }
 
   async function submit() {
-    if (compacting || reading || submittingRef.current) return;
-    submittingRef.current = true;
+    if (compacting || reading || submittingRef.current.has(activeTabId)) return;
+    submittingRef.current.add(activeTabId);
     try {
       if (!await onSubmit(attachments)) return;
       setAttachmentError("");
     } finally {
-      submittingRef.current = false;
+      submittingRef.current.delete(activeTabId);
     }
   }
 

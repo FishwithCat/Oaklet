@@ -99,7 +99,10 @@ fn wake_notice(
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
         .clone();
-    config.workspace = meta.workspace;
+    config.workspace = state
+        .chat
+        .store
+        .worktree_directory(session_id, &meta.workspace)?;
     let turn = NewUserTurn {
         message: notice.message,
         display: Some(json!({ "hidden": true })),

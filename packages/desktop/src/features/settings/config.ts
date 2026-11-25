@@ -14,6 +14,7 @@ export type AppConfig = {
   searchUrl: string;
   searchApiKey: string;
   allowAllCommands: boolean;
+  keepWorktreesOnArchive: boolean;
   mcpServers: McpServers;
   workspace: string;
 };

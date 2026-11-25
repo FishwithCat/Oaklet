@@ -16,6 +16,10 @@ export const MENTION_COMMANDS: MentionCommand[] = [
     name: "arch",
     description: "Plan an architecture change with a LikeC4 model diff",
   },
+  {
+    name: "worktree",
+    description: "Start this chat in a new Git worktree",
+  },
 ];
 
 export type ActiveMention = {

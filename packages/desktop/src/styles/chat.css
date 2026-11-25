@@ -1866,3 +1866,33 @@ button.plan-impact-row:hover {
   align-items: baseline;
   gap: 6px;
 }
+
+.worktree-control {
+  align-self: center;
+  width: min(100% - 32px, 760px);
+  font-size: 12px;
+  margin: 0 auto 6px;
+}
+
+.worktree-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.worktree-recovery {
+  margin-block: 6px;
+}
+
+.worktree-recovery button + button {
+  margin-inline-start: 6px;
+}
+
+.session-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+}

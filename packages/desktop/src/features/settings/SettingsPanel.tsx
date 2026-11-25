@@ -480,6 +480,16 @@ export function SettingsPanel({
                     </span>
                   </span>
                 </label>
+                <label className="settings-check">
+                  <input type="checkbox" checked={draft.keepWorktreesOnArchive}
+                    onChange={(event) => setDraft((current) => ({
+                      ...current, keepWorktreesOnArchive: event.target.checked,
+                    }))} />
+                  <span>
+                    <strong>Keep worktrees when archiving</strong>
+                    <span className="field-hint">Keep the checkout and its files after archiving a chat.</span>
+                  </span>
+                </label>
               </section>
             ) : tab === "mcp" ? (
               <section

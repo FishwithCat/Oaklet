@@ -21,10 +21,10 @@ pub async fn close_workspace(
     let workspace = workspace_to_close(&state.windows, window.label())?;
     chat::stop_window(&state, window.label());
     state.jobs.close_workspace(&workspace);
-    state.jobs.kill_workspace(&workspace);
+    state.jobs.kill_window(window.label());
     architecture::cancel_workspace(&state, &workspace);
     state.chat.drain(Some(window.label())).await?;
-    state.jobs.wait_for_exit(Some(&workspace)).await;
+    state.jobs.wait_for_window_exit(window.label()).await;
     Ok(())
 }
 

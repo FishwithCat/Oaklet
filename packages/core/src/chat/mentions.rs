@@ -1,8 +1,8 @@
 //! Mention commands typed in the composer.
 //!
-//! `@arch` is the only command today. It opts a turn into read-only
-//! architecture planning, so the backend decides from the raw text instead of
-//! asking the model to guess. Keep the desktop catalog in
+//! `@arch` opts a turn into read-only architecture planning and `@worktree`
+//! creates the chat's worktree from the first message, so the backend decides
+//! from the raw text instead of asking the model to guess. Keep the desktop catalog in
 //! `packages/desktop/src/features/chat/mentions.ts` in sync; the desktop test
 //! reads this list and fails when the names drift.
 
@@ -16,10 +16,16 @@ pub struct MentionCommand {
     pub description: &'static str,
 }
 
-pub const COMMANDS: &[MentionCommand] = &[MentionCommand {
-    name: "arch",
-    description: "Plan an architecture change with a LikeC4 model diff",
-}];
+pub const COMMANDS: &[MentionCommand] = &[
+    MentionCommand {
+        name: "arch",
+        description: "Plan an architecture change with a LikeC4 model diff",
+    },
+    MentionCommand {
+        name: "worktree",
+        description: "Start this chat in a new Git worktree",
+    },
+];
 
 /// Commands mentioned in `text`, in order, without duplicates.
 pub fn parse(text: &str) -> Vec<&'static MentionCommand> {
@@ -117,7 +123,15 @@ mod tests {
     #[test]
     fn strips_commands_for_the_session_title() {
         assert_eq!(strip("@arch add a worker"), "add a worker");
+        assert_eq!(strip("@worktree add a worker"), "add a worker");
         assert_eq!(strip("  @arch   add   a worker "), "add a worker");
         assert_eq!(strip("mail dev@arch.example"), "mail dev@arch.example");
+    }
+
+    #[test]
+    fn recognizes_the_worktree_command() {
+        assert!(has("@worktree fix login", "worktree"));
+        assert!(has("@WORKTREE fix login", "worktree"));
+        assert!(!has("@worktrees fix login", "worktree"));
     }
 }

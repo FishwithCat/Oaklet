@@ -20,6 +20,7 @@ mod syntax;
 mod terminal;
 mod tools;
 mod windows;
+mod worktrees;
 
 pub use agent::approval::PendingApproval;
 pub use app::{AppState, SharedState};
@@ -50,6 +51,9 @@ pub fn run() {
             chat::commands::session_list,
             chat::commands::session_get,
             chat::commands::session_send,
+            chat::worktree::session_worktree,
+            chat::worktree::session_worktree_recover,
+            chat::worktree::session_archive,
             chat::commands::session_confirm_plan,
             chat::commands::session_plan_baseline,
             chat::commands::session_plan_compare,

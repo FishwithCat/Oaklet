@@ -3,7 +3,6 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use super::{Event, TerminalSession, spawn};
 use crate::SharedState;
-use crate::windows::workspace_for_window;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,8 +27,10 @@ pub(crate) fn terminal_open(
     id: String,
     cols: u16,
     rows: u16,
+    workspace: Option<String>,
 ) -> Result<(), String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     let window_label = window.label().to_string();
 
     let mut sessions = state

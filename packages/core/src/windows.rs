@@ -347,8 +347,21 @@ fn cleanup_window(state: &AppState, label: &str) {
         terminals.retain(|_, terminal| terminal.window != label);
     }
     state.jobs.close_workspace(&workspace);
-    state.jobs.kill_workspace(&workspace);
+    state.jobs.kill_window(label);
     tools::shutdown_workspace(&workspace);
+    if let Ok(paths) = state.chat.store().project_worktree_paths(&workspace) {
+        for path in paths {
+            if state
+                .windows
+                .lock()
+                .is_ok_and(|windows| windows.label_for(&path).is_some())
+            {
+                continue;
+            }
+            architecture::cancel_workspace(state, &path);
+            tools::shutdown_workspace(&path);
+        }
+    }
 }
 
 #[tauri::command]

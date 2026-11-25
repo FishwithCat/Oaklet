@@ -10,7 +10,6 @@ use crate::SharedState;
 use crate::shell_env::ApplyEnvironment;
 use crate::syntax::MAX_SOURCE_BYTES;
 use crate::tools::{Workspace, image};
-use crate::windows::workspace_for_window;
 
 use super::{run_git, run_git_bytes, run_patch, status_name, valid_hash, valid_relative_path};
 use super::{symbols, worktree_patch};
@@ -368,8 +367,10 @@ pub(crate) async fn git_commit_files(
     window: WebviewWindow,
     state: State<'_, SharedState>,
     hash: String,
+    workspace: Option<String>,
 ) -> Result<Vec<CommitFile>, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || commit_files(&workspace, &hash))
         .await
         .map_err(|error| error.to_string())?
@@ -380,8 +381,10 @@ pub(crate) async fn git_review_diff(
     window: WebviewWindow,
     state: State<'_, SharedState>,
     target: Target,
+    workspace: Option<String>,
 ) -> Result<String, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || target.patch(&workspace))
         .await
         .map_err(|error| error.to_string())?
@@ -393,8 +396,10 @@ pub(crate) async fn git_review_details(
     state: State<'_, SharedState>,
     target: Target,
     snapshot: Snapshot,
+    workspace: Option<String>,
 ) -> Result<ReviewDetails, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || details(&workspace, &target, &snapshot))
         .await
         .map_err(|error| error.to_string())?
@@ -407,8 +412,10 @@ pub(crate) async fn git_review_context(
     target: Target,
     snapshot: Snapshot,
     range: ContextRange,
+    workspace: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || context(&workspace, &target, &snapshot, &range))
         .await
         .map_err(|error| error.to_string())?
@@ -420,8 +427,10 @@ pub(crate) async fn git_review_image(
     state: State<'_, SharedState>,
     target: Target,
     snapshot: Snapshot,
+    workspace: Option<String>,
 ) -> Result<String, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || preview_image(&workspace, &target, &snapshot))
         .await
         .map_err(|error| error.to_string())?

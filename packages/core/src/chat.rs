@@ -12,6 +12,7 @@ mod mentions;
 mod notices;
 mod run;
 mod transcript;
+pub(crate) mod worktree;
 
 pub use input::IncomingAttachment;
 pub use notices::JobNotice;

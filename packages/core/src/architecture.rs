@@ -16,7 +16,6 @@ use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::SharedState;
 use crate::tools::Workspace;
-use crate::windows::workspace_for_window;
 
 mod compiler;
 mod discovery;
@@ -656,8 +655,10 @@ pub(crate) async fn architecture_discover(
     window: WebviewWindow,
     state: State<'_, SharedState>,
     include_ignored: bool,
+    workspace: Option<String>,
 ) -> Result<Discovery, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || discover(&app, &workspace, include_ignored))
         .await
         .map_err(|error| format!("Could not scan the workspace: {error}"))?
@@ -670,8 +671,10 @@ pub(crate) async fn architecture_load(
     state: State<'_, SharedState>,
     root: String,
     include_ignored: bool,
+    workspace: Option<String>,
 ) -> Result<LoadResult, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     let shared = state.inner().clone();
     load(app, shared, workspace, root, include_ignored).await
 }

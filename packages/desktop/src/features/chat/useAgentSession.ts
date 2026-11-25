@@ -418,9 +418,10 @@ export function useAgentSession({
     text: string,
     attachments: Attachment[] = [],
     mode: SendMode = "normal",
+    retryWorktree?: boolean,
   ): Promise<boolean> {
     const trimmed = text.trim();
-    if ((!trimmed && attachments.length === 0) || !enabled) return false;
+    if ((!trimmed && attachments.length === 0 && retryWorktree === undefined) || !enabled) return false;
 
     const tab = sessionsRef.current[activeTabIdRef.current];
     if (!tab || tab.compacting || compactingIdsRef.current.has(tab.id)) {
@@ -462,6 +463,7 @@ export function useAgentSession({
           text: trimmed,
           attachments,
           mode,
+          retryWorktree,
         },
       );
       if (workspaceRef.current !== workspaceAtSend) return false;
@@ -475,7 +477,7 @@ export function useAgentSession({
       const current = sessionsRef.current[tab.id];
       if (!current) return false;
       const message = errorText(error);
-      if (mode === "normal" && message.includes("already working")) {
+      if (mode === "normal" && retryWorktree === undefined && message.includes("already working")) {
         putSession(previous);
         return send(text, attachments, "steer");
       }

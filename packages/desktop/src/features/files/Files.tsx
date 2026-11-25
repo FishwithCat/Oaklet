@@ -149,7 +149,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     if (!document || dirty) return;
     let cancelled = false;
     const path = document.path;
-    invoke<string>("git_diff", { path })
+    invoke<string>("git_diff", { path, workspace })
       .then((patch) => {
         if (!cancelled) setLineMarks({ path, marks: changedLines(parseDiff(patch)) });
       })

@@ -25,6 +25,7 @@ pub(super) enum RunTrigger {
     User,
     /// The user typed the `@arch` mention: plan only, never edit.
     Arch,
+    Worktree(bool),
     Notice,
     /// The user confirmed a plan card; the run consumes that version and may
     /// edit from its first step.
@@ -116,8 +117,8 @@ fn prepare_run(
                 }
             }
         };
-        let confirming_plan = matches!(trigger, RunTrigger::Plan(_));
-        if confirming_plan {
+        let reserved = matches!(trigger, RunTrigger::Plan(_) | RunTrigger::Worktree(_));
+        if reserved {
             live.check_plan_confirmation(session_id, window, &cancel)?;
         }
         if live.closing.contains(window)
@@ -130,7 +131,7 @@ fn prepare_run(
         }
         if live.compacting.contains_key(session_id)
             || live.runs.values().any(|run| run.session_id == session_id)
-            || (!confirming_plan && live.confirming.contains_key(session_id))
+            || (!reserved && live.confirming.contains_key(session_id))
         {
             return Err("This chat is already working.".into());
         }
@@ -147,7 +148,7 @@ fn prepare_run(
             RunTrigger::Plan(version) => {
                 store.begin_plan_run(session_id, &run_id, &turn, version, store::now_ms())?
             }
-            RunTrigger::User | RunTrigger::Arch | RunTrigger::Notice => {
+            RunTrigger::User | RunTrigger::Arch | RunTrigger::Worktree(_) | RunTrigger::Notice => {
                 store.begin_run(session_id, &run_id, &turn, store::now_ms())?
             }
         };
@@ -219,7 +220,9 @@ fn prepare_run(
         planning,
         confirmed_plan: match trigger {
             RunTrigger::Plan(version) => Some(version),
-            RunTrigger::User | RunTrigger::Arch | RunTrigger::Notice => None,
+            RunTrigger::User | RunTrigger::Arch | RunTrigger::Worktree(_) | RunTrigger::Notice => {
+                None
+            }
         },
         plan_validation: Arc::new(Mutex::new(None)),
         plan_details: Arc::new(Mutex::new(None)),
@@ -701,20 +704,22 @@ struct SteeredEvent {
 /// planning-only; a reviewed plan starts writable and can return to planning if
 /// the work grows beyond the approved scope.
 fn plans_turn(trigger: RunTrigger, pending_plan: bool) -> bool {
-    matches!(trigger, RunTrigger::Arch | RunTrigger::Plan(_))
-        || (trigger == RunTrigger::User && pending_plan)
+    matches!(
+        trigger,
+        RunTrigger::Arch | RunTrigger::Plan(_) | RunTrigger::Worktree(true)
+    ) || (matches!(trigger, RunTrigger::User | RunTrigger::Worktree(false)) && pending_plan)
 }
 
 fn access_for(trigger: RunTrigger, pending_plan: bool) -> Arc<Access> {
     match trigger {
         RunTrigger::Plan(_) => Access::approved(),
         RunTrigger::Notice => Access::locked_read_only(),
-        RunTrigger::Arch => Access::planning(),
+        RunTrigger::Arch | RunTrigger::Worktree(true) => Access::planning(),
         // A follow-up on a plan under review keeps the turn read-only even
         // without the mention, so revisions cannot edit before confirmation.
-        RunTrigger::User if pending_plan => Access::planning(),
+        RunTrigger::User | RunTrigger::Worktree(false) if pending_plan => Access::planning(),
         // Every other user turn behaves like the normal execution flow.
-        RunTrigger::User => Access::execute(),
+        RunTrigger::User | RunTrigger::Worktree(false) => Access::execute(),
     }
 }
 

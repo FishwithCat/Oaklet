@@ -31,7 +31,7 @@ export function SourceControl({
   const {
     tab, setTab, commits, commit, setSelectedCommit, files, selection, target,
     patch, diffError, loading, error, loadingFiles, filesError,
-  } = useSourceControl({ active, changes, changesReady, refreshToken });
+  } = useSourceControl({ active, workspace, changes, changesReady, refreshToken });
   const [listWidth, setListWidth] = useState(300);
   const [filters, setFilters] = useState({ changes: "", commits: "" });
   const [landing, setLanding] = useState<DiffEdge | null>(null);

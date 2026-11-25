@@ -39,9 +39,11 @@ export function newSessionId(): string {
 /** One PTY-backed xterm instance. Kept mounted while its view is hidden. */
 export function TerminalPane({
   active,
+  workspace,
   ref,
 }: {
   active: boolean;
+  workspace: string;
   ref?: Ref<TerminalPaneHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -204,6 +206,7 @@ export function TerminalPane({
       try {
         await invoke("terminal_open", {
           id: sessionId,
+          workspace,
           cols: term.cols,
           rows: term.rows,
         });

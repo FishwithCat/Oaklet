@@ -91,6 +91,19 @@ impl Store {
             }],
             now,
         )?;
+        if confirm_plan.is_none()
+            && !turn
+                .display
+                .as_ref()
+                .is_some_and(|display| display["hidden"] == true)
+        {
+            tx.execute(
+                "UPDATE session_worktrees SET state = json_remove(state, '$.waiting') \
+                 WHERE session_id = ?1 AND json_type(state, '$.waiting') = 'object'",
+                [session_id],
+            )
+            .map_err(|error| format!("Could not consume the waiting message: {error}"))?;
+        }
         if let Some(record) = confirmed {
             // Consume the version in the same transaction that starts the run,
             // so two confirmation clicks cannot both start an implementation.

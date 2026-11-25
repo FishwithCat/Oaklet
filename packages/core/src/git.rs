@@ -143,7 +143,9 @@ pub fn log(workspace: &Path, include_commits: bool) -> Result<GitLog, String> {
     let branch = run_git(workspace, &["branch", "--show-current"])
         .map(|text| text.trim().to_string())
         .unwrap_or_default();
-    let branches = local_branches(workspace).unwrap_or_default();
+    let mut branches = local_branches(workspace).unwrap_or_default();
+    let checked_out = other_worktree_branches(workspace);
+    branches.retain(|branch| !checked_out.contains(branch));
     let has_tracked_changes = !run_git(
         workspace,
         &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
@@ -173,6 +175,39 @@ pub fn log(workspace: &Path, include_commits: bool) -> Result<GitLog, String> {
         commits,
         has_tracked_changes,
     })
+}
+
+/// Branches checked out by another worktree, which this checkout cannot switch to.
+fn other_worktree_branches(workspace: &Path) -> Vec<String> {
+    let current = run_git(workspace, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .and_then(|root| Path::new(root.trim()).canonicalize().ok());
+    let Ok(output) = run_git(workspace, &["worktree", "list", "--porcelain"]) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut path = None;
+    let mut branch = None;
+    for line in output.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let (Some(path), Some(branch)) = (path.take(), branch.take()) {
+                let canonical = Path::new(&path)
+                    .canonicalize()
+                    .unwrap_or_else(|_| Path::new(&path).to_path_buf());
+                if current.as_deref() != Some(canonical.as_path()) {
+                    found.push(branch);
+                }
+            }
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("worktree ") {
+            path = Some(value.to_owned());
+        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+            branch = Some(value.to_owned());
+        }
+    }
+    found.sort();
+    found
 }
 
 fn local_branches(workspace: &Path) -> Result<Vec<String>, String> {
@@ -465,8 +500,10 @@ pub(crate) async fn git_log(
     window: WebviewWindow,
     state: State<'_, SharedState>,
     include_commits: bool,
+    workspace: Option<String>,
 ) -> Result<GitLog, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || log(&workspace, include_commits))
         .await
         .map_err(|error| format!("Could not read git history: {error}"))?
@@ -492,8 +529,10 @@ pub(crate) async fn git_switch(
 pub(crate) async fn git_changes(
     window: WebviewWindow,
     state: State<'_, SharedState>,
+    workspace: Option<String>,
 ) -> Result<Vec<GitChange>, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || changes(&workspace))
         .await
         .map_err(|error| format!("Could not read uncommitted changes: {error}"))?
@@ -504,8 +543,10 @@ pub(crate) async fn git_diff(
     window: WebviewWindow,
     state: State<'_, SharedState>,
     path: String,
+    workspace: Option<String>,
 ) -> Result<String, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || diff(&workspace, &path))
         .await
         .map_err(|error| format!("Could not read the file diff: {error}"))?
@@ -546,6 +587,48 @@ mod tests {
         assert_eq!(history.commits.len(), 1);
         assert_eq!(history.commits[0].subject, "Initial");
         assert_eq!(history.commits[0].refs, ["main", "origin/main"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hides_branches_checked_out_by_another_worktree() {
+        let root = crate::tools::test_support::temp_root("git-worktrees");
+        super::run_git(&root, &["init", "-b", "main"]).unwrap();
+        super::run_git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        )
+        .unwrap();
+        let checkout = root.join("feature");
+        super::run_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                checkout.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let project = super::log(&root, false).unwrap();
+        assert_eq!(project.branches, ["main"]);
+
+        let worktree = super::log(&checkout, false).unwrap();
+        assert_eq!(worktree.branch, "feature");
+        assert_eq!(worktree.branches, ["feature"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

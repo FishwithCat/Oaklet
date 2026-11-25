@@ -443,47 +443,47 @@ impl JobRegistry {
         ))
     }
 
-    /// Stop running jobs started in one workspace.
-    pub fn kill_workspace(&self, workspace: &Path) {
-        let jobs: Vec<Arc<Job>> = self
-            .jobs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .values()
-            .filter(|job| job.workspace == workspace)
-            .cloned()
-            .collect();
-        for job in jobs {
+    #[cfg(test)]
+    fn kill_workspace(&self, workspace: &Path) {
+        for job in self.matching_jobs(|job| job.workspace == workspace) {
+            job.stop();
+        }
+    }
+
+    /// Stop running jobs owned by the closing window, including its worktrees.
+    pub fn kill_window(&self, window: &str) {
+        for job in self.matching_jobs(|job| job.owner.window == window) {
             job.stop();
         }
     }
 
     /// Stop every running job during app shutdown.
     pub fn kill_all(&self) {
-        let jobs: Vec<Arc<Job>> = self
-            .jobs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .values()
-            .cloned()
-            .collect();
-        for job in jobs {
+        for job in self.matching_jobs(|_| true) {
             job.stop();
         }
     }
 
     pub async fn wait_for_exit(&self, workspace: Option<&Path>) {
-        let jobs: Vec<_> = self
-            .jobs
+        for job in self.matching_jobs(|job| workspace.is_none_or(|path| job.workspace == path)) {
+            job.wait_finished().await;
+        }
+    }
+
+    pub async fn wait_for_window_exit(&self, window: &str) {
+        for job in self.matching_jobs(|job| job.owner.window == window) {
+            job.wait_finished().await;
+        }
+    }
+
+    fn matching_jobs(&self, filter: impl Fn(&Job) -> bool) -> Vec<Arc<Job>> {
+        self.jobs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
-            .filter(|job| workspace.is_none_or(|workspace| job.workspace == workspace))
+            .filter(|job| filter(job))
             .cloned()
-            .collect();
-        for job in jobs {
-            job.wait_finished().await;
-        }
+            .collect()
     }
 }
 

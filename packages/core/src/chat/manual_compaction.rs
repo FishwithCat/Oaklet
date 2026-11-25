@@ -42,7 +42,10 @@ pub(super) async fn compact_session(
     })
     .await
     .map_err(|error| error.to_string())??;
-    config.workspace = meta.workspace;
+    config.workspace = state
+        .chat
+        .store
+        .worktree_directory(session_id, &meta.workspace)?;
     if !Path::new(&config.workspace).is_dir() {
         return Err("Workspace is unavailable.".into());
     }

@@ -207,7 +207,28 @@ button.view-tab {
   background: var(--palette-tertiary);
 }
 
+.view-tab-worktree {
+  flex: none;
+  color: var(--border-strong);
+}
+
+.view-tab-worktree.working {
+  color: var(--green);
+  animation: tab-status-blink 1.2s ease-in-out infinite;
+}
+
+.view-tab-worktree.block {
+  color: var(--yellow);
+}
+
+.view-tab-worktree.done {
+  color: var(--palette-tertiary);
+}
+
 .view-tab-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   align-self: stretch;
   max-width: 180px;
   overflow: hidden;
@@ -215,9 +236,15 @@ button.view-tab {
   border: 0;
   background: transparent;
   border-radius: 0;
-  padding: 6px 2px 7px 8px;
+  padding: 0 2px 0 8px;
   font: inherit;
   white-space: nowrap;
+}
+
+.view-tab-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab-status + .view-tab-label {

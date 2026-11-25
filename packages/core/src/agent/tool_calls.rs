@@ -36,18 +36,20 @@ pub(super) struct Batch {
 /// Run every call in model order, letting read-only runs overlap.
 pub(super) async fn run(
     calls: &[ToolCall],
-    tools: &ToolRegistry,
-    tool_context: &ToolContext,
+    tools: &mut ToolRegistry,
+    tool_context: &mut ToolContext,
     ctx: &RunContext,
-    cancel: &Cancel,
+    config: &mut crate::AppConfig,
     guard: &mut RepeatGuard,
     messages: &mut Vec<Value>,
 ) -> Batch {
+    let cancel = tool_context.cancel.clone();
     ToolRun {
         tools,
         tool_context,
         ctx,
-        cancel,
+        cancel: &cancel,
+        config,
     }
     .run(calls, guard, messages)
     .await
@@ -55,15 +57,16 @@ pub(super) async fn run(
 
 /// The run-scoped handles every tool call needs.
 struct ToolRun<'a> {
-    tools: &'a ToolRegistry,
-    tool_context: &'a ToolContext,
+    tools: &'a mut ToolRegistry,
+    tool_context: &'a mut ToolContext,
     ctx: &'a RunContext,
     cancel: &'a Cancel,
+    config: &'a mut crate::AppConfig,
 }
 
 impl ToolRun<'_> {
     async fn run(
-        &self,
+        &mut self,
         calls: &[ToolCall],
         guard: &mut RepeatGuard,
         messages: &mut Vec<Value>,
@@ -89,7 +92,7 @@ impl ToolRun<'_> {
 
             self.one(&calls[index], guard, messages, &mut batch).await;
             index += 1;
-            if self.cancel.is_cancelled() {
+            if batch.cancelled || self.cancel.is_cancelled() {
                 batch.cancelled = true;
                 return batch;
             }
@@ -135,8 +138,8 @@ impl ToolRun<'_> {
             .iter()
             .zip(prepared)
             .map(|(call, (args, touched))| {
-                let tools = self.tools;
-                let tool_context = self.tool_context;
+                let tools = &*self.tools;
+                let tool_context = &*self.tool_context;
                 let ctx = self.ctx;
                 let cancel = self.cancel;
                 Box::pin(async move {
@@ -167,7 +170,7 @@ impl ToolRun<'_> {
 
     /// A call that must wait for everything before it to finish.
     async fn one(
-        &self,
+        &mut self,
         call: &ToolCall,
         guard: &mut RepeatGuard,
         messages: &mut Vec<Value>,
@@ -206,7 +209,27 @@ impl ToolRun<'_> {
             .tools
             .execute(self.tool_context, &approver, &call.name, &call.id, args)
             .await;
+        let moved = outcome.ok && matches!(call.name.as_str(), "enter_worktree" | "exit_worktree");
         record(self.ctx, call, outcome, touched, messages, batch);
+        if moved {
+            let store = self.ctx.store();
+            let id = self.ctx.session_id();
+            let directory = store
+                .session_meta(id)
+                .ok()
+                .flatten()
+                .and_then(|meta| store.worktree_directory(id, &meta.workspace).ok());
+            if let Some(directory) = directory
+                && let Ok(workspace) = Workspace::new(&directory)
+            {
+                self.config.workspace = directory;
+                self.tool_context.workspace = workspace;
+                *self.tools = super::workspace_tools(self.ctx, self.config, self.cancel).await;
+                batch.instruction_touches.clear();
+            } else {
+                batch.cancelled = true;
+            }
+        }
     }
 }
 

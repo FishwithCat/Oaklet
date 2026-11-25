@@ -4,9 +4,9 @@ import { errorText } from "../../shared/error-text";
 import { chooseReviewPath, sortReviewFiles, type ChangeInfo, type GitLog, type ReviewFile } from "./git-model";
 
 type RequestArgs = Record<string, unknown>;
-const LOG_ARGS = { includeCommits: true };
 
 export type ReviewTarget = {
+  workspace: string;
   path: string;
   hash: string | null;
   oldPath: string | null;
@@ -50,25 +50,28 @@ function useSelection(files: ReviewFile[] | null) {
 
 export function useSourceControl({
   active,
+  workspace,
   changes,
   changesReady,
   refreshToken,
 }: {
   active: boolean;
+  workspace: string;
   changes: ChangeInfo[] | null;
   changesReady: boolean;
   refreshToken: number;
 }) {
   const [tab, setTab] = useState<"changes" | "commits">("changes");
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
-  const log = useRequest<GitLog>("git_log", active && tab === "commits" ? LOG_ARGS : null, refreshToken);
+  const logArgs = useMemo(() => active && tab === "commits" ? { includeCommits: true, workspace } : null, [active, tab, workspace]);
+  const log = useRequest<GitLog>("git_log", logArgs, refreshToken);
   const commits = log.value?.commits ?? [];
   const commit = commits.find((entry) => entry.hash === selectedCommit) ?? commits[0] ?? null;
   const commitHash = commit?.hash;
   useLayoutEffect(() => {
     if (commitHash && commitHash !== selectedCommit) setSelectedCommit(commitHash);
   }, [commitHash, selectedCommit]);
-  const commitArgs = useMemo(() => commitHash ? { hash: commitHash } : null, [commitHash]);
+  const commitArgs = useMemo(() => commitHash ? { hash: commitHash, workspace } : null, [commitHash, workspace]);
   const commitFiles = useRequest<ReviewFile[]>("git_commit_files", commitArgs, refreshToken);
   const committed = useMemo(
     () => commitFiles.value && sortReviewFiles(commitFiles.value),
@@ -84,11 +87,11 @@ export function useSourceControl({
   const status = selection.file?.status;
   const hash = tab === "commits" ? (commitHash ?? null) : null;
   const target = useMemo<ReviewTarget | null>(
-    () => active && path && status ? { path, hash, oldPath, status } : null,
-    [active, path, hash, oldPath, status],
+    () => active && path && status ? { path, hash, oldPath, status, workspace } : null,
+    [active, path, hash, oldPath, status, workspace],
   );
   const canLoadPatch = tab === "commits" || changesReady;
-  const patchArgs = useMemo(() => target && canLoadPatch ? { target } : null, [target, canLoadPatch]);
+  const patchArgs = useMemo(() => target && canLoadPatch ? { target, workspace } : null, [target, canLoadPatch, workspace]);
   const patch = useRequest<string>("git_review_diff", patchArgs, refreshToken);
 
   return {

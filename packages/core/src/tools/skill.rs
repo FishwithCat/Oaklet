@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use crate::SharedState;
-use crate::windows::workspace_for_window;
 
 use super::principles;
 use super::{Tool, ToolAccess, ToolContext, ToolError, ToolOutput};
@@ -550,8 +549,10 @@ pub(crate) async fn skills_list(
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, SharedState>,
+    workspace: Option<String>,
 ) -> Result<SkillList, String> {
-    let workspace = workspace_for_window(&state, window.label())?;
+    let workspace =
+        crate::chat::worktree::view_directory(&state, window.label(), workspace.as_deref())?;
     let home = app.path().home_dir().ok();
     tauri::async_runtime::spawn_blocking(move || {
         SkillCatalog::discover(&workspace, home.as_deref()).into_list()

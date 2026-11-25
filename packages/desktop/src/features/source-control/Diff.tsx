@@ -46,7 +46,7 @@ function ImageDiff({ target, file }: { target: ReviewTarget; file: DiffFile }) {
     const snapshot = readSnapshot(file);
     if (!snapshot) return;
     let cancelled = false;
-    invoke<string>("git_review_image", { target, snapshot })
+    invoke<string>("git_review_image", { target, snapshot, workspace: target.workspace })
       .then((data) => { if (!cancelled) setSrc(data); })
       .catch((err) => { if (!cancelled) setError(errorText(err)); });
     return () => { cancelled = true; };
@@ -198,7 +198,7 @@ function FileDiff({ target, files, landing, onPreviousFile, onNextFile }: DiffPr
   useEffect(() => {
     if (!snapshot || !hunks.length) return;
     let cancelled = false;
-    invoke<ReviewDetails>("git_review_details", { target, snapshot })
+    invoke<ReviewDetails>("git_review_details", { target, snapshot, workspace: target.workspace })
       .then((data) => { if (!cancelled) setDetails(data); })
       .catch((error) => { if (!cancelled) setDetailsError(errorText(error)); });
     return () => { cancelled = true; };
@@ -260,6 +260,7 @@ function FileDiff({ target, files, landing, onPreviousFile, onNextFile }: DiffPr
     setGaps((current) => ({ ...current, [index]: { lines, pending: true, error: "" } }));
     try {
       const rows = await invoke<string[]>("git_review_context", {
+        workspace: target.workspace,
         target, snapshot, range: { oldStart, newStart, count },
       });
       const context = rows.map((text, row): DiffLine => ({

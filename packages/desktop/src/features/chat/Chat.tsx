@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   useEffect,
   useImperativeHandle,
@@ -13,12 +14,14 @@ import {
   Message4Regular,
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
+import { FolderGit2Filled } from "@mingcute/react/core-filled";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
 import { Welcome } from "./Welcome";
 import { readDroppedFile, type Attachment } from "./attachments";
+import type { WorktreeInfo } from "./WorktreeControl";
 import {
   isAtBottom,
   mergeDraft,
@@ -83,6 +86,8 @@ export function Chat({
   onLoadPlanCompare,
   onSendToTerminal,
   onOpenFile,
+  checkoutControl,
+  worktrees,
 }: {
   ref?: Ref<ChatHandle>;
   active: boolean;
@@ -110,6 +115,7 @@ export function Chat({
     text: string,
     attachments: Attachment[],
     mode: SendMode,
+    retryWorktree?: boolean,
   ) => Promise<boolean>;
   onStop: () => void;
   onCompact: () => void;
@@ -124,6 +130,8 @@ export function Chat({
   ) => Promise<PlanCompareData>;
   onSendToTerminal: (text: string) => void;
   onOpenFile: (href: string) => void;
+  checkoutControl?: ((retry: (keepRequest: boolean, text: string) => void) => ReactNode) | null;
+  worktrees?: Record<string, WorktreeInfo>;
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -145,7 +153,7 @@ export function Chat({
   const activeTabIdRef = useRef(activeTabId);
   const activeRef = useRef(active);
   const dropOverRef = useRef(false);
-  const submittingRef = useRef(false);
+  const submittingRef = useRef(new Set<string>());
   const [dropping, setDropping] = useState(false);
   activeTabIdRef.current = activeTabId;
   activeRef.current = active;
@@ -341,16 +349,17 @@ export function Chat({
     };
   }, []);
 
-  async function submit(attachments: Attachment[]): Promise<boolean> {
-    if (submittingRef.current) return false;
-    submittingRef.current = true;
+  async function submit(attachments: Attachment[], retryWorktree?: boolean, textOverride?: string): Promise<boolean> {
     const tabId = activeTabIdRef.current;
-    const text = input;
+    if (submittingRef.current.has(tabId)) return false;
+    submittingRef.current.add(tabId);
+    const text = textOverride ?? input;
     try {
       const accepted = await onSend(
         text,
         attachments,
         running ? "steer" : "normal",
+        retryWorktree,
       );
       if (!accepted) return false;
       // A successful send consumes this tab's draft, but do not erase text
@@ -368,7 +377,7 @@ export function Chat({
       }
       return true;
     } finally {
-      submittingRef.current = false;
+      submittingRef.current.delete(tabId);
     }
   }
 
@@ -440,49 +449,66 @@ export function Chat({
           <Message4Regular size={14} />
         </span>
         <div className="view-tabs" role="tablist" aria-label="Chats">
-          {tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={`view-tab${
-                tab.id === activeTabId ? " active" : ""
-              }${tab.id === draggingId ? " dragging" : ""}`}
-              {...dragProps(tab.id)}
-            >
-              <span
-                className={`tab-status ${tab.status}`}
-                role="img"
-                aria-label={`Status: ${STATUS_LABEL[tab.status]}`}
-                title={STATUS_LABEL[tab.status]}
-              />
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab.id === activeTabId}
-                className="view-tab-label"
-                title={tab.title}
-                onClick={() => {
-                  onSelectTab(tab.id);
-                  requestAnimationFrame(() => composerRef.current?.focus());
-                }}
+          {tabs.map((tab) => {
+            const info = worktrees?.[tab.id];
+            const branch = info?.head?.branch;
+            const marker = info?.checkout
+              ? `Worktree${branch ? ` · ${branch}` : ""}\n${info.checkout.path}`
+              : "";
+            return (
+              <div
+                key={tab.id}
+                className={`view-tab${
+                  tab.id === activeTabId ? " active" : ""
+                }${tab.id === draggingId ? " dragging" : ""}`}
+                {...dragProps(tab.id)}
               >
-                {tab.title}
-              </button>
-              <button
-                type="button"
-                className="view-tab-close"
-                onClick={() => onCloseTab(tab.id)}
-                disabled={tab.running}
-                aria-label={`Close ${tab.title}`}
-                title={
-                  tab.running
-                    ? "Stop the run before closing"
-                    : "Close chat"
-                }
-              >
-                <CloseRegular size={11} />
-              </button>
-            </div>
-          ))}
+                {!info?.checkout && (
+                  <span
+                    className={`tab-status ${tab.status}`}
+                    role="img"
+                    aria-label={`Status: ${STATUS_LABEL[tab.status]}`}
+                    title={STATUS_LABEL[tab.status]}
+                  />
+                )}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab.id === activeTabId}
+                  className="view-tab-label"
+                  title={marker ? `${tab.title}\n${marker}` : tab.title}
+                  aria-label={marker ? `${tab.title}, worktree, ${STATUS_LABEL[tab.status]}` : undefined}
+                  onClick={() => {
+                    onSelectTab(tab.id);
+                    requestAnimationFrame(() => composerRef.current?.focus());
+                  }}
+                >
+                  {info?.checkout && (
+                    <FolderGit2Filled
+                      className={`view-tab-worktree ${tab.status}`}
+                      size={12}
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span>{tab.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="view-tab-close"
+                  onClick={() => onCloseTab(tab.id)}
+                  disabled={tab.running}
+                  aria-label={`Close ${tab.title}`}
+                  title={
+                    tab.running
+                      ? "Stop the run before closing"
+                      : "Close chat"
+                  }
+                >
+                  <CloseRegular size={11} />
+                </button>
+              </div>
+            );
+          })}
         </div>
         <button
           type="button"
@@ -567,6 +593,7 @@ export function Chat({
         </button>
       )}
 
+      {active && checkoutControl?.((keepRequest, text) => { void submit(attachments, keepRequest, text); })}
       {composer}
       {dropHint}
     </>

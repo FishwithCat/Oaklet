@@ -7,6 +7,9 @@ import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { Chat, type ChatHandle } from "../features/chat/Chat";
 import { formatWorkdir } from "../features/chat/chat-model";
 import { SessionHistory } from "../features/chat/SessionHistory";
+import { WorktreeControl, useSessionWorktrees } from "../features/chat/WorktreeControl";
+import type { Attachment } from "../features/chat/attachments";
+import type { SendMode } from "../features/chat/session-model";
 import { useAgentSession } from "../features/chat/useAgentSession";
 import { SettingsPanel } from "../features/settings/SettingsPanel";
 import { applyTheme } from "../features/settings/theme";
@@ -37,14 +40,17 @@ function App() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [view, setView] = useState<AppView>("chat");
   const [filesOpened, setFilesOpened] = useState(false);
-  const [pendingFile, setPendingFile] = useState<string | null>(null);
-  const filesRef = useRef<FilesHandle>(null);
+  const [pendingFile, setPendingFile] = useState<{ path: string; workspace: string } | null>(null);
+  const [fileWorkspaces, setFileWorkspaces] = useState<string[]>([]);
+  const filesRefs = useRef(new Map<string, FilesHandle>());
   const [architectureOpened, setArchitectureOpened] = useState(false);
   const [workspaceTick, setWorkspaceTick] = useState(0);
   // Saving edits changes git status, not the file tree.
   const [savedTick, setSavedTick] = useState(0);
   const chatRef = useRef<ChatHandle>(null);
-  const terminalRef = useRef<TerminalHandle>(null);
+  const terminalRefs = useRef(new Map<string, TerminalHandle>());
+  const [terminalWorkspaces, setTerminalWorkspaces] = useState<string[]>([]);
+  const [terminalCommand, setTerminalCommand] = useState<{ workspace: string; text: string } | null>(null);
   const sessionBusyRef = useRef(false);
 
   const { config, loadFailed, browsingWorkspace, chooseWorkspace, setConfig } =
@@ -59,6 +65,31 @@ function App() {
     onWorkspaceRefresh: () => setWorkspaceTick((value) => value + 1),
   });
   sessionBusyRef.current = session.busy;
+  const worktrees = useSessionWorktrees(session.tabs.map((tab) => tab.id), workspaceTick);
+  const worktreeInfo = worktrees.infos[session.activeTabId] ?? null;
+  const viewWorkspace = worktreeInfo?.directory ?? (session.activeTabId ? "" : (workspace ?? ""));
+
+  async function send(text: string, attachments: Attachment[], mode: SendMode, retryWorktree?: boolean) {
+    const id = session.activeTabId;
+    try {
+      return await session.send(text, attachments, mode, retryWorktree);
+    } finally {
+      worktrees.setPhase(id, "");
+      worktrees.reload();
+    }
+  }
+
+  async function recoverWorktree(restore: boolean) {
+    const id = session.activeTabId;
+    try {
+      await invoke("session_worktree_recover", { sessionId: id, restore });
+      setWorkspaceTick((tick) => tick + 1);
+      return true;
+    } finally {
+      worktrees.setPhase(id, "");
+      worktrees.reload();
+    }
+  }
 
   useEffect(() => {
     homeDir().then(setHome).catch(() => setHome(""));
@@ -103,8 +134,8 @@ function App() {
   }, [config?.allowAllCommands]);
 
   const { changes, changeCount, changesError, changesReady } = useGitChanges({
-    enabled: config !== null && workspace !== null,
-    workspace: workspace ?? "",
+    enabled: config !== null && Boolean(viewWorkspace) && !worktreeInfo?.missing,
+    workspace: viewWorkspace,
     refreshToken: workspaceTick + savedTick,
   });
   const {
@@ -160,7 +191,7 @@ function App() {
       ).catch(() => false);
       if (!proceed) return false;
     }
-    const files = filesRef.current;
+    const files = workspace ? filesRefs.current.get(workspace) : undefined;
     if (files && !(await files.canLeave())) return false;
     const switched = await switchBranch(nextBranch);
     if (switched) {
@@ -176,7 +207,7 @@ function App() {
   }
 
   function selectView(next: AppView) {
-    if (next === "git" && view !== "git") {
+    if (next !== view && (next === "git" || next === "chat")) {
       setWorkspaceTick((value) => value + 1);
     }
     if (next === "files") setFilesOpened(true);
@@ -186,18 +217,35 @@ function App() {
 
   const openFileLink = useCallback((href: string) => {
     const path = workspaceFileLink(href);
-    if (!path) return;
+    if (!path || !viewWorkspace) return;
     setFilesOpened(true);
-    setPendingFile(path);
+    setPendingFile({ path, workspace: viewWorkspace });
     setView("files");
-  }, []);
+  }, [viewWorkspace]);
 
-  // Files mounts lazily; hold the target until its handle exists.
   useEffect(() => {
-    if (pendingFile === null || !filesOpened) return;
-    filesRef.current?.open(pendingFile);
+    if (!viewWorkspace || worktreeInfo?.missing) return;
+    setTerminalWorkspaces((current) => current.includes(viewWorkspace) ? current : [...current, viewWorkspace]);
+    if (filesOpened) {
+      setFileWorkspaces((current) => current.includes(viewWorkspace) ? current : [...current, viewWorkspace]);
+    }
+  }, [viewWorkspace, filesOpened, worktreeInfo?.missing]);
+
+  useEffect(() => {
+    if (!pendingFile) return;
+    const files = filesRefs.current.get(pendingFile.workspace);
+    if (!files) return;
+    files.open(pendingFile.path);
     setPendingFile(null);
-  }, [filesOpened, pendingFile]);
+  }, [fileWorkspaces, pendingFile]);
+
+  useEffect(() => {
+    if (!terminalCommand) return;
+    const terminal = terminalRefs.current.get(terminalCommand.workspace);
+    if (!terminal) return;
+    terminal.run(terminalCommand.text);
+    setTerminalCommand(null);
+  }, [terminalCommand, terminalWorkspaces]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -228,9 +276,9 @@ function App() {
       } else if (action === "close-session") {
         session.closeTab(session.activeTabId);
       } else if (action === "new-terminal") {
-        terminalRef.current?.addTab();
+        terminalRefs.current.get(viewWorkspace)?.addTab();
       } else if (action === "quick-open") {
-        filesRef.current?.quickOpen();
+        filesRefs.current.get(viewWorkspace)?.quickOpen();
       } else if (action === "history") {
         // A live run keeps streaming while History is open; picking a session
         // only adds a tab, so the running one is untouched.
@@ -258,7 +306,12 @@ function App() {
           cancelLabel: "Keep working",
         },
       ),
-      canLeave: async () => (await filesRef.current?.canLeave()) ?? true,
+      canLeave: async () => {
+        for (const files of filesRefs.current.values()) {
+          if (!(await files.canLeave())) return false;
+        }
+        return true;
+      },
       prepareClose: () => invoke("close_workspace"),
       destroy: () => appWindow.destroy(),
       onClosing: setClosing,
@@ -374,7 +427,7 @@ function App() {
           usage={session.usage}
           stepUsage={session.stepUsage}
           model={config.model}
-          onSend={session.send}
+          onSend={send}
           onStop={session.stop}
           onCompact={session.compact}
           onLoadOlder={session.loadOlder}
@@ -384,54 +437,71 @@ function App() {
           onLoadPlanCompare={session.loadPlanCompare}
           onOpenFile={openFileLink}
           onSendToTerminal={(text) => {
+            if (!viewWorkspace || worktreeInfo?.missing) return;
             setView("terminal");
-            terminalRef.current?.run(text);
+            setTerminalCommand({ workspace: viewWorkspace, text });
           }}
+          worktrees={worktrees.infos}
+          checkoutControl={worktreeInfo ? (retry) => (
+            <WorktreeControl
+              key={session.activeTabId}
+              info={worktreeInfo}
+              phase={worktrees.phases[session.activeTabId] ?? ""}
+              retry={(keepRequest) => retry(keepRequest, worktreeInfo.waitingText ?? "")}
+              stop={() => { void invoke("session_stop", { sessionId: session.activeTabId }); }}
+              recover={recoverWorktree}
+            />
+          ) : null}
         />
 
-        {/* Workspace-scoped views remount when the workspace changes. Their
-            keys must stay unique because they are siblings. */}
-        <Terminal
-          ref={terminalRef}
-          key={`terminal:${workspace}`}
-          active={view === "terminal"}
-          onClose={() => setView("chat")}
-        />
+        {terminalWorkspaces.map((directory) => (
+          <Terminal
+            key={directory}
+            ref={(handle) => {
+              if (handle) terminalRefs.current.set(directory, handle);
+              else terminalRefs.current.delete(directory);
+            }}
+            workspace={directory}
+            active={view === "terminal" && directory === viewWorkspace && !worktreeInfo?.missing}
+            onClose={() => selectView("chat")}
+          />
+        ))}
 
-        <SourceControl
-          key={`source-control:${workspace}`}
-          active={view === "git"}
-          workspace={workspace}
-          changes={changes}
-          changesError={changesError}
-          changesReady={changesReady}
-          refreshToken={workspaceTick + savedTick}
-          onRefresh={() => setWorkspaceTick((value) => value + 1)}
-        />
-
-        {filesOpened && (
-          <Files
-            ref={filesRef}
-            key={`files:${workspace}`}
-            active={view === "files"}
-            workspace={workspace}
-            refreshToken={workspaceTick}
+        {viewWorkspace && (
+          <SourceControl
+            key={viewWorkspace}
+            active={view === "git"}
+            workspace={viewWorkspace}
             changes={changes}
+            changesError={changesError}
+            changesReady={changesReady}
+            refreshToken={workspaceTick + savedTick}
             onRefresh={() => setWorkspaceTick((value) => value + 1)}
-            onSaved={() => setSavedTick((value) => value + 1)}
           />
         )}
 
-        {architectureOpened && (
-          <Suspense
-            fallback={
-              <div className="arch-loading">Loading architecture...</div>
-            }
-          >
+        {fileWorkspaces.map((directory) => (
+          <Files
+            key={directory}
+            ref={(handle) => {
+              if (handle) filesRefs.current.set(directory, handle);
+              else filesRefs.current.delete(directory);
+            }}
+            active={view === "files" && directory === viewWorkspace && !worktreeInfo?.missing}
+            workspace={directory}
+            refreshToken={workspaceTick}
+            changes={directory === viewWorkspace ? changes : null}
+            onRefresh={() => setWorkspaceTick((value) => value + 1)}
+            onSaved={() => setSavedTick((value) => value + 1)}
+          />
+        ))}
+
+        {architectureOpened && viewWorkspace && (
+          <Suspense fallback={<div className="architecture-loading">Loading architecture…</div>}>
             <Architecture
-              key={`architecture:${workspace}`}
+              key={viewWorkspace}
               active={view === "architecture"}
-              workspace={workspace}
+              workspace={viewWorkspace}
               refreshToken={workspaceTick}
               running={session.running}
               onPrompt={(prompt) => {
@@ -460,6 +530,12 @@ function App() {
       {historyOpen && (
         <SessionHistory
           sessions={session.history}
+          onArchive={async (id, archived) => {
+            const status = await invoke<string | null>("session_archive", { sessionId: id, archived });
+            if (archived && session.tabs.some((tab) => tab.id === id)) void session.closeTab(id);
+            session.refreshHistory();
+            return status;
+          }}
           onClose={() => setHistoryOpen(false)}
           onPick={(id) => {
             session.restore(id);
@@ -469,9 +545,10 @@ function App() {
         />
       )}
 
-      {skillsOpen && (
+      {skillsOpen && viewWorkspace && (
         <SkillsPopup
-          key={`skills:${workspace}`}
+          key={viewWorkspace}
+          workspace={viewWorkspace}
           onClose={() => setSkillsOpen(false)}
         />
       )}

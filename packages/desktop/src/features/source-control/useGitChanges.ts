@@ -27,7 +27,7 @@ export function useGitChanges({
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    invoke<ChangeInfo[]>("git_changes")
+    invoke<ChangeInfo[]>("git_changes", { workspace })
       .then((next) => {
         if (!cancelled) {
           setLoaded({ workspace, revision: refreshToken, changes: next });

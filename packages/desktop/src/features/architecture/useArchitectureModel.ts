@@ -42,7 +42,7 @@ export function useArchitectureModel({
 
     setDiscoveryLoading(true);
     setDiscoveryError("");
-    invoke<ArchitectureDiscovery>("architecture_discover", { includeIgnored })
+    invoke<ArchitectureDiscovery>("architecture_discover", { workspace, includeIgnored })
       .then((next) => {
         if (cancelled || next.workspace !== workspace) return;
         setDiscovery(next);
@@ -91,6 +91,7 @@ export function useArchitectureModel({
       previous && previous.root === selectedRoot ? previous : null,
     );
     invoke<ArchitectureLoad>("architecture_load", {
+      workspace,
       root: selectedRoot,
       includeIgnored,
     })

@@ -40,8 +40,11 @@ pub(crate) mod skill;
 pub(crate) mod web;
 mod web_fetch;
 mod workspace;
+pub(crate) mod worktree;
 
 pub use diff::FileDiff;
+#[cfg(unix)]
+pub(crate) use shell::ProcessGroupGuard;
 pub use workspace::Workspace;
 
 /// Release process-wide tool resources during app shutdown.

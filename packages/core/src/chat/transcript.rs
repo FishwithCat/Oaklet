@@ -165,7 +165,7 @@ fn project_events(events: &[Event]) -> Vec<Value> {
 
     for event in events {
         match &event.payload {
-            EventPayload::ToolTrim { .. } => {}
+            EventPayload::ToolTrim { .. } | EventPayload::WorktreeDirectory { .. } => {}
             EventPayload::Plan {
                 version,
                 steps,

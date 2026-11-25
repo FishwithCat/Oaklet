@@ -117,10 +117,21 @@ in the same languages as `file_outline`.
 ## Workspace views
 
 Each workspace window has its own Chat tabs, Terminal tabs, Files editor, Git
-view, Architecture view, and Skills scan. They all use that window's folder;
-another window can be on a different project at the same time. Oaklet is still
-one application instance and one SQLite database, so settings and history are
-shared while sessions remain grouped by workspace.
+view, Architecture view, and Skills scan. Sessions are grouped by the window's
+project in the shared history. The selected chat's checkout sets the directory
+for Files, Source Control, Architecture, Skills, and new terminals.
+
+### Session worktrees
+
+Include `@worktree` in a new chat's first message. Oaklet creates a branch and a
+checkout in `.agents/worktrees/` from the current commit, then runs the message
+there. The chat shows its checkout path and current branch. Existing terminals
+retain their original directories and processes.
+
+Use **⌘R** to reopen or archive a chat from its project. Archiving can remove a
+clean, unreferenced checkout while keeping its branch and commits. **Keep
+worktrees when archiving** retains the checkout. If a checkout is missing, the
+chat offers to restore it or continue in its source project.
 
 **Terminal** is backed by real PTYs: multiple tabs, interactive shells, colors,
 job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
@@ -136,8 +147,8 @@ sidebar badge counts uncommitted changes. Diff previews are limited to
 1 MiB, show one file at a time, and paginate at 200 lines. Where source
 versions are available, changed symbols link to their first diff hunk.
 
-The branch icon below the workspace button in the sidebar switches the
-workspace's branch. The menu filters branches as you type and refreshes them on
+The branch icon below the workspace button in the sidebar switches the branch
+in the project's directory. The menu filters branches as you type and refreshes them on
 open; its refresh button picks up branches created outside Oaklet. Switching is
 refused while a chat is running, asks before carrying uncommitted changes to the
 new branch, and closes the open file because its contents may change.

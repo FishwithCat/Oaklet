@@ -8,7 +8,7 @@ import {
 import { errorText } from "../../shared/error-text";
 import { sourceLabel, type SkillList } from "./skills";
 
-export function SkillsPopup({ onClose }: { onClose: () => void }) {
+export function SkillsPopup({ onClose, workspace }: { onClose: () => void; workspace: string }) {
   const [skills, setSkills] = useState<SkillList | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -17,7 +17,7 @@ export function SkillsPopup({ onClose }: { onClose: () => void }) {
     setLoading(true);
     setError("");
     try {
-      setSkills(await invoke<SkillList>("skills_list"));
+      setSkills(await invoke<SkillList>("skills_list", { workspace }));
     } catch (err) {
       setError(errorText(err));
     } finally {

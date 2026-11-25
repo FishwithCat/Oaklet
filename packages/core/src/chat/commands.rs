@@ -41,8 +41,12 @@ pub async fn session_create(
 pub async fn session_list(
     window: WebviewWindow,
     state: State<'_, SharedState>,
+    archived: Option<bool>,
 ) -> Result<Vec<SessionSummary>, String> {
     let workspace = workspace_for_window(&state, window.label())?;
+    if archived == Some(true) {
+        return super::worktree::archived_history(&state, &workspace);
+    }
     let store = state.chat.store.clone();
     let rows = tauri::async_runtime::spawn_blocking(move || {
         store.list_sessions(&workspace.to_string_lossy())
@@ -82,6 +86,7 @@ pub async fn session_get(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Keep the existing Tauri command arguments flat.
 pub async fn session_send(
     app: AppHandle,
     window: WebviewWindow,
@@ -90,6 +95,7 @@ pub async fn session_send(
     text: String,
     attachments: Vec<IncomingAttachment>,
     mode: Option<SendMode>,
+    retry_worktree: Option<bool>,
 ) -> Result<SendResult, String> {
     let window_workspace = workspace_for_window(&state, window.label())?;
     let mut config = state
@@ -109,32 +115,64 @@ pub async fn session_send(
             "This chat belongs to another workspace. Open that workspace in its own window.".into(),
         );
     }
-    if !Path::new(&meta.workspace).is_dir() {
-        return Err(format!("Workspace is unavailable: {}", meta.workspace));
+    let waiting = if let Some(keep_request) = retry_worktree {
+        let mut waiting = store
+            .worktree(&session_id)?
+            .waiting
+            .ok_or("No message is waiting for this worktree.")?;
+        if !keep_request {
+            waiting.request = None;
+        }
+        waiting
+    } else {
+        let text = text.trim();
+        let worktree = mentions::has(text, "worktree");
+        if worktree && meta.turns != 0 {
+            return Err("@worktree can only be used in a chat's first message.".into());
+        }
+        let (message, display, attachment_names) =
+            build_user_turn(text, &attachments, &state.spill_root, &session_id)?;
+        let title = if meta.turns == 0 {
+            let title = session_title(&mentions::strip(text), &attachment_names);
+            (!title.is_empty()).then_some(title)
+        } else {
+            None
+        };
+        crate::worktrees::WaitingTurn {
+            turn: NewUserTurn {
+                message,
+                display: Some(display),
+                title,
+            },
+            architecture: mentions::has(text, "arch"),
+            request: worktree.then(crate::worktrees::WorktreeRequest::default),
+        }
+    };
+    let (cancel_handle, cancel) = CancelHandle::new();
+    let reserved = waiting.request.is_some() || retry_worktree.is_some();
+    let _operation = if reserved {
+        Some(state.chat.reserve_plan_confirmation(
+            &session_id,
+            window.label(),
+            cancel_handle.clone(),
+        )?)
+    } else {
+        None
+    };
+    config.workspace =
+        super::worktree::prepare_send(&app, &state, window.label(), &meta, &waiting, &cancel)
+            .await?;
+    if !Path::new(&config.workspace).is_dir() {
+        return Err(format!("Workspace is unavailable: {}", config.workspace));
     }
-    config.workspace = meta.workspace.clone();
-
-    let text = text.trim().to_string();
-    // The user opts into architecture planning by typing the mention; the
-    // backend never infers it from the request.
-    let trigger = if mentions::has(&text, "arch") {
+    let trigger = if reserved {
+        RunTrigger::Worktree(waiting.architecture)
+    } else if waiting.architecture {
         RunTrigger::Arch
     } else {
         RunTrigger::User
     };
-    let (message, display, attachment_names) =
-        build_user_turn(&text, &attachments, &state.spill_root, &session_id)?;
-    let title = if meta.turns == 0 {
-        let title = session_title(&mentions::strip(&text), &attachment_names);
-        (!title.is_empty()).then_some(title)
-    } else {
-        None
-    };
-    let turn = NewUserTurn {
-        message,
-        display: Some(display),
-        title,
-    };
+    let turn = waiting.turn;
 
     let mode = mode.unwrap_or(SendMode::Normal);
     let pending_id = state.next_id();
@@ -168,7 +206,6 @@ pub async fn session_send(
         Err(turn) => turn,
     };
 
-    let (cancel_handle, cancel) = CancelHandle::new();
     let (run_id, view) = start_run(
         &app,
         state.inner(),
@@ -212,8 +249,9 @@ pub async fn session_confirm_plan(
             "This chat belongs to another workspace. Open that workspace in its own window.".into(),
         );
     }
-    if !Path::new(&meta.workspace).is_dir() {
-        return Err(format!("Workspace is unavailable: {}", meta.workspace));
+    let directory = session_store.worktree_directory(&session_id, &meta.workspace)?;
+    if !Path::new(&directory).is_dir() {
+        return Err(format!("Workspace is unavailable: {directory}"));
     }
 
     let (cancel_handle, cancel) = CancelHandle::new();
@@ -232,7 +270,7 @@ pub async fn session_confirm_plan(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err("Stopped.".into()),
-            result = verify_confirmation(&app, &meta.workspace, validation, cancel.clone()) => result?,
+            result = verify_confirmation(&app, &directory, validation, cancel.clone()) => result?,
         }
     }
 
@@ -247,7 +285,7 @@ pub async fn session_confirm_plan(
         .lock()
         .map_err(|_| "Agent state is unavailable.".to_string())?
         .clone();
-    config.workspace = meta.workspace.clone();
+    config.workspace = directory;
 
     let (run_id, view) = start_run(
         &app,
@@ -359,7 +397,14 @@ pub async fn session_plan_baseline(
     Ok(PlanBaseline {
         version,
         checked: true,
-        baseline_changed: baseline_changed(&meta.workspace, &validation).await?,
+        baseline_changed: baseline_changed(
+            &state
+                .chat
+                .store
+                .worktree_directory(&session_id, &meta.workspace)?,
+            &validation,
+        )
+        .await?,
     })
 }
 
@@ -405,8 +450,12 @@ pub async fn session_plan_compare(
             validation.status == store::PlanValidationStatus::Verified && validation.valid
         })
         .ok_or_else(|| "This plan has no verified architecture preview.".to_string())?;
+    let directory = state
+        .chat
+        .store
+        .worktree_directory(&session_id, &meta.workspace)?;
     let compare =
-        architecture::plan_compare(&app, Path::new(&meta.workspace), &validation, &view_id).await?;
+        architecture::plan_compare(&app, Path::new(&directory), &validation, &view_id).await?;
     Ok(PlanComparison { version, compare })
 }
 

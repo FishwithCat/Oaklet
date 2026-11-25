@@ -14,6 +14,7 @@ mod projection;
 mod runs;
 mod sessions;
 mod types;
+mod worktrees;
 
 use std::path::Path;
 use std::path::PathBuf;

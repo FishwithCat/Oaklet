@@ -35,7 +35,7 @@ struct ToolCall {
 /// One turn. The backend already persisted the user message and registered the
 /// run; this loop streams, executes tools, and finishes through `ctx`, which
 /// writes the transcript and publishes the terminal event.
-pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunContext) {
+pub async fn run(mut config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunContext) {
     if cancel.is_cancelled() {
         ctx.finish_stopped(strip_system(&input)).await;
         return;
@@ -65,17 +65,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         }
     };
     let mut instructions = WorkspaceInstructions::load(workspace.root());
-    let mut tools = ToolRegistry::with_host_tools(ctx.app(), &config, &cancel).await;
-    tools.set_access(ctx.access().clone());
-    tools.set_planning_scope(ctx.planning_scope().cloned());
-    tools.set_approved_plan(ctx.confirmed_plan());
+    let mut tools = workspace_tools(&ctx, &config, &cancel).await;
     if cancel.is_cancelled() {
         crate::tools::shutdown_workspace(workspace.root());
         ctx.finish_stopped(strip_system(&input)).await;
         return;
     }
-    ensure_history_tool(&mut tools, &ctx).await;
-    let tool_context = ToolContext {
+    let mut tool_context = ToolContext {
         workspace,
         cancel: cancel.clone(),
         access: ctx.access().clone(),
@@ -88,14 +84,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         spill_root: ctx.state().spill_root.clone(),
     };
 
-    let model_sources = {
-        let workspace = config.workspace.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::architecture::prompt_model_sources(Path::new(&workspace))
-        })
-        .await
-        .unwrap_or_default()
-    };
+    let mut model_sources = load_model_sources(&config.workspace).await;
 
     let mut prompt = system_prompt(
         &config,
@@ -238,12 +227,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             return;
         }
 
+        let previous_directory = config.workspace.clone();
         let batch = tool_calls::run(
             &reply.calls,
-            &tools,
-            &tool_context,
+            &mut tools,
+            &mut tool_context,
             &ctx,
-            &cancel,
+            &mut config,
             &mut guard,
             &mut messages,
         )
@@ -256,8 +246,14 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         // Newly reached directories join the existing system prompt instead of
         // becoming a history message, so a later run starts from disk again
         // rather than replaying stale instructions.
+        let moved = config.workspace != previous_directory;
+        if moved {
+            instructions = WorkspaceInstructions::load(tool_context.workspace.root());
+            model_sources = load_model_sources(&config.workspace).await;
+        }
         if reload_instructions(&mut instructions, &tool_context, &batch.instruction_touches)
             || tools.access().mode() != mode
+            || moved
         {
             mode = tools.access().mode();
             prompt = system_prompt(
@@ -287,6 +283,31 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             messages.push(ctx.record_hidden(crate::context::source(message, "reminder")));
         }
     }
+}
+
+async fn workspace_tools(ctx: &RunContext, config: &AppConfig, cancel: &Cancel) -> ToolRegistry {
+    let mut tools = ToolRegistry::with_host_tools(ctx.app(), config, cancel).await;
+    tools.set_access(ctx.access().clone());
+    tools.set_planning_scope(ctx.planning_scope().cloned());
+    tools.set_approved_plan(ctx.confirmed_plan());
+    for exiting in [false, true] {
+        tools.push(Box::new(crate::tools::worktree::WorktreeTool {
+            store: ctx.store(),
+            app: ctx.app().clone(),
+            exiting,
+        }));
+    }
+    ensure_history_tool(&mut tools, ctx).await;
+    tools
+}
+
+async fn load_model_sources(workspace: &str) -> Vec<String> {
+    let workspace = workspace.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::architecture::prompt_model_sources(Path::new(&workspace))
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// History without the system prompt, which is rebuilt for every request.

@@ -40,6 +40,8 @@ pub struct AppConfig {
     /// On by default; the sidebar toggle grants or revokes it for this session.
     #[serde(default = "default_true")]
     pub allow_all_commands: bool,
+    #[serde(default)]
+    pub keep_worktrees_on_archive: bool,
     #[serde(default, deserialize_with = "deserialize_mcp_servers")]
     pub mcp_servers: BTreeMap<String, McpServerConfig>,
     /// Last opened workspace. Each window's active workspace lives in
@@ -181,6 +183,7 @@ impl Default for AppConfig {
             search_url: default_search_url(),
             search_api_key: String::new(),
             allow_all_commands: true,
+            keep_worktrees_on_archive: false,
             mcp_servers: BTreeMap::new(),
             workspace: default_workspace(),
         }

@@ -175,8 +175,12 @@ impl Store {
         let conn = self.connection()?;
         let mut statement = conn
             .prepare(
-                "SELECT id, title, updated_at, turns FROM sessions \
-                 WHERE workspace = ?1 AND turns > 0 ORDER BY updated_at DESC",
+                "SELECT s.id, COALESCE(NULLIF(s.title, ''), json_extract(w.state, '$.waiting.turn.title'), ''), \
+                        s.updated_at, s.turns FROM sessions s \
+                 LEFT JOIN session_worktrees w ON w.session_id = s.id \
+                 WHERE s.workspace = ?1 AND COALESCE(w.archived, 0) = 0 \
+                    AND (s.turns > 0 OR json_type(w.state, '$.waiting') = 'object') \
+                 ORDER BY s.updated_at DESC",
             )
             .map_err(|error| format!("Could not read session history: {error}"))?;
         let rows = statement
