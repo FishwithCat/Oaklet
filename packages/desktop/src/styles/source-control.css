@@ -231,15 +231,13 @@
   white-space: pre-wrap;
 }
 
-.sc-tabs {
-  flex: none;
-  display: flex;
+.view-bar.sc-tabs {
   gap: 2px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border);
+  padding-inline: 10px;
 }
 
 .sc-tabs .sc-tab {
+  align-self: stretch;
   display: inline-flex;
   align-items: center;
   gap: 5px;

@@ -82,24 +82,10 @@ export function SourceControl({
 
   return (
     <section className="sc" hidden={!active} aria-label="Source control">
-      <header className="view-bar">
+      <header className="view-bar sc-tabs">
         <span className="view-bar-icon" aria-hidden="true">
           <GitBranch2Regular size={14} />
         </span>
-        <span className="view-bar-title">Source control</span>
-        <button
-          type="button"
-          className="ghost icon-button view-bar-refresh"
-          onClick={onRefresh}
-          disabled={loading}
-          aria-label="Refresh source control"
-          title="Refresh source control"
-        >
-          <Refresh3Regular size={14} className={loading ? "spin" : ""} />
-        </button>
-      </header>
-
-      <div className="sc-tabs">
         <button
           type="button"
           className={`sc-tab${tab === "changes" ? " active" : ""}`}
@@ -117,7 +103,17 @@ export function SourceControl({
         >
           Commits
         </button>
-      </div>
+        <button
+          type="button"
+          className="ghost icon-button view-bar-refresh"
+          onClick={onRefresh}
+          disabled={loading}
+          aria-label="Refresh source control"
+          title="Refresh source control"
+        >
+          <Refresh3Regular size={14} className={loading ? "spin" : ""} />
+        </button>
+      </header>
 
       {loadError && (
         <p className="sc-note error" role="status">
