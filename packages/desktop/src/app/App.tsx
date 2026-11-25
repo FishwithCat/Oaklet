@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Refresh3Regular } from "@mingcute/react/core-regular";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
@@ -496,7 +497,14 @@ function App() {
         ))}
 
         {architectureOpened && viewWorkspace && (
-          <Suspense fallback={<div className="architecture-loading">Loading architecture…</div>}>
+          <Suspense
+            fallback={
+              <div className="arch-loading" role="status">
+                <Refresh3Regular size={24} className="spin" />
+                <p>Loading architecture…</p>
+              </div>
+            }
+          >
             <Architecture
               key={viewWorkspace}
               active={view === "architecture"}
