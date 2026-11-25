@@ -133,7 +133,7 @@ function App() {
     if (config) session.reloadAllowance();
   }, [config?.allowAllCommands]);
 
-  const { changes, changeCount, changesError, changesReady } = useGitChanges({
+  const { changes, changesError, changesReady } = useGitChanges({
     enabled: config !== null && Boolean(viewWorkspace) && !worktreeInfo?.missing,
     workspace: viewWorkspace,
     refreshToken: workspaceTick + savedTick,
@@ -370,7 +370,6 @@ function App() {
       <Sidebar
         view={view}
         onSelectView={selectView}
-        changeCount={changeCount}
         allowAll={session.allowAll}
         onToggleAllowAll={toggleAllowAll}
         onChooseWorkspace={chooseWorkspace}

@@ -5,10 +5,7 @@ import type { ChangeInfo } from "./git-model";
 
 type LoadedChanges = { workspace: string; revision: number; changes: ChangeInfo[] };
 
-/**
- * The single source of uncommitted changes. App calls this once so the sidebar
- * badge and the source-control view always agree.
- */
+/** The single source of uncommitted changes for the source-control view. */
 export function useGitChanges({
   enabled,
   workspace,
@@ -44,5 +41,5 @@ export function useGitChanges({
 
   const changesReady = !!changes && loaded?.revision === refreshToken;
   const changesError = failure?.workspace === workspace && failure.revision === refreshToken ? failure.message : "";
-  return { changes, changeCount: changes?.length ?? null, changesError, changesReady };
+  return { changes, changesError, changesReady };
 }

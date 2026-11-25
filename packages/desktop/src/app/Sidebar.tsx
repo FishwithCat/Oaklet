@@ -17,7 +17,6 @@ export type AppView = "chat" | "terminal" | "git" | "architecture" | "files";
 export function Sidebar({
   view,
   onSelectView,
-  changeCount,
   allowAll,
   onToggleAllowAll,
   onChooseWorkspace,
@@ -30,7 +29,6 @@ export function Sidebar({
 }: {
   view: AppView;
   onSelectView: (view: AppView) => void;
-  changeCount: number | null;
   allowAll: boolean;
   onToggleAllowAll: () => void;
   onChooseWorkspace: () => void;
@@ -82,24 +80,11 @@ export function Sidebar({
           view === "git" ? " active" : ""
         }`}
         onClick={() => onSelectView("git")}
-        aria-label={
-          changeCount
-            ? `Source control (${changeCount} uncommitted)`
-            : "Source control"
-        }
+        aria-label="Source control"
         aria-pressed={view === "git"}
-        title={
-          changeCount
-            ? `${changeCount} file${changeCount === 1 ? "" : "s"} with uncommitted changes`
-            : "Source control"
-        }
+        title="Source control"
       >
         <GitCommitHorizontalRegular size={18} />
-        {changeCount !== null && changeCount > 0 && (
-          <span className="sc-badge" aria-hidden="true">
-            {changeCount > 99 ? "99+" : changeCount}
-          </span>
-        )}
       </button>
       <button
         type="button"
