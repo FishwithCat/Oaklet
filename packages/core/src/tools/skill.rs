@@ -858,10 +858,7 @@ mod tests {
 
         for principle in super::principles::PRINCIPLES {
             let name = format!("{}{}", super::principles::PREFIX, principle.slug);
-            let output = load
-                .execute(&ctx, json!({ "name": name }))
-                .await
-                .unwrap();
+            let output = load.execute(&ctx, json!({ "name": name })).await.unwrap();
             assert!(output.text.contains(principle.title), "{name}");
         }
 

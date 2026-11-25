@@ -206,7 +206,10 @@ fn cascade_position(app: &AppHandle, state: &AppState) -> Option<(f64, f64)> {
     let size = origin.outer_size().ok()?;
     let (x, y) = cascade_origin(
         (to_logical(position.x), to_logical(position.y)),
-        (to_logical(size.width as i32), to_logical(size.height as i32)),
+        (
+            to_logical(size.width as i32),
+            to_logical(size.height as i32),
+        ),
         work_area,
     );
     Some((f64::from(x), f64::from(y)))
