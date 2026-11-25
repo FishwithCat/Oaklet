@@ -58,10 +58,26 @@ test("withItems keeps the blocked flag in sync with awaiting tools", () => {
   );
 });
 
-test("applyContext records the latest gauge without touching the transcript", () => {
-  const updated = applyContext(session(), { used: 12000, window: 262144 });
+test("applyContext records the latest gauge and its breakdown", () => {
+  const segments = [
+    { kind: "conversation", tokens: 9000, items: [] },
+    {
+      kind: "tool_results",
+      tokens: 3000,
+      items: [{ label: "read_file · src/main.rs", tokens: 3000 }],
+    },
+  ];
+  const updated = applyContext(session(), {
+    used: 12000,
+    window: 262144,
+    segments,
+  });
 
-  assert.deepEqual(updated.context, { used: 12000, window: 262144 });
+  assert.deepEqual(updated.context, {
+    used: 12000,
+    window: 262144,
+    segments,
+  });
   assert.deepEqual(updated.items, []);
 });
 

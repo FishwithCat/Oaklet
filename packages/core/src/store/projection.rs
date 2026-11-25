@@ -435,6 +435,7 @@ mod tests {
                 ContextUsage {
                     used: 900,
                     window: 8192,
+                    segments: Vec::new(),
                 },
                 4,
             )
@@ -471,19 +472,20 @@ mod tests {
         let context = ContextUsage {
             used: 10,
             window: 8192,
+            segments: Vec::new(),
         };
         let mut modified = base.clone();
         modified[0]["content"] = json!("changed");
         assert!(
             store
-                .apply_surface("s", version, &modified, (20, 10), context, 3)
+                .apply_surface("s", version, &modified, (20, 10), context.clone(), 3)
                 .is_err()
         );
         let mut missing = base.clone();
         missing[0] = identify(missing[0].clone(), MessageId::Stored(999));
         assert!(
             store
-                .apply_surface("s", version, &missing, (20, 10), context, 3)
+                .apply_surface("s", version, &missing, (20, 10), context.clone(), 3)
                 .is_err()
         );
         assert!(
@@ -567,6 +569,7 @@ mod tests {
                     context: ContextUsage {
                         used: 10,
                         window: 8192,
+                        segments: Vec::new(),
                     },
                 },
                 3,
@@ -588,6 +591,7 @@ mod tests {
                 ContextUsage {
                     used: 10,
                     window: 8192,
+                    segments: Vec::new(),
                 },
                 4,
             )

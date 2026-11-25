@@ -238,7 +238,7 @@ impl RunContext {
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             ),
             compaction,
-            context: final_view.context,
+            context: final_view.context.clone(),
             usage: self.usage(),
             error: error.clone(),
         });

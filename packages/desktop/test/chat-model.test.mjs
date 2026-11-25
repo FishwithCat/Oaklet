@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  contextSegmentWidths,
   contextTier,
   countUpValue,
   formatCacheHitRate,
@@ -218,6 +219,24 @@ test("the context plant steps color at 30%, 60%, and 80%", () => {
   assert.equal(contextTier(79, 100), "high");
   assert.equal(contextTier(80, 100), "critical");
   assert.equal(contextTier(10, 0), "normal");
+});
+
+test("context segments fill their share of the window and stop at the edge", () => {
+  const segments = [{ tokens: 3000 }, { tokens: 1000 }];
+  assert.deepEqual(
+    contextSegmentWidths(segments, 8000).map((width) => Math.round(width)),
+    [38, 13],
+  );
+  const crowded = contextSegmentWidths(
+    [{ tokens: 6000 }, { tokens: 4000 }],
+    5000,
+  );
+  assert.equal(
+    crowded.reduce((sum, width) => sum + width, 0),
+    100,
+  );
+  assert.deepEqual(contextSegmentWidths([{ tokens: 10 }], 0), [0]);
+  assert.deepEqual(contextSegmentWidths([], 1000), []);
 });
 
 test("the context plant stays visible for restored sessions without usage", () => {

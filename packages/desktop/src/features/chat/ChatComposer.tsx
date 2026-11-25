@@ -42,6 +42,7 @@ import {
   formatRequestTitle,
   formatUsageTitle,
 } from "./chat-model";
+import { ContextInspector } from "./ContextInspector";
 import type { ContextUsage, RunUsage, StepUsage } from "./session-model";
 
 export type ChatComposerHandle = {
@@ -177,6 +178,7 @@ export function ChatComposer({
   onCompact: () => void;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [preview, setPreview] = useState<ImageAttachment | null>(null);
   const [reading, setReading] = useState(false);
@@ -186,6 +188,7 @@ export function ChatComposer({
   const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
+  const usageRef = useRef<HTMLSpanElement>(null);
   const compositionRef = useRef(createCompositionGuard());
   const submittingRef = useRef(false);
   const modelLabel = formatModelId(model);
@@ -220,8 +223,27 @@ export function ChatComposer({
     };
   }, [helpOpen]);
 
+  useEffect(() => {
+    if (!usageOpen) return;
+    function onMouseDown(event: MouseEvent) {
+      if (!usageRef.current?.contains(event.target as Node)) {
+        setUsageOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setUsageOpen(false);
+    }
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [usageOpen]);
+
   useLayoutEffect(() => {
     setHelpOpen(false);
+    setUsageOpen(false);
     setAttachmentError("");
     setPreview(null);
   }, [activeTabId]);
@@ -524,19 +546,27 @@ export function ChatComposer({
         <div className="composer-footer">
           <span className="composer-meta">
             {(gauge || context) && (
-              <span className="composer-context">
+              <span className="composer-context" ref={usageRef}>
                 {gauge}
                 {context && (
-                  <span
+                  <button
+                    type="button"
                     className="composer-usage"
                     title={stepUsage ? formatRequestTitle(stepUsage) : "Current context"}
+                    aria-haspopup="dialog"
+                    aria-expanded={usageOpen}
+                    aria-controls={usageOpen ? "context-inspector" : undefined}
+                    onClick={() => setUsageOpen((open) => !open)}
                   >
                     <UsageLabel
                       key={activeTabId}
                       used={context.used}
                       limit={context.window}
                     />
-                  </span>
+                  </button>
+                )}
+                {usageOpen && context && (
+                  <ContextInspector usage={context} stepUsage={stepUsage} />
                 )}
               </span>
             )}

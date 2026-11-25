@@ -21,7 +21,8 @@ use crate::repeat::RepeatGuard;
 use crate::tools::{Cancel, ToolContext, ToolRegistry, Workspace};
 
 pub(crate) use messages::initial_messages;
-use messages::{assistant_message, image_message, strip_system, system_prompt};
+pub(crate) use messages::{SystemPrompt, system_prompt};
+use messages::{assistant_message, image_message, strip_system};
 pub(crate) use model::Usage;
 
 #[derive(Default)]
@@ -96,13 +97,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         .unwrap_or_default()
     };
 
-    let mut messages = initial_messages(
+    let mut prompt = system_prompt(
         &config,
         &tools,
         &model_sources,
         instructions.render().as_deref(),
-        input,
     );
+    let mut messages = initial_messages(&prompt, input);
     let mut meter = Meter::default();
     let mut guard = RepeatGuard::new();
     let mut mode = tools.access().mode();
@@ -149,6 +150,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 &mut tools,
                 &mut messages,
                 &mut meter,
+                &mut prompt,
                 &cancel,
                 &ctx,
             )
@@ -167,6 +169,7 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             &config,
             &mut tools,
             &mut messages,
+            &mut prompt,
             &cancel,
             &ctx,
             &mut overflow_retried,
@@ -178,7 +181,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
                 if let Some(usage) = reply.usage {
                     meter.record_prompt_tokens(usage.prompt_tokens);
                     // The gauge shows the provider's count, never a local guess.
-                    ctx.context(usage.prompt_tokens, config.context_window);
+                    ctx.context(context_usage(
+                        &messages,
+                        &tools,
+                        &prompt,
+                        usage.prompt_tokens,
+                        config.context_window,
+                    ));
                 }
                 reply
             }
@@ -210,7 +219,13 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
         let assistant = assistant_message(&reply.content, &reply.reasoning, &reply.calls);
         let assistant = ctx.record_message(assistant, Some(json!({ "runId": ctx.run_id() })));
         messages.push(assistant);
-        ctx.context(meter.pressure(&messages), config.context_window);
+        ctx.context(context_usage(
+            &messages,
+            &tools,
+            &prompt,
+            meter.pressure(&messages),
+            config.context_window,
+        ));
         if reply.calls.is_empty() {
             // A steer that arrived while this reply was streaming still gets a
             // step, so the message is never stranded behind a finished turn.
@@ -245,14 +260,15 @@ pub async fn run(config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: RunC
             || tools.access().mode() != mode
         {
             mode = tools.access().mode();
+            prompt = system_prompt(
+                &config,
+                &tools,
+                &model_sources,
+                instructions.render().as_deref(),
+            );
             messages[0] = json!({
                 "role": "system",
-                "content": system_prompt(
-                    &config,
-                    &tools,
-                    &model_sources,
-                    instructions.render().as_deref(),
-                ),
+                "content": prompt.render(),
             });
         }
 
@@ -317,6 +333,20 @@ async fn ensure_history_tool(tools: &mut ToolRegistry, ctx: &RunContext) {
     {
         tools.push(Box::new(tool));
     }
+}
+
+pub(crate) fn context_usage(
+    messages: &[Value],
+    tools: &ToolRegistry,
+    prompt: &SystemPrompt,
+    used: usize,
+    window: usize,
+) -> crate::store::ContextUsage {
+    crate::store::ContextUsage::measured(
+        used,
+        window,
+        crate::context::breakdown(messages, &tools.schemas(), prompt.sections()),
+    )
 }
 
 fn parse_args(raw: &str) -> Result<Value, String> {

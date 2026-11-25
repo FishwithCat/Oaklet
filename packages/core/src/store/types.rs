@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::projection;
 use crate::agent::Usage;
 use crate::architecture::Diagnostic;
+use crate::context::{self, ContextSegment};
 
 /// One append-only transcript entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,10 +183,25 @@ pub struct Event {
 }
 
 /// Token gauge persisted with a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub used: usize,
     pub window: usize,
+    pub segments: Vec<ContextSegment>,
+}
+
+impl ContextUsage {
+    pub fn measured(used: usize, window: usize, segments: Vec<ContextSegment>) -> Self {
+        Self {
+            used,
+            window,
+            segments: context::scaled(segments, used),
+        }
+    }
+
+    pub fn segments_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.segments).map_err(|error| error.to_string())
+    }
 }
 
 /// Provider-reported tokens accumulated over one run. Steps counts successful

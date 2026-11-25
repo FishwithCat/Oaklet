@@ -8,7 +8,7 @@ use super::{
 };
 
 const SESSION_COLUMNS: &str = "id, workspace, title, turns, created_at, updated_at, \
-     context_used, context_window";
+     context_used, context_window, context_segments";
 
 type SessionRow = (
     String,
@@ -19,6 +19,7 @@ type SessionRow = (
     i64,
     Option<i64>,
     Option<i64>,
+    Option<String>,
 );
 
 fn read_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
@@ -31,11 +32,12 @@ fn read_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }
 
 fn to_meta(row: SessionRow) -> SessionMeta {
-    let (id, workspace, title, turns, _created_at, updated_at, used, window) = row;
+    let (id, workspace, title, turns, _created_at, updated_at, used, window, segments) = row;
     SessionMeta {
         id,
         workspace,
@@ -46,6 +48,10 @@ fn to_meta(row: SessionRow) -> SessionMeta {
             (Some(used), Some(window)) => Some(ContextUsage {
                 used: used.max(0) as usize,
                 window: window.max(0) as usize,
+                segments: segments
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default(),
             }),
             _ => None,
         },

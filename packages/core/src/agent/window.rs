@@ -5,12 +5,16 @@ use crate::tools::{Cancel, Tool, ToolRegistry};
 use crate::{AppConfig, compaction, context};
 use serde_json::Value;
 
+use super::SystemPrompt;
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn make_room(
     client: &reqwest::Client,
     config: &AppConfig,
     tools: &mut ToolRegistry,
     messages: &mut Vec<Value>,
     meter: &mut Meter,
+    prompt: &mut SystemPrompt,
     cancel: &Cancel,
     ctx: &RunContext,
 ) -> Result<(), String> {
@@ -23,6 +27,7 @@ pub(super) async fn make_room(
         config,
         tools,
         messages,
+        prompt,
         cancel,
         ctx,
         compaction::Trigger::Automatic,
@@ -43,6 +48,7 @@ pub(super) async fn recover(
     config: &AppConfig,
     tools: &mut ToolRegistry,
     messages: &mut Vec<Value>,
+    prompt: &mut SystemPrompt,
     cancel: &Cancel,
     ctx: &RunContext,
 ) -> Result<bool, String> {
@@ -51,6 +57,7 @@ pub(super) async fn recover(
         config,
         tools,
         messages,
+        prompt,
         cancel,
         ctx,
         compaction::Trigger::Overflow,
@@ -63,6 +70,7 @@ async fn apply(
     messages: &mut Vec<Value>,
     config: &AppConfig,
     tools: &mut ToolRegistry,
+    prompt: &mut SystemPrompt,
     ctx: &RunContext,
 ) -> Result<(), String> {
     let before = context::request_tokens(messages, &tools.schemas());
@@ -72,21 +80,14 @@ async fn apply(
             ctx.session_id().into(),
             ctx.archived(),
         );
-        match next
+        let Some(message) = next
             .first_mut()
             .filter(|message| message["role"] == "system")
-            .and_then(|message| message.get_mut("content"))
-        {
-            Some(Value::String(text)) => {
-                text.push_str("\n\n");
-                text.push_str(history.guidance());
-            }
-            _ => {
-                return Err(
-                    "The agent system prompt is unavailable; history was preserved.".into(),
-                );
-            }
-        }
+        else {
+            return Err("The agent system prompt is unavailable; history was preserved.".into());
+        };
+        prompt.append(history.guidance());
+        message["content"] = Value::String(prompt.render());
         tools.push(Box::new(history));
     }
     let after = context::request_tokens(&next, &tools.schemas());
@@ -99,15 +100,23 @@ async fn apply(
     *messages = next;
     ctx.mark_compacted(before, after);
     ctx.record_archived(messages).await?;
-    ctx.context(after, config.context_window);
+    ctx.context(super::context_usage(
+        messages,
+        tools,
+        prompt,
+        after,
+        config.context_window,
+    ));
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reduce(
     client: &reqwest::Client,
     config: &AppConfig,
     tools: &mut ToolRegistry,
     messages: &mut Vec<Value>,
+    prompt: &mut SystemPrompt,
     cancel: &Cancel,
     ctx: &RunContext,
     trigger: compaction::Trigger,
@@ -127,7 +136,7 @@ async fn reduce(
     }
     let mut progress = false;
     if let Some(trimmed) = compaction::trim_tool_outputs(messages) {
-        apply(trimmed, messages, config, tools, ctx).await?;
+        apply(trimmed, messages, config, tools, prompt, ctx).await?;
         progress = true;
         if context::request_tokens(messages, &tools.schemas())
             <= compaction::trigger_at(config.context_window)
@@ -138,7 +147,7 @@ async fn reduce(
     if let Some(next) =
         compaction::compact(client, config, messages, tools, trigger, cancel).await?
     {
-        apply(next, messages, config, tools, ctx).await?;
+        apply(next, messages, config, tools, prompt, ctx).await?;
         progress = true;
     }
     if context::request_tokens(messages, &tools.schemas())
@@ -201,12 +210,14 @@ mod tests {
         }
         let original = messages.clone();
         let (_handle, cancel) = CancelHandle::new();
+        let mut prompt = crate::agent::system_prompt(&config, &ToolRegistry::new(), &[], None);
         let error = make_room(
             &reqwest::Client::new(),
             &config,
             &mut ToolRegistry::new(),
             &mut messages,
             &mut Meter::default(),
+            &mut prompt,
             &cancel,
             &ctx,
         )
@@ -274,10 +285,10 @@ mod tests {
             )
             .unwrap();
         let ctx = RunContext::without_window(state, "s", "r", started);
-        let system_text =
-            "system\n\nWorkspace instructions: never deploy.\nArchitecture sources: model.c4";
+        let mut prompt = crate::agent::system_prompt(&config, &ToolRegistry::new(), &[], None);
+        let system_text = prompt.render();
         let mut messages = vec![
-            json!({"role":"system","content":system_text}),
+            json!({"role":"system","content":system_text.clone()}),
             identify(request.clone(), MessageId::Stored(1)),
         ];
         messages.push(ctx.record_message(
@@ -295,6 +306,7 @@ mod tests {
                 &config,
                 &mut tools,
                 &mut messages,
+                &mut prompt,
                 &cancel,
                 &ctx,
                 &mut retried
@@ -308,6 +320,7 @@ mod tests {
             &config,
             &mut tools,
             &mut messages,
+            &mut prompt,
             &cancel,
             &ctx,
             &mut retried,
@@ -333,7 +346,7 @@ mod tests {
         assert_eq!(recorded_after, Some(expected_after));
         let guidance = tools.get("history_read").unwrap().guidance();
         let retry_system = retry["messages"][0]["content"].as_str().unwrap();
-        assert!(retry_system.starts_with(system_text));
+        assert!(retry_system.starts_with(&system_text));
         assert_eq!(retry_system.matches(guidance).count(), 1);
         let (restored, _) = store.context_snapshot("s").unwrap();
         assert!(crate::store::is_checkpoint(&restored[0]));
@@ -378,12 +391,14 @@ mod tests {
         messages
             .push(ctx.record_message(json!({"role":"assistant","content":"latest step"}), None));
         let (_handle, cancel) = CancelHandle::new();
+        let mut prompt = crate::agent::system_prompt(&config, &ToolRegistry::new(), &[], None);
         assert!(
             recover(
                 &reqwest::Client::new(),
                 &config,
                 &mut ToolRegistry::new(),
                 &mut messages,
+                &mut prompt,
                 &cancel,
                 &ctx
             )

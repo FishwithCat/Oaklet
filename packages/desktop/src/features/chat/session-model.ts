@@ -2,7 +2,27 @@ import { settleStreaming, type Item } from "./chat-model.ts";
 import type { FileDiff, ProcessOutcome } from "./process-model.ts";
 import type { SentAttachment } from "./attachments.ts";
 
-export type ContextUsage = { used: number; window: number };
+export type ContextSegmentKind =
+  | "system"
+  | "instructions"
+  | "skills"
+  | "tools"
+  | "conversation"
+  | "tool_results";
+
+export type ContextSegmentItem = { label: string; tokens: number };
+
+export type ContextSegment = {
+  kind: ContextSegmentKind;
+  tokens: number;
+  items: ContextSegmentItem[];
+};
+
+export type ContextUsage = {
+  used: number;
+  window: number;
+  segments: ContextSegment[];
+};
 
 /** Provider counts for one model request. */
 export type StepUsage = {
@@ -248,7 +268,14 @@ export function applyContext(
   tab: SessionView,
   event: ContextUsage,
 ): SessionView {
-  return { ...tab, context: { used: event.used, window: event.window } };
+  return {
+    ...tab,
+    context: {
+      used: event.used,
+      window: event.window,
+      segments: event.segments,
+    },
+  };
 }
 
 /** Replace the queue a client shows; the backend already accepted its claim. */

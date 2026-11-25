@@ -866,14 +866,15 @@ impl ToolRegistry {
         )
     }
 
-    /// One prompt rule per tool that declares guidance, without duplicates.
-    pub fn guidance(&self) -> Vec<&str> {
+    pub fn guidance_named(&self) -> Vec<(&str, &str)> {
         let mut seen = std::collections::HashSet::new();
         self.tools
             .iter()
             .filter(|tool| self.visible(tool.as_ref()))
-            .map(|tool| tool.guidance())
-            .filter(|text| !text.is_empty() && seen.insert(*text))
+            .filter_map(|tool| {
+                let text = tool.guidance();
+                (!text.is_empty() && seen.insert(text)).then(|| (tool.name(), text))
+            })
             .collect()
     }
 

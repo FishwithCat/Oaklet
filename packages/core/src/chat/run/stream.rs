@@ -77,8 +77,8 @@ struct ApprovalResolvedEvent {
 struct ContextEvent {
     session_id: String,
     run_id: String,
-    used: usize,
-    window: usize,
+    #[serde(flatten)]
+    context: ContextUsage,
 }
 
 #[derive(Clone, Serialize)]
@@ -368,15 +368,14 @@ impl RunContext {
         );
     }
 
-    pub fn context(&self, used: usize, window: usize) {
-        self.update_view(|view| view.context = Some(ContextUsage { used, window }));
+    pub fn context(&self, usage: ContextUsage) {
+        self.update_view(|view| view.context = Some(usage.clone()));
         self.emit(
             "agent:context",
             ContextEvent {
                 session_id: self.session_id.clone(),
                 run_id: self.run_id.clone(),
-                used,
-                window,
+                context: usage,
             },
         );
     }

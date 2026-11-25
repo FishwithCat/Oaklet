@@ -342,6 +342,7 @@ mod tests {
                 context: Some(ContextUsage {
                     used: 1,
                     window: 10,
+                    segments: Vec::new(),
                 }),
                 usage: Default::default(),
                 error: None,
@@ -361,6 +362,7 @@ mod tests {
                     context: ContextUsage {
                         used: 1,
                         window: 10,
+                        segments: Vec::new(),
                     },
                 },
                 2,
@@ -417,7 +419,7 @@ mod tests {
             .unwrap();
         store.apply_compaction("s1", &crate::store::CompactionRecord {
             summary:json!({"role":"user", "content":"<compacted-summary>all</compacted-summary>"}),
-            shadowed_through:start.start_seq + 2, before:10, after:1, context:ContextUsage {used:1, window:10},
+            shadowed_through:start.start_seq + 2, before:10, after:1, context:ContextUsage {used:1, window:10, segments: Vec::new()},
         }, 5).unwrap();
         let tool = HistoryRead::new(
             store,

@@ -7,6 +7,7 @@ use super::{
     PlanValidationStatus, RunEnd, RunUsage, StepUsage, Store, has_table, is_checkpoint,
 };
 use crate::agent::Usage;
+use crate::context::{ContextItem, ContextKind, ContextSegment};
 
 fn store() -> Store {
     Store::in_memory().unwrap()
@@ -128,6 +129,14 @@ fn finish_run_appends_without_rewriting_prior_events() {
             context: Some(ContextUsage {
                 used: 12,
                 window: 100,
+                segments: vec![ContextSegment {
+                    kind: ContextKind::ToolResults,
+                    tokens: 12,
+                    items: vec![ContextItem {
+                        label: "read_file · src/main.rs".into(),
+                        tokens: 12,
+                    }],
+                }],
             }),
             usage: RunUsage {
                 prompt_tokens: 100,
@@ -150,7 +159,15 @@ fn finish_run_appends_without_rewriting_prior_events() {
         saved.context,
         Some(ContextUsage {
             used: 12,
-            window: 100
+            window: 100,
+            segments: vec![ContextSegment {
+                kind: ContextKind::ToolResults,
+                tokens: 12,
+                items: vec![ContextItem {
+                    label: "read_file · src/main.rs".into(),
+                    tokens: 12,
+                }],
+            }],
         })
     );
     assert_eq!(

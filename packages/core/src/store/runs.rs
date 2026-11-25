@@ -6,7 +6,8 @@ use serde_json::Value;
 use super::events::{append_events, latest_plan, next_seq, plan_state, read_from, read_last_step};
 use super::projection::{save_surface, surface_messages_with};
 use super::{
-    EventPayload, NewUserTurn, PAGE_EVENTS, PlanStatus, RunEnd, RunStart, SessionWindow, Store,
+    ContextUsage, EventPayload, NewUserTurn, PAGE_EVENTS, PlanStatus, RunEnd, RunStart,
+    SessionWindow, Store,
 };
 
 impl Store {
@@ -159,11 +160,15 @@ impl Store {
             let changed = tx
                 .execute(
                     "UPDATE sessions SET context_used = ?2, context_window = ?3, \
-                 updated_at = ?4 WHERE id = ?1",
+                 context_segments = ?4, updated_at = ?5 WHERE id = ?1",
                     params![
                         end.session_id,
-                        end.context.map(|context| context.used as i64),
-                        end.context.map(|context| context.window as i64),
+                        end.context.as_ref().map(|context| context.used as i64),
+                        end.context.as_ref().map(|context| context.window as i64),
+                        end.context
+                            .as_ref()
+                            .map(ContextUsage::segments_json)
+                            .transpose()?,
                         end.finished_at
                     ],
                 )

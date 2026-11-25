@@ -402,6 +402,7 @@ fn a_finished_run_projects_back_to_the_same_rows() {
             context: Some(store::ContextUsage {
                 used: 10,
                 window: 100,
+                segments: Vec::new(),
             }),
             usage: Default::default(),
             error: None,
@@ -591,6 +592,7 @@ fn a_compaction_shadows_history_but_keeps_the_rendered_transcript() {
                 context: store::ContextUsage {
                     used: 10,
                     window: 100,
+                    segments: Vec::new(),
                 },
             },
             5,

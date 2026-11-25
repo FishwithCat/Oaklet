@@ -5,8 +5,8 @@
 
 use serde_json::Value;
 
-use super::ToolCall;
 use super::model::{Usage, stream_step};
+use super::{SystemPrompt, ToolCall};
 use crate::AppConfig;
 use crate::chat::RunContext;
 use crate::tools::{Cancel, ToolRegistry};
@@ -28,11 +28,13 @@ pub(super) enum Next {
     Retry,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn request(
     client: &reqwest::Client,
     config: &AppConfig,
     tools: &mut ToolRegistry,
     messages: &mut Vec<Value>,
+    prompt: &mut SystemPrompt,
     cancel: &Cancel,
     ctx: &RunContext,
     overflow_retried: &mut bool,
@@ -59,7 +61,9 @@ pub(super) async fn request(
             }
             Err(err) if err.is_context_overflow() && !*overflow_retried => {
                 *overflow_retried = true;
-                match super::window::recover(client, config, tools, messages, cancel, ctx).await {
+                match super::window::recover(client, config, tools, messages, prompt, cancel, ctx)
+                    .await
+                {
                     Ok(true) => return Ok(Next::Retry),
                     Ok(false) => {
                         return Err(format!(

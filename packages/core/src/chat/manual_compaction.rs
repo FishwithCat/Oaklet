@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 
 use super::{ChatState, run::trim_incomplete_tool_block};
-use crate::store::{self, ContextUsage};
+use crate::store;
 use crate::{SharedState, compaction, context};
 
 /// Clears the manual-compaction flag even if the command is dropped mid-way.
@@ -68,8 +68,9 @@ pub(super) async fn compact_session(
     })
     .await
     .map_err(|error| error.to_string())?;
-    let mut messages =
-        crate::agent::initial_messages(&config, &tools, &sources, instructions.as_deref(), base);
+    let mut prompt =
+        crate::agent::system_prompt(&config, &tools, &sources, instructions.as_deref());
+    let mut messages = crate::agent::initial_messages(&prompt, base);
     let before = context::request_tokens(&messages, &tools.schemas());
     let mut changed = false;
     if let Some(next) = compaction::trim_tool_outputs(&messages) {
@@ -103,13 +104,8 @@ pub(super) async fn compact_session(
     if tools.get("history_read").is_none() {
         tools.push(Box::new(history));
     }
-    messages = crate::agent::initial_messages(
-        &config,
-        &tools,
-        &sources,
-        instructions.as_deref(),
-        messages.split_off(1),
-    );
+    prompt = crate::agent::system_prompt(&config, &tools, &sources, instructions.as_deref());
+    messages = crate::agent::initial_messages(&prompt, messages.split_off(1));
     let after = context::request_tokens(&messages, &tools.schemas());
     if after >= before {
         return Err(
@@ -120,6 +116,8 @@ pub(super) async fn compact_session(
     if cancel.is_cancelled() {
         return Err("Stopped.".into());
     }
+    let context =
+        crate::agent::context_usage(&messages, &tools, &prompt, after, config.context_window);
     let surface = messages.split_off(1);
     let store = state.chat.store.clone();
     let id = session_id.to_string();
@@ -129,10 +127,7 @@ pub(super) async fn compact_session(
             version,
             &surface,
             (before, after),
-            ContextUsage {
-                used: after,
-                window: config.context_window,
-            },
+            context,
             store::now_ms(),
         )
     })

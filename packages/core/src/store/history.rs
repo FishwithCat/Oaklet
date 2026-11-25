@@ -84,9 +84,18 @@ impl Store {
             return Err("The conversation changed during compaction; nothing was replaced.".into());
         }
         save_surface(&tx, session_id, &[], surface, sizes.0, sizes.1, now)?;
-        tx.execute("UPDATE sessions SET context_used = ?2, context_window = ?3, updated_at = ?4 WHERE id = ?1",
-            params![session_id, context.used as i64, context.window as i64, now])
-            .map_err(|error| error.to_string())?;
+        tx.execute(
+            "UPDATE sessions SET context_used = ?2, context_window = ?3, \
+                    context_segments = ?4, updated_at = ?5 WHERE id = ?1",
+            params![
+                session_id,
+                context.used as i64,
+                context.window as i64,
+                context.segments_json()?,
+                now
+            ],
+        )
+        .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
         Self::get_window_with(&conn, session_id, None, PAGE_EVENTS)?
             .ok_or_else(|| "This session no longer exists.".into())
@@ -212,12 +221,14 @@ impl Store {
         )?;
         projection::index_legacy_archive(&tx, session_id, record.shadowed_through)?;
         tx.execute(
-            "UPDATE sessions SET context_used = ?2, context_window = ?3, updated_at = ?4 \
+            "UPDATE sessions SET context_used = ?2, context_window = ?3, \
+             context_segments = ?4, updated_at = ?5 \
              WHERE id = ?1",
             params![
                 session_id,
                 record.context.used as i64,
                 record.context.window as i64,
+                record.context.segments_json()?,
                 now
             ],
         )

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::ToolCall;
 use crate::AppConfig;
+use crate::context::{self, PromptSections};
 use crate::tools::{ToolAccess, ToolImage, ToolRegistry};
 
 pub(super) fn strip_system(input: &[Value]) -> Vec<Value> {
@@ -18,17 +19,11 @@ pub(super) fn strip_system(input: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn initial_messages(
-    config: &AppConfig,
-    tools: &ToolRegistry,
-    model_sources: &[String],
-    instructions: Option<&str>,
-    input: Vec<Value>,
-) -> Vec<Value> {
+pub(crate) fn initial_messages(prompt: &SystemPrompt, input: Vec<Value>) -> Vec<Value> {
     let mut messages = Vec::with_capacity(input.len() + 1);
     messages.push(json!({
         "role": "system",
-        "content": system_prompt(config, tools, model_sources, instructions)
+        "content": prompt.render()
     }));
     messages.extend(
         input
@@ -36,6 +31,46 @@ pub(crate) fn initial_messages(
             .filter(|message| message.get("role").and_then(Value::as_str) != Some("system")),
     );
     messages
+}
+
+pub(crate) struct SystemPrompt {
+    base: String,
+    skills: Option<String>,
+    instructions: Option<String>,
+    appendix: String,
+}
+
+impl SystemPrompt {
+    pub(crate) fn render(&self) -> String {
+        let mut text = self.base.clone();
+        if let Some(skills) = &self.skills {
+            text.push_str("\n\n");
+            text.push_str(skills);
+        }
+        if let Some(instructions) = &self.instructions {
+            text.push_str("\n\nWorkspace instructions:\n\n");
+            text.push_str(instructions);
+        }
+        if !self.appendix.is_empty() {
+            text.push_str(&self.appendix);
+        }
+        text
+    }
+
+    pub(crate) fn sections(&self) -> PromptSections {
+        PromptSections {
+            system: context::estimate_text(&self.base) + context::estimate_text(&self.appendix),
+            skills: self.skills.as_deref().map_or(0, context::estimate_text),
+            instructions: self.instructions.as_deref().map_or(0, |text| {
+                context::estimate_text("Workspace instructions:\n\n") + context::estimate_text(text)
+            }),
+        }
+    }
+
+    pub(crate) fn append(&mut self, text: &str) {
+        self.appendix.push_str("\n\n");
+        self.appendix.push_str(text);
+    }
 }
 
 pub(super) fn assistant_message(content: &str, reasoning: &str, calls: &[ToolCall]) -> Value {
@@ -92,19 +127,26 @@ pub(super) fn image_message(images: &[ToolImage]) -> Value {
     json!({ "role": "user", "content": parts })
 }
 
-pub(super) fn system_prompt(
+pub(crate) fn system_prompt(
     config: &AppConfig,
     tools: &ToolRegistry,
     model_sources: &[String],
     instructions: Option<&str>,
-) -> String {
+) -> SystemPrompt {
     let mut rules: Vec<String> = vec![
         "Use the tools to inspect and edit files. Never invent file contents or claim work you did not do.".into(),
         "Paths are relative to the workspace; absolute paths inside it also work. Shell commands start in the workspace root, so never prefix them with cd <workspace>.".into(),
         "In your reply, name files by their full workspace-relative path, such as `crates/acorn-core/src/ontology/view.rs`. Chat file links resolve from the workspace root, so a module-relative shorthand like `ontology/view.rs` will not open.".into(),
         "Do not write code comments, including doc comments. Make names and structure self-explanatory instead. The file tools reject new comments in Rust, JavaScript, and TypeScript, with exceptions for recognized directives and Rust safety notes.".into(),
     ];
-    rules.extend(tools.guidance().into_iter().map(str::to_string));
+    let mut skills: Vec<String> = Vec::new();
+    for (name, guidance) in tools.guidance_named() {
+        if name == "skill" {
+            skills.push(guidance.to_string());
+        } else {
+            rules.push(guidance.to_string());
+        }
+    }
     rules.extend(
         tools
             .warnings()
@@ -182,7 +224,7 @@ pub(super) fn system_prompt(
         );
     }
     rules.push("Keep the final answer short: what changed and how to verify it.".into());
-    let mut prompt = format!(
+    let base = format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
          inspect and change the project in their workspace.\n\n\
          Workspace: {workspace}\nPlatform: {platform}\n\n\
@@ -191,26 +233,34 @@ pub(super) fn system_prompt(
         platform = std::env::consts::OS,
         rules = rules.join("\n- "),
     );
-    if let Some(instructions) = instructions {
-        prompt.push_str("\n\nWorkspace instructions:\n\n");
-        prompt.push_str(instructions);
+    SystemPrompt {
+        base,
+        skills: (!skills.is_empty()).then(|| skills.join("\n\n")),
+        instructions: instructions.map(str::to_string),
+        appendix: String::new(),
     }
-    prompt
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn prompt_text(
+        config: &AppConfig,
+        tools: &ToolRegistry,
+        sources: &[String],
+        instructions: Option<&str>,
+    ) -> String {
+        system_prompt(config, tools, sources, instructions).render()
+    }
+
     #[test]
     fn rebuilds_the_system_prompt_and_drops_stale_ones() {
         let config = AppConfig::default();
         let tools = ToolRegistry::new();
+        let prompt = system_prompt(&config, &tools, &[], None);
         let messages = initial_messages(
-            &config,
-            &tools,
-            &[],
-            None,
+            &prompt,
             vec![
                 json!({ "role": "system", "content": "stale prompt" }),
                 json!({ "role": "user", "content": "hi" }),
@@ -224,7 +274,7 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_registered_tool_guidance() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("Commands may need approval"));
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
@@ -233,7 +283,7 @@ mod tests {
 
     #[test]
     fn execution_turns_get_bug_fix_and_verification_rules() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("reproduce the failure before editing"));
         assert!(prompt.contains("verification-only request"));
         assert!(prompt.contains("do not edit source files or change Git staging state"));
@@ -242,21 +292,21 @@ mod tests {
 
         let mut tools = ToolRegistry::new();
         tools.set_access(crate::tools::Access::planning());
-        let planning = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let planning = prompt_text(&AppConfig::default(), &tools, &[], None);
         assert!(!planning.contains("reproduce the failure before editing"));
         assert!(!planning.contains("list each check that actually ran"));
     }
 
     #[test]
     fn system_prompt_asks_for_full_workspace_paths_in_replies() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("full workspace-relative path"));
         assert!(prompt.contains("module-relative shorthand"));
     }
 
     #[test]
     fn system_prompt_forbids_code_comments() {
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(prompt.contains("Do not write code comments"));
         assert!(prompt.contains("including doc comments"));
         assert!(
@@ -279,7 +329,7 @@ mod tests {
         let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
         let mut tools = ToolRegistry::new();
         tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &tools, &[], None);
 
         assert!(prompt.contains("Available skills"));
         assert!(prompt.contains("`review`: Review a change."));
@@ -312,7 +362,7 @@ mod tests {
         tools.set_access(crate::tools::Access::planning());
         tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
 
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("architecture planning turn"));
         assert!(prompt.contains("`oaklet-principle-model-the-domain`"));
         assert!(prompt.contains(crate::tools::principles::ATTACK_THE_PREMISE_CUE));
@@ -331,8 +381,8 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
 
-        let first = system_prompt(&AppConfig::default(), &tools, &[], None);
-        let rebuilt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let first = prompt_text(&AppConfig::default(), &tools, &[], None);
+        let rebuilt = prompt_text(&AppConfig::default(), &tools, &[], None);
         assert_eq!(
             principle_index_entries(&first),
             crate::tools::principles::PRINCIPLES.len()
@@ -345,7 +395,7 @@ mod tests {
     fn system_prompt_includes_workspace_instructions() {
         let config = AppConfig::default();
         let tools = ToolRegistry::new();
-        let prompt = system_prompt(
+        let prompt = prompt_text(
             &config,
             &tools,
             &[],
@@ -354,20 +404,55 @@ mod tests {
         assert!(prompt.contains("Workspace instructions:"));
         assert!(prompt.contains("root rules"));
 
-        let prompt = system_prompt(&config, &tools, &[], None);
+        let prompt = prompt_text(&config, &tools, &[], None);
         assert!(!prompt.contains("Workspace instructions:"));
+    }
+
+    #[test]
+    fn prompt_sections_price_skills_and_instructions_apart_from_the_rules() {
+        let workspace = crate::tools::test_support::temp_root("prompt-sections");
+        let skill_dir = workspace.join(".oaklet/skills/review");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review a change.\n---\n\nRead the diff.\n",
+        )
+        .unwrap();
+        let catalog = crate::tools::skill::SkillCatalog::discover(&workspace, None);
+        let mut tools = ToolRegistry::new();
+        tools.push_for_test(Box::new(crate::tools::skill::LoadSkill::new(catalog)));
+
+        let prompt = system_prompt(&AppConfig::default(), &tools, &[], Some("root rules"));
+        let sections = prompt.sections();
+        let skills = tools
+            .guidance_named()
+            .into_iter()
+            .find(|(name, _)| *name == "skill")
+            .map(|(_, text)| text.to_string())
+            .unwrap();
+        assert_eq!(sections.skills, crate::context::estimate_text(&skills));
+        assert_eq!(
+            sections.instructions,
+            crate::context::estimate_text("Workspace instructions:\n\n")
+                + crate::context::estimate_text("root rules")
+        );
+        assert!(sections.system > 0);
+        let rendered = prompt.render();
+        assert_eq!(rendered.matches(&skills).count(), 1);
+        assert!(rendered.ends_with("root rules"));
+        std::fs::remove_dir_all(&workspace).ok();
     }
 
     #[test]
     fn system_prompt_requests_architecture_updates_when_models_exist() {
         let sources = vec!["architecture/model.c4".to_string()];
-        let prompt = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &sources, None);
+        let prompt = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &sources, None);
         assert!(prompt.contains("architecture/model.c4"));
         assert!(prompt.contains("normal execution turn"));
         assert!(prompt.contains("@arch"));
         assert!(prompt.contains("Never call present_plan"));
 
-        let without_sources = system_prompt(&AppConfig::default(), &ToolRegistry::new(), &[], None);
+        let without_sources = prompt_text(&AppConfig::default(), &ToolRegistry::new(), &[], None);
         assert!(!without_sources.contains("LikeC4 architecture sources"));
     }
 
@@ -379,13 +464,13 @@ mod tests {
             model_root: "architecture".into(),
             include_ignored: false,
         }));
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("model root `architecture`"));
         assert!(prompt.contains("validate_architecture_diff"));
 
         let mut without_model = ToolRegistry::new();
         without_model.set_access(crate::tools::Access::planning());
-        let prompt = system_prompt(&AppConfig::default(), &without_model, &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &without_model, &[], None);
         assert!(prompt.contains("architecture planning turn"));
         assert!(prompt.contains("present a text plan"));
     }
@@ -394,7 +479,7 @@ mod tests {
     fn system_prompt_opens_the_tools_for_an_approved_plan() {
         let mut tools = ToolRegistry::new();
         tools.set_approved_plan(Some(3));
-        let prompt = system_prompt(&AppConfig::default(), &tools, &[], None);
+        let prompt = prompt_text(&AppConfig::default(), &tools, &[], None);
         assert!(prompt.contains("approved plan version 3"));
         assert!(prompt.contains("may edit from the first step"));
         assert!(prompt.contains("stop writing and report it"));

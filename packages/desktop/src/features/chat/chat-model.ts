@@ -101,6 +101,16 @@ export function formatContextLabel(used: number, window: number): string {
   return `${formatTokens(used)}/${formatTokens(window)}`;
 }
 
+export function contextSegmentWidths(
+  segments: { tokens: number }[],
+  window: number,
+): number[] {
+  const total = segments.reduce((sum, segment) => sum + segment.tokens, 0);
+  if (total <= 0 || window <= 0) return segments.map(() => 0);
+  const span = Math.min(100, (total / window) * 100);
+  return segments.map((segment) => (segment.tokens / total) * span);
+}
+
 /** Hover detail for the label: how the last model request was billed. */
 export function formatRequestTitle(step: StepUsage): string {
   return [

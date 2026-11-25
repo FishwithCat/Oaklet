@@ -157,6 +157,15 @@ mod tests {
         assert_eq!(applied, MIGRATIONS.len() as i64);
         assert!(crate::store::has_table(&conn, "session_events").unwrap());
         assert!(crate::store::has_table(&conn, "archived_messages").unwrap());
+        let segments: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') \
+                 WHERE name = 'context_segments')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(segments);
         let archive_index: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'session_events_by_type')",

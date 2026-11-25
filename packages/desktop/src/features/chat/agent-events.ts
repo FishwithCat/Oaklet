@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ContextUsage,
   PendingInput,
   RunUsage,
   SessionView,
@@ -46,12 +47,7 @@ export type DoneEvent = {
   runId: string;
   session: SessionView | null;
 };
-export type ContextEvent = {
-  sessionId: string;
-  runId: string;
-  used: number;
-  window: number;
-};
+export type ContextEvent = { sessionId: string; runId: string } & ContextUsage;
 export type UsageEvent = {
   sessionId: string;
   runId: string;
