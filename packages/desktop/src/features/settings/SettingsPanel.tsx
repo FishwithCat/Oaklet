@@ -525,11 +525,7 @@ export function SettingsPanel({
                 aria-labelledby="settings-tab-appearance"
                 tabIndex={0}
               >
-                <div
-                  className="theme-options"
-                  role="radiogroup"
-                  aria-label="Theme"
-                >
+                <div role="radiogroup" aria-label="Theme">
                   {THEMES.map((option) => (
                     <label key={option.id} className="settings-check">
                       <input

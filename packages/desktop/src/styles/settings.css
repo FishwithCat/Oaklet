@@ -52,11 +52,11 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-muted);
   cursor: pointer;
+}
+
+.settings-check + .settings-check {
+  margin-top: 14px;
 }
 
 .settings-check input {
@@ -68,12 +68,6 @@
   display: block;
   margin-bottom: 3px;
   font-size: 12.5px;
-}
-
-.theme-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .error-text {
@@ -293,7 +287,7 @@
 .data-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 14px;
   margin-bottom: 10px;
 }
 
@@ -301,10 +295,6 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-muted);
 }
 
 .data-stat-value {
@@ -319,17 +309,17 @@
 }
 
 .data-heading {
-  margin: 18px 0 8px;
-  font-size: 12px;
-  font-weight: 600;
+  margin: 22px 0 12px;
+  font-size: 13px;
+  font-weight: 700;
   letter-spacing: 0.2px;
-  color: var(--muted);
+  color: var(--text);
 }
 
 .data-workspaces {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -339,10 +329,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-muted);
+  padding-left: 14px;
+  border-left: 2px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 
 .data-workspace-main {
@@ -356,6 +344,7 @@
 .data-workspace-path {
   font-family: var(--mono);
   font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
