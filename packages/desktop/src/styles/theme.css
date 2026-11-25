@@ -18,6 +18,8 @@
   --border-strong: #a8bfa4;
   --text: #1d3027;
   --muted: #52665a;
+  --stop-icon: #484848;
+  --stop-icon-active: #252525;
   /* The palette primary is already dark enough for text and button labels. */
   --accent: var(--palette-primary);
   --accent-hover: color-mix(in srgb, var(--palette-primary) 82%, #000);
@@ -84,6 +86,8 @@
   --border-strong: #465442;
   --text: #e3eadf;
   --muted: #9bab98;
+  --stop-icon: #b8b8b8;
+  --stop-icon-active: #e3e3e3;
   --accent: var(--palette-primary);
   --accent-hover: color-mix(in srgb, var(--palette-primary) 82%, #fff);
   --on-accent: #101a0e;

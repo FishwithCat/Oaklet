@@ -206,6 +206,12 @@
   min-width: 0;
 }
 
+.msg.user .bubble,
+.msg.assistant .bubble,
+.composer textarea {
+  font-size: 13px;
+}
+
 .msg.user {
   flex-direction: column;
   align-items: flex-end;
@@ -219,7 +225,6 @@
   max-width: 78%;
   overflow-wrap: anywhere;
   line-height: 1.55;
-  font-size: 13px;
 }
 
 .msg.user.pending {
@@ -303,7 +308,6 @@
 .msg.assistant .bubble {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -483,7 +487,7 @@
 
 .composer-wrap {
   flex: none;
-  padding: 6px;
+  padding: 7px 12px 5px;
   border-top: 1px solid var(--panel-muted-border);
   background: var(--bg);
   transition: border-color 120ms ease;
@@ -495,14 +499,19 @@
 
 .composer {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   margin: 0;
 }
 
+.composer-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
 .composer textarea {
-  grid-column: 2;
   width: 100%;
   min-width: 0;
   resize: none;
@@ -513,20 +522,10 @@
   min-height: 28px;
   max-height: 180px;
   line-height: 1.5;
-  font-size: 14px;
 }
 
 .composer textarea::placeholder {
   color: var(--muted);
-}
-
-.composer[data-expanded] textarea,
-.composer[data-expanded] .composer-footer {
-  grid-column: 2 / -1;
-}
-
-.composer[data-expanded] .composer-meta::before {
-  content: none;
 }
 
 .mention-menu {
@@ -592,11 +591,10 @@
 }
 
 .composer-attachments {
-  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 0 0 5px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -692,48 +690,41 @@
 }
 
 .composer-error {
-  grid-column: 1 / -1;
-  margin-bottom: 5px;
+  margin: 0;
   color: var(--red);
   font-size: 11.5px;
 }
 
 .composer-footer {
-  grid-column: 3;
-  justify-self: end;
   display: flex;
   align-items: center;
-  width: max-content;
-  max-width: 100%;
   min-height: 28px;
-  margin-inline-start: 10px;
-  gap: 4px;
+  gap: 6px;
 }
 
-.composer-stop-slot,
-.composer-footer button.stop {
+.composer button.stop {
   flex: none;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+}
+
+.composer-input button.stop {
+  padding-inline-start: 4px;
 }
 
 .composer-meta {
-  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex: 1;
+  gap: 8px;
   min-width: 0;
-  padding-left: 10px;
 }
 
-.composer-meta::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  height: 16px;
-  border-left: 1px solid var(--panel-muted-border);
-  transform: translateY(-50%);
+.composer-context {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
 }
 
 .composer-model {
@@ -747,6 +738,10 @@
   white-space: nowrap;
 }
 
+.composer-wrap:not([data-welcome]) .composer-model {
+  margin-inline-start: auto;
+}
+
 .composer-usage {
   flex: none;
   color: var(--muted);
@@ -758,12 +753,11 @@
 }
 
 .context-meter {
-  grid-column: 1;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  margin: 1px 8px 0 0;
+  width: 24px;
+  height: 26px;
+  margin-inline-start: -4px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -810,6 +804,7 @@
 .shortcut-trigger-wrap {
   position: relative;
   display: inline-flex;
+  flex: none;
 }
 
 .shortcut-trigger {
@@ -916,8 +911,6 @@
 
 .composer-wrap[data-welcome] .composer {
   margin: 0 30px 0 calc(30px + var(--scrollbar-size) - 17px);
-  display: flex;
-  flex-direction: column;
   gap: 6px;
   padding: 10px 12px 8px;
   background: var(--panel);
@@ -941,33 +934,16 @@
 }
 
 .composer-wrap[data-welcome] .composer-footer {
-  justify-content: space-between;
-  width: auto;
   min-height: 24px;
-  margin-inline-start: 0;
   padding: 0 2px;
-  gap: 12px;
 }
 
-.composer-wrap[data-welcome] .composer-stop-slot {
-  order: 2;
-}
-
-.composer-wrap[data-welcome] .composer-meta {
-  order: 1;
-  padding-left: 0;
-}
-
-.composer-wrap[data-welcome] .composer-meta::before {
-  content: none;
-}
-
-.composer-wrap[data-welcome] .composer-usage {
-  order: 1;
+.composer-wrap[data-welcome] .composer-footer button.stop {
+  width: 24px;
+  height: 24px;
 }
 
 .composer-wrap[data-welcome] .composer-model {
-  order: 2;
   max-width: min(50vw, 260px);
 }
 
@@ -978,10 +954,6 @@
   height: auto;
   margin: 0 0 0 -3px;
   padding: 3px;
-}
-
-.composer-wrap[data-welcome] .shortcut-trigger-wrap {
-  order: 3;
 }
 
 .composer-wrap[data-welcome] .shortcut-trigger {

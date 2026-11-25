@@ -11,7 +11,7 @@ import {
   CloseRegular,
   FileRegular,
   FlowerpotRegular,
-  QuestionRegular,
+  KeyboardRegular,
 } from "@mingcute/react/core-regular";
 import { PauseFilled } from "@mingcute/react/core-filled";
 import {
@@ -51,16 +51,8 @@ export type ChatComposerHandle = {
 type ImageAttachment = Extract<Attachment, { kind: "image" }>;
 
 function resizeComposer(element: HTMLTextAreaElement) {
-  const form = element.form;
-  if (!form) return;
   const scrollTop = element.scrollTop;
   element.style.height = "auto";
-  // Measure at the inline width so the extra space after expansion cannot cause a re-collapse.
-  form.removeAttribute("data-expanded");
-  form.toggleAttribute(
-    "data-expanded",
-    element.clientWidth < 200 || element.scrollHeight > element.clientHeight,
-  );
   element.style.height = `${element.scrollHeight}px`;
   element.scrollTop = scrollTop;
 }
@@ -189,7 +181,6 @@ export function ChatComposer({
   const [mention, setMention] = useState<ActiveMention | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const footerRef = useRef<HTMLDivElement>(null);
   const activeTabIdRef = useRef(activeTabId);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const helpPopoverRef = useRef<HTMLDivElement>(null);
@@ -235,29 +226,21 @@ export function ChatComposer({
 
   useLayoutEffect(() => {
     if (textareaRef.current) resizeComposer(textareaRef.current);
-  }, [activeTabId, showContextGauge, value]);
+  }, [activeTabId, running, value, welcome]);
 
   useLayoutEffect(() => {
     const element = textareaRef.current;
-    const form = element?.form;
-    const footer = footerRef.current;
-    if (!element || !form || !footer) return;
+    if (!element) return;
 
     let frame = 0;
-    const widths = new Map<Element, number>();
-    const observer = new ResizeObserver((entries) => {
-      let changed = false;
-      for (const { target, contentRect } of entries) {
-        if (widths.get(target) === contentRect.width) continue;
-        widths.set(target, contentRect.width);
-        changed = true;
-      }
-      if (!changed) return;
+    let width: number | undefined;
+    const observer = new ResizeObserver(([{ contentRect }]) => {
+      if (width === contentRect.width) return;
+      width = contentRect.width;
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => resizeComposer(element));
     });
-    observer.observe(form);
-    observer.observe(footer);
+    observer.observe(element);
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
@@ -348,6 +331,17 @@ export function ChatComposer({
       onCompact={onCompact}
     />
   ) : null;
+  const stopButton = running && (
+    <button
+      type="button"
+      className="stop icon-button"
+      onClick={onStop}
+      aria-label="Stop"
+      title="Stop"
+    >
+      <PauseFilled size={16} aria-hidden="true" />
+    </button>
+  );
 
   return (
     <div className="composer-wrap" data-welcome={welcome ? "" : undefined}>
@@ -434,120 +428,113 @@ export function ChatComposer({
             ))}
           </div>
         )}
-        {!welcome && gauge}
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          value={value}
-          placeholder={
-            welcome
-              ? running
-                ? "Press Enter to steer"
-                : "Press Enter to send"
-              : running
-                ? "Steer the current turn…"
-                : "Message Oaklet…"
-          }
-          aria-label="Message"
-          aria-autocomplete="list"
-          aria-controls={mentionOpen ? "composer-mentions" : undefined}
-          aria-expanded={mentionOpen}
-          aria-activedescendant={
-            mentionOpen
-              ? `composer-mention-${options[activeIndex]?.name}`
-              : undefined
-          }
-          onChange={(event) => {
-            onChange(event.target.value);
-            syncMention(event.target.value, event.target.selectionStart);
-          }}
-          onSelect={(event) =>
-            syncMention(
-              event.currentTarget.value,
-              event.currentTarget.selectionStart,
-            )
-          }
-          onPaste={pasteFiles}
-          onCompositionStart={() => {
-            compositionRef.current.start();
-          }}
-          onCompositionEnd={() => {
-            // Safari fires compositionend before the Enter keydown that
-            // confirms the candidate, so keep the flag through that keydown.
-            compositionRef.current.end();
-          }}
-          onBlur={() => {
-            compositionRef.current.reset();
-            setMention(null);
-          }}
-          onKeyDown={(event) => {
-            const composing = compositionRef.current.active();
-            if (
-              mentionOpen &&
-              !isImeEvent(event.nativeEvent) &&
-              !composing
-            ) {
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                const step = event.key === "ArrowDown" ? 1 : -1;
-                setMentionIndex(
-                  (index) =>
-                    (index + step + options.length) % options.length,
-                );
-                return;
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setMention(null);
-                return;
-              }
-              if (
-                event.key === "Enter" ||
-                (event.key === "Tab" && !event.shiftKey)
-              ) {
-                event.preventDefault();
-                const option = options[activeIndex] ?? options[0];
-                if (option) acceptMention(option);
-                return;
-              }
+        <div className="composer-input">
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={value}
+            placeholder={
+              welcome
+                ? running
+                  ? "Press Enter to steer"
+                  : "Press Enter to send"
+                : running
+                  ? "Steer the current turn…"
+                  : "Message Oaklet…"
             }
-            if (!isSendEnter(event.nativeEvent, composing)) return;
-            event.preventDefault();
-            void submit();
-          }}
-        />
-        <div className="composer-footer" ref={footerRef}>
-          <span className="composer-stop-slot">
-            {running && (
-              <button
-                type="button"
-                className="stop icon-button"
-                onClick={onStop}
-                aria-label="Stop"
-                title="Stop"
-              >
-                <PauseFilled size={14} />
-              </button>
-            )}
-          </span>
+            aria-label="Message"
+            aria-autocomplete="list"
+            aria-controls={mentionOpen ? "composer-mentions" : undefined}
+            aria-expanded={mentionOpen}
+            aria-activedescendant={
+              mentionOpen
+                ? `composer-mention-${options[activeIndex]?.name}`
+                : undefined
+            }
+            onChange={(event) => {
+              onChange(event.target.value);
+              syncMention(event.target.value, event.target.selectionStart);
+            }}
+            onSelect={(event) =>
+              syncMention(
+                event.currentTarget.value,
+                event.currentTarget.selectionStart,
+              )
+            }
+            onPaste={pasteFiles}
+            onCompositionStart={() => {
+              compositionRef.current.start();
+            }}
+            onCompositionEnd={() => {
+              // Safari fires compositionend before the Enter keydown that
+              // confirms the candidate, so keep the flag through that keydown.
+              compositionRef.current.end();
+            }}
+            onBlur={() => {
+              compositionRef.current.reset();
+              setMention(null);
+            }}
+            onKeyDown={(event) => {
+              const composing = compositionRef.current.active();
+              if (
+                mentionOpen &&
+                !isImeEvent(event.nativeEvent) &&
+                !composing
+              ) {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  const step = event.key === "ArrowDown" ? 1 : -1;
+                  setMentionIndex(
+                    (index) =>
+                      (index + step + options.length) % options.length,
+                  );
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setMention(null);
+                  return;
+                }
+                if (
+                  event.key === "Enter" ||
+                  (event.key === "Tab" && !event.shiftKey)
+                ) {
+                  event.preventDefault();
+                  const option = options[activeIndex] ?? options[0];
+                  if (option) acceptMention(option);
+                  return;
+                }
+              }
+              if (!isSendEnter(event.nativeEvent, composing)) return;
+              event.preventDefault();
+              void submit();
+            }}
+          />
+          {!welcome && stopButton}
+        </div>
+        <div className="composer-footer">
           <span className="composer-meta">
-            {welcome && gauge}
+            {(gauge || context) && (
+              <span className="composer-context">
+                {gauge}
+                {context && (
+                  <span
+                    className="composer-usage"
+                    title={stepUsage ? formatRequestTitle(stepUsage) : "Current context"}
+                  >
+                    <UsageLabel
+                      key={activeTabId}
+                      used={context.used}
+                      limit={context.window}
+                    />
+                  </span>
+                )}
+              </span>
+            )}
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}
             </span>
-            {context && (
-              <span
-                className="composer-usage"
-                title={stepUsage ? formatRequestTitle(stepUsage) : "Current context"}
-              >
-                <UsageLabel
-                  key={activeTabId}
-                  used={context.used}
-                  limit={context.window}
-                />
-              </span>
-            )}
             <span className="shortcut-trigger-wrap">
               <button
                 ref={helpButtonRef}
@@ -562,7 +549,7 @@ export function ChatComposer({
                 aria-expanded={helpOpen}
                 aria-controls={helpOpen ? "shortcuts-help" : undefined}
               >
-                <QuestionRegular
+                <KeyboardRegular
                   size={welcome ? 11 : 15}
                   aria-hidden="true"
                 />
@@ -639,6 +626,7 @@ export function ChatComposer({
               )}
             </span>
           </span>
+          {welcome && stopButton}
         </div>
       </form>
       {preview && (

@@ -43,13 +43,13 @@ button.primary:hover:not(:disabled) {
 button.stop {
   border-color: transparent;
   background: transparent;
-  color: var(--red);
+  color: var(--stop-icon);
 }
 
-button.stop:hover:not(:disabled) {
+button.stop:is(:hover, :focus-visible):not(:disabled) {
   border-color: transparent;
-  background: color-mix(in srgb, var(--red) 8%, transparent);
-  color: color-mix(in srgb, var(--red) 78%, black);
+  background: transparent;
+  color: var(--stop-icon-active);
 }
 
 button.ghost {
