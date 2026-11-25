@@ -48,6 +48,13 @@
   --backdrop: color-mix(in srgb, var(--text) 28%, transparent);
   --brand-gradient: linear-gradient(135deg, var(--palette-soft), var(--palette-tertiary), var(--palette-secondary));
 
+  --context-system: #6b7280;
+  --context-instructions: #7b52c9;
+  --context-skills: #cf7413;
+  --context-tools: #2f9152;
+  --context-conversation: #2660d8;
+  --context-tool-results: #2aa7b5;
+
   --terminal-selection: #d6e8ca;
   --terminal-black: var(--text);
   --terminal-red: var(--red);
@@ -114,6 +121,13 @@
   --shadow-color: color-mix(in srgb, #000 55%, transparent);
   --backdrop: color-mix(in srgb, #000 62%, transparent);
   --brand-gradient: linear-gradient(135deg, var(--palette-soft), var(--palette-tertiary), var(--palette-secondary));
+
+  --context-system: #98a2ab;
+  --context-instructions: #a98bec;
+  --context-skills: #e0a04a;
+  --context-tools: #63bd83;
+  --context-conversation: #7fa9f0;
+  --context-tool-results: #57c6cf;
 
   --terminal-selection: #2e442a;
   --terminal-black: #4a5747;

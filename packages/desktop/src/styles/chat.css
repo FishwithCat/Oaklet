@@ -819,27 +819,27 @@
 }
 
 .context-inspector [data-kind="system"] {
-  background: var(--terminal-bright-black);
+  background: var(--context-system);
 }
 
 .context-inspector [data-kind="instructions"] {
-  background: var(--terminal-magenta);
+  background: var(--context-instructions);
 }
 
 .context-inspector [data-kind="skills"] {
-  background: var(--terminal-bright-yellow);
+  background: var(--context-skills);
 }
 
 .context-inspector [data-kind="tools"] {
-  background: var(--palette-secondary);
+  background: var(--context-tools);
 }
 
 .context-inspector [data-kind="conversation"] {
-  background: var(--terminal-blue);
+  background: var(--context-conversation);
 }
 
 .context-inspector [data-kind="tool_results"] {
-  background: var(--terminal-cyan);
+  background: var(--context-tool-results);
 }
 
 .context-inspector-rows,
