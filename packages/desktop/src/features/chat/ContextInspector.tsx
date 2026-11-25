@@ -1,5 +1,3 @@
-import { useState } from "react";
-import { DownSmallRegular } from "@mingcute/react/core-regular";
 import {
   contextSegmentWidths,
   formatContextLabel,
@@ -23,17 +21,9 @@ const SEGMENT_LABELS: Record<ContextSegmentKind, string> = {
   tool_results: "Tool results",
 };
 
-function SegmentRow({
-  segment,
-  open,
-  onToggle,
-}: {
-  segment: ContextSegment;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const meta = (
-    <>
+function SegmentRow({ segment }: { segment: ContextSegment }) {
+  return (
+    <div className="context-inspector-row">
       <span
         className="context-inspector-dot"
         data-kind={segment.kind}
@@ -45,39 +35,7 @@ function SegmentRow({
       <span className="context-inspector-tokens">
         {formatTokens(segment.tokens)}
       </span>
-    </>
-  );
-  if (segment.items.length === 0) {
-    return <div className="context-inspector-row">{meta}</div>;
-  }
-  const listId = `context-items-${segment.kind}`;
-  return (
-    <>
-      <button
-        type="button"
-        className="context-inspector-row"
-        aria-expanded={open}
-        aria-controls={listId}
-        onClick={onToggle}
-      >
-        {meta}
-        <DownSmallRegular size={10} className="context-inspector-chevron" />
-      </button>
-      {open && (
-        <ul className="context-inspector-items" id={listId}>
-          {segment.items.map((item, index) => (
-            <li key={`${item.label}-${index}`}>
-              <span className="context-inspector-item-label" title={item.label}>
-                {item.label}
-              </span>
-              <span className="context-inspector-tokens">
-                {formatTokens(item.tokens)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
+    </div>
   );
 }
 
@@ -88,7 +46,6 @@ export function ContextInspector({
   usage: ContextUsage;
   stepUsage: StepUsage | null;
 }) {
-  const [expanded, setExpanded] = useState<ContextSegmentKind | null>(null);
   const widths = contextSegmentWidths(usage.segments, usage.window);
   return (
     <div
@@ -116,15 +73,7 @@ export function ContextInspector({
           <ul className="context-inspector-rows">
             {usage.segments.map((segment) => (
               <li key={segment.kind}>
-                <SegmentRow
-                  segment={segment}
-                  open={expanded === segment.kind}
-                  onToggle={() =>
-                    setExpanded((current) =>
-                      current === segment.kind ? null : segment.kind,
-                    )
-                  }
-                />
+                <SegmentRow segment={segment} />
               </li>
             ))}
           </ul>

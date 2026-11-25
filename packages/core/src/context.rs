@@ -6,8 +6,6 @@
 //! messages appended afterwards, which keeps the estimate close without a
 //! tokenizer dependency.
 
-use std::collections::HashMap;
-
 use serde_json::Value;
 
 /// Framing cost of one message: role, separators, and JSON punctuation.
@@ -190,17 +188,9 @@ pub enum ContextKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContextItem {
-    pub label: String,
-    pub tokens: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ContextSegment {
     pub kind: ContextKind,
     pub tokens: usize,
-    pub items: Vec<ContextItem>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -215,10 +205,8 @@ pub fn breakdown(
     schemas: &Value,
     sections: PromptSections,
 ) -> Vec<ContextSegment> {
-    let labels = tool_labels(messages);
     let mut conversation = 0;
     let mut results = 0;
-    let mut items = Vec::new();
     let skip = usize::from(
         messages
             .first()
@@ -229,13 +217,6 @@ pub fn breakdown(
         let images = message["oaklet_source"].as_str() == Some("tool_images");
         if message["role"] == "tool" || images {
             results += tokens;
-            let label = message["tool_call_id"]
-                .as_str()
-                .and_then(|id| labels.get(id))
-                .cloned()
-                .or_else(|| images.then(|| "Tool images".to_string()))
-                .unwrap_or_else(|| "Tool result".to_string());
-            items.push(ContextItem { label, tokens });
         } else {
             conversation += tokens;
         }
@@ -244,84 +225,32 @@ pub fn breakdown(
         ContextSegment {
             kind: ContextKind::System,
             tokens: sections.system,
-            items: Vec::new(),
         },
         ContextSegment {
             kind: ContextKind::Instructions,
             tokens: sections.instructions,
-            items: Vec::new(),
         },
         ContextSegment {
             kind: ContextKind::Skills,
             tokens: sections.skills,
-            items: Vec::new(),
         },
         ContextSegment {
             kind: ContextKind::Tools,
             tokens: estimate_text(&schemas.to_string()),
-            items: Vec::new(),
         },
         ContextSegment {
             kind: ContextKind::Conversation,
             tokens: conversation,
-            items: Vec::new(),
         },
         ContextSegment {
             kind: ContextKind::ToolResults,
             tokens: results,
-            items,
         },
     ];
     segments
         .into_iter()
         .filter(|segment| segment.tokens > 0)
         .collect()
-}
-
-fn tool_labels(messages: &[Value]) -> HashMap<String, String> {
-    let mut labels = HashMap::new();
-    for call in messages
-        .iter()
-        .filter_map(|message| message.get("tool_calls"))
-        .filter_map(Value::as_array)
-        .flatten()
-    {
-        let Some(id) = call["id"].as_str() else {
-            continue;
-        };
-        let name = call
-            .pointer("/function/name")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
-        let arguments = call
-            .pointer("/function/arguments")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        labels.insert(id.to_string(), call_label(name, arguments));
-    }
-    labels
-}
-
-fn call_label(name: &str, arguments: &str) -> String {
-    let parsed: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
-    let target = ["path", "command", "query", "url", "name"]
-        .iter()
-        .find_map(|key| parsed.get(key).and_then(Value::as_str))
-        .map(|value| first_line(value, 48))
-        .filter(|value| !value.is_empty());
-    match target {
-        Some(target) => format!("{name} · {target}"),
-        None => name.to_string(),
-    }
-}
-
-fn first_line(text: &str, limit: usize) -> String {
-    let line = text.lines().next().unwrap_or("").trim();
-    let mut value: String = line.chars().take(limit).collect();
-    if value.chars().count() < line.chars().count() {
-        value.push('…');
-    }
-    value
 }
 
 pub fn scaled(segments: Vec<ContextSegment>, total: usize) -> Vec<ContextSegment> {
@@ -343,17 +272,6 @@ pub fn scaled(segments: Vec<ContextSegment>, total: usize) -> Vec<ContextSegment
         .into_iter()
         .zip(tokens)
         .map(|(mut segment, tokens)| {
-            let items = distribute(
-                &segment
-                    .items
-                    .iter()
-                    .map(|item| item.tokens)
-                    .collect::<Vec<_>>(),
-                tokens,
-            );
-            for (item, tokens) in segment.items.iter_mut().zip(items) {
-                item.tokens = tokens;
-            }
             segment.tokens = tokens;
             segment
         })
@@ -679,16 +597,13 @@ mod breakdown_tests {
         assert_eq!(segments[1].tokens, 30);
         assert_eq!(segments[2].tokens, 20);
         assert_eq!(segments[3].tokens, estimate_text(&schemas.to_string()));
-        let results = &segments[5];
-        let labels: Vec<_> = results
-            .items
-            .iter()
-            .map(|item| item.label.as_str())
-            .collect();
-        assert_eq!(labels, vec!["read_file · src/main.rs", "Tool images"]);
         assert_eq!(
-            results.tokens,
-            results.items.iter().map(|item| item.tokens).sum::<usize>()
+            segments[4].tokens,
+            estimate_message(&messages[1]) + estimate_message(&messages[2])
+        );
+        assert_eq!(
+            segments[5].tokens,
+            estimate_message(&messages[3]) + estimate_message(&messages[4])
         );
     }
 
@@ -706,62 +621,21 @@ mod breakdown_tests {
     }
 
     #[test]
-    fn names_a_result_after_its_tool_call_when_it_has_no_path() {
-        let messages = vec![
-            json!({"role":"assistant", "content":"", "tool_calls":[{
-                "id":"c1", "type":"function",
-                "function": {"name":"run_command", "arguments":"{\"command\":\"cargo test --all\"}"}
-            }]}),
-            json!({"role":"tool", "tool_call_id":"c1", "content":"ok"}),
-        ];
-        let segments = breakdown(&messages, &json!([]), PromptSections::default());
-        let results = segments
-            .iter()
-            .find(|segment| segment.kind == ContextKind::ToolResults)
-            .unwrap();
-        let labels: Vec<_> = results
-            .items
-            .iter()
-            .map(|item| item.label.as_str())
-            .collect();
-        assert_eq!(labels, vec!["run_command · cargo test --all"]);
-    }
-
-    #[test]
-    fn scales_segments_and_items_to_the_provider_total() {
+    fn scales_segments_to_the_provider_total() {
         let segments = vec![
             ContextSegment {
                 kind: ContextKind::System,
                 tokens: 300,
-                items: Vec::new(),
             },
             ContextSegment {
                 kind: ContextKind::ToolResults,
                 tokens: 700,
-                items: vec![
-                    ContextItem {
-                        label: "read_file".into(),
-                        tokens: 140,
-                    },
-                    ContextItem {
-                        label: "run_command".into(),
-                        tokens: 560,
-                    },
-                ],
             },
         ];
         let scaled = scaled(segments, 1_000_000);
         assert_eq!(segments_total(&scaled), 1_000_000);
         assert_eq!(scaled[0].tokens, 300_000);
         assert_eq!(scaled[1].tokens, 700_000);
-        assert_eq!(
-            scaled[1]
-                .items
-                .iter()
-                .map(|item| item.tokens)
-                .sum::<usize>(),
-            700_000
-        );
     }
 
     #[test]
@@ -769,7 +643,6 @@ mod breakdown_tests {
         let segments = vec![ContextSegment {
             kind: ContextKind::Conversation,
             tokens: 40,
-            items: Vec::new(),
         }];
         let scaled = scaled(segments.clone(), 40);
         assert_eq!(scaled, segments);

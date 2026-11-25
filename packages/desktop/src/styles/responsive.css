@@ -80,10 +80,6 @@
     animation: none;
   }
 
-  .context-inspector-chevron {
-    transition: none;
-  }
-
   .tab-status.working {
     animation: none;
   }

@@ -10,12 +10,9 @@ export type ContextSegmentKind =
   | "conversation"
   | "tool_results";
 
-export type ContextSegmentItem = { label: string; tokens: number };
-
 export type ContextSegment = {
   kind: ContextSegmentKind;
   tokens: number;
-  items: ContextSegmentItem[];
 };
 
 export type ContextUsage = {

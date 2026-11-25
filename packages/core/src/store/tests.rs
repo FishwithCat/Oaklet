@@ -7,7 +7,7 @@ use super::{
     PlanValidationStatus, RunEnd, RunUsage, StepUsage, Store, has_table, is_checkpoint,
 };
 use crate::agent::Usage;
-use crate::context::{ContextItem, ContextKind, ContextSegment};
+use crate::context::{ContextKind, ContextSegment};
 
 fn store() -> Store {
     Store::in_memory().unwrap()
@@ -132,10 +132,6 @@ fn finish_run_appends_without_rewriting_prior_events() {
                 segments: vec![ContextSegment {
                     kind: ContextKind::ToolResults,
                     tokens: 12,
-                    items: vec![ContextItem {
-                        label: "read_file · src/main.rs".into(),
-                        tokens: 12,
-                    }],
                 }],
             }),
             usage: RunUsage {
@@ -163,10 +159,6 @@ fn finish_run_appends_without_rewriting_prior_events() {
             segments: vec![ContextSegment {
                 kind: ContextKind::ToolResults,
                 tokens: 12,
-                items: vec![ContextItem {
-                    label: "read_file · src/main.rs".into(),
-                    tokens: 12,
-                }],
             }],
         })
     );
