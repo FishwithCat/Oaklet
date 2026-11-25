@@ -125,15 +125,15 @@ export function CommitPicker({ commits, commit, onSelect }: {
               >
                 <span className="sc-commit-subject">{entry.subject || "Untitled commit"}</span>
                 <span className="sc-commit-meta">
+                  {entry.refs.length > 0 && (
+                    <span className="sc-commit-refs">
+                      {entry.refs.map((ref) => <span className="commit-ref" key={ref} title={ref}>{ref}</span>)}
+                    </span>
+                  )}
                   <code>{entry.shortHash}</code>
                   <span className="sc-commit-author">{entry.author}</span>
-                  <span>{relativeDate(entry.date)}</span>
+                  <time dateTime={entry.date}>{relativeDate(entry.date)}</time>
                 </span>
-                {entry.refs.length > 0 && (
-                  <span className="sc-commit-refs">
-                    {entry.refs.map((ref) => <span className="commit-ref" key={ref} title={ref}>{ref}</span>)}
-                  </span>
-                )}
               </button>
             ))}
           </div>

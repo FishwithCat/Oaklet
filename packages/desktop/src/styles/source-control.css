@@ -437,6 +437,17 @@
   color: var(--accent);
 }
 
+.sc-commit-option .sc-commit-meta {
+  align-items: center;
+  gap: 5px;
+}
+
+.sc-commit-option time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sc-commit-empty {
   margin: 0;
   padding: 5px 8px;
@@ -550,22 +561,20 @@
 
 .sc-commit-refs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
+  gap: 5px;
   min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
 }
 
 .commit-ref {
-  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
-  padding: 0 5px;
-  border: 1px solid var(--accent-border);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--commit-ref);
   font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
