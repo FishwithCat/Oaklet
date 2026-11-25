@@ -339,8 +339,18 @@ export function ChatComposer({
     }
   }
 
+  const gauge = showContextGauge ? (
+    <ContextGauge
+      usage={context}
+      runUsage={usage}
+      running={running}
+      compacting={compacting}
+      onCompact={onCompact}
+    />
+  ) : null;
+
   return (
-    <div className="composer-wrap">
+    <div className="composer-wrap" data-welcome={welcome ? "" : undefined}>
       <form
         className="composer"
         onSubmit={(event) => {
@@ -424,20 +434,20 @@ export function ChatComposer({
             ))}
           </div>
         )}
-        {showContextGauge && (
-          <ContextGauge
-            usage={context}
-            runUsage={usage}
-            running={running}
-            compacting={compacting}
-            onCompact={onCompact}
-          />
-        )}
+        {!welcome && gauge}
         <textarea
           ref={textareaRef}
           rows={1}
           value={value}
-          placeholder={running ? "Steer the current turn…" : "Message Oaklet…"}
+          placeholder={
+            welcome
+              ? running
+                ? "Press Enter to steer"
+                : "Press Enter to send"
+              : running
+                ? "Steer the current turn…"
+                : "Message Oaklet…"
+          }
           aria-label="Message"
           aria-autocomplete="list"
           aria-controls={mentionOpen ? "composer-mentions" : undefined}
@@ -521,6 +531,7 @@ export function ChatComposer({
             )}
           </span>
           <span className="composer-meta">
+            {welcome && gauge}
             <span className="composer-model" title={`Model: ${model}`}>
               <span className="sr-only">Model: </span>
               {modelLabel}
@@ -551,7 +562,11 @@ export function ChatComposer({
                 aria-expanded={helpOpen}
                 aria-controls={helpOpen ? "shortcuts-help" : undefined}
               >
-                <QuestionRegular size={15} aria-hidden="true" />
+                <QuestionRegular
+                  size={welcome ? 11 : 15}
+                  aria-hidden="true"
+                />
+                {welcome && "Shortcuts"}
               </button>
               {helpOpen && (
                 <div
