@@ -14,6 +14,7 @@ use tokio::sync::oneshot;
 
 use crate::SharedState;
 use crate::chat::RunContext;
+use crate::store::Store;
 use crate::tools::{ApprovalDecision, ApprovalRequest, Approver, Cancel};
 use crate::windows::workspace_for_window;
 
@@ -60,7 +61,7 @@ async fn request_approval(
         .lock()
         .map(|granted| granted.clone())
         .unwrap_or_default();
-    if auto_approves_command(&request.tool, workspace, &granted) {
+    if auto_approves_command(&request.tool, workspace, &granted, state.chat.store()) {
         return true;
     }
 
@@ -113,10 +114,20 @@ pub struct PendingApproval {
     pub sender: oneshot::Sender<bool>,
 }
 
-/// Only shell commands in the exact workspace the user granted may skip the
-/// approval prompt; every other request still asks.
-fn auto_approves_command(tool: &str, workspace: &Path, granted: &HashSet<PathBuf>) -> bool {
-    tool == "run_command" && granted.contains(workspace)
+/// Only shell commands in the workspace the user granted may skip the approval
+/// prompt; every other request still asks. A worktree checkout belongs to the
+/// project workspace it was created from, so the grant covers it too.
+fn auto_approves_command(
+    tool: &str,
+    workspace: &Path,
+    granted: &HashSet<PathBuf>,
+    store: &Store,
+) -> bool {
+    tool == "run_command"
+        && (granted.contains(workspace)
+            || granted
+                .iter()
+                .any(|project| store.worktree_access(project, workspace).unwrap_or(false)))
 }
 
 #[tauri::command]
@@ -196,20 +207,81 @@ pub(crate) fn grant_command_allow_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use crate::worktrees::{Checkout, SessionWorktree};
 
     #[test]
-    fn auto_approves_only_commands_in_the_granted_workspace() {
+    fn auto_approves_only_commands_in_the_granted_workspace_or_its_worktrees() {
+        let store = Store::in_memory().unwrap();
         let workspace = Path::new("/tmp/oaklet-workspace");
         let other = Path::new("/tmp/oaklet-other");
+        let worktree = Path::new("/tmp/oaklet-workspace/.agents/worktrees/fix");
         let granted = HashSet::from([workspace.to_path_buf()]);
 
-        assert!(auto_approves_command("run_command", workspace, &granted));
-        assert!(!auto_approves_command("run_command", other, &granted));
+        assert!(auto_approves_command(
+            "run_command",
+            workspace,
+            &granted,
+            &store
+        ));
+        assert!(!auto_approves_command(
+            "run_command",
+            other,
+            &granted,
+            &store
+        ));
         assert!(!auto_approves_command(
             "run_command",
             workspace,
-            &HashSet::new()
+            &HashSet::new(),
+            &store
         ));
-        assert!(!auto_approves_command("write_file", workspace, &granted));
+        assert!(!auto_approves_command(
+            "write_file",
+            workspace,
+            &granted,
+            &store
+        ));
+
+        store
+            .create_session("s", &workspace.to_string_lossy(), 1)
+            .unwrap();
+        let entry = Checkout {
+            path: worktree.to_string_lossy().into_owned(),
+            source: workspace.to_string_lossy().into_owned(),
+            common_dir: "/tmp/oaklet-workspace/.git".into(),
+            branch: Some("fix".into()),
+            base_commit: Some("baseline".into()),
+        };
+        store
+            .save_worktree(
+                "s",
+                &SessionWorktree {
+                    active: vec![entry.clone()],
+                    created: vec![entry],
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+
+        assert!(auto_approves_command(
+            "run_command",
+            worktree,
+            &granted,
+            &store
+        ));
+        assert!(!auto_approves_command(
+            "run_command",
+            worktree,
+            &HashSet::new(),
+            &store
+        ));
+        assert!(!auto_approves_command(
+            "run_command",
+            other,
+            &granted,
+            &store
+        ));
     }
 }
