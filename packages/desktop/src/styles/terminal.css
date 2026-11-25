@@ -10,10 +10,6 @@
   display: none;
 }
 
-:where(.terminal) .view-tab-close {
-  opacity: 0.55;
-}
-
 .terminal-tab-title {
   box-sizing: border-box;
 }

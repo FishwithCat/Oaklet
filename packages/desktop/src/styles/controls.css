@@ -240,22 +240,16 @@ button.view-tab {
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  opacity: 0;
+  opacity: 0.4;
 }
 
-.view-tab:hover .view-tab-close,
-.view-tab.active .view-tab-close,
+.view-tab:is(:hover, .active) .view-tab-close:not(:disabled),
 .view-tab-close:focus-visible {
   opacity: 1;
 }
 
-.chat-tab.active .view-tab-close {
-  opacity: 0;
-}
-
-.chat-tab:hover .view-tab-close,
-.chat-tab .view-tab-close:focus-visible {
-  opacity: 1;
+.view-tab-close:disabled {
+  opacity: 0.45;
 }
 
 .view-tab-close:hover:not(:disabled) {

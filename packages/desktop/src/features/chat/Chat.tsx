@@ -443,7 +443,7 @@ export function Chat({
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className={`view-tab chat-tab${
+              className={`view-tab${
                 tab.id === activeTabId ? " active" : ""
               }${tab.id === draggingId ? " dragging" : ""}`}
               {...dragProps(tab.id)}
