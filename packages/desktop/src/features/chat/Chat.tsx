@@ -17,6 +17,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
+import { Welcome } from "./Welcome";
 import { readDroppedFile, type Attachment } from "./attachments";
 import {
   isAtBottom,
@@ -37,7 +38,6 @@ import type {
 } from "./session-model";
 import { useSelectionAction } from "./useSelectionAction";
 import { useTabDrag } from "../../shared/useTabDrag";
-import oakletIcon from "../../assets/oaklet-icon.png";
 
 const STATUS_LABEL: Record<ChatTabInfo["status"], string> = {
   working: "Working",
@@ -147,8 +147,8 @@ export function Chat({
   const [dropping, setDropping] = useState(false);
   activeTabIdRef.current = activeTabId;
   activeRef.current = active;
-  // The welcome screen is the blank first tab: no tabs, find or selection.
-  const welcome = tabs.length <= 1 && items.length === 0 && !hasMore;
+  // Any blank thread is a welcome screen, including a new tab from Command+N.
+  const welcome = items.length === 0 && !hasMore;
   const { selectionAction, selectionButtonRef, clearSelection } =
     useSelectionAction({ active: active && !welcome, containerRef: chatRef });
   const { draggingId, dragProps } = useTabDrag(onMoveTab);
@@ -398,18 +398,6 @@ export function Chat({
   }
 
   const showTabs = items.length > 0 || tabs.length > 1;
-  const empty = (
-    <div className="empty">
-      <img
-        className="empty-logo"
-        src={oakletIcon}
-        alt="Oaklet"
-        width={76}
-        height={76}
-      />
-      <h1>What should we build?</h1>
-    </div>
-  );
   const composer = active && (
     <ChatComposer
       ref={composerRef}
@@ -528,7 +516,7 @@ export function Chat({
           </div>
         )}
         {items.length === 0 ? (
-          empty
+          <Welcome />
         ) : (
           <ChatThread
             sessionId={activeTabId}
