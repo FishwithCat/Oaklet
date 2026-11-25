@@ -755,8 +755,9 @@
   opacity: 0.85;
 }
 
-.composer-usage:hover,
-.composer-usage[aria-expanded="true"] {
+button.composer-usage:is(:hover, [aria-expanded="true"]):not(:disabled) {
+  background: transparent;
+  border-color: transparent;
   color: var(--text);
   opacity: 1;
 }
