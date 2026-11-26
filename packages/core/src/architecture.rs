@@ -27,7 +27,7 @@ use runtime::{runtime_status, runtime_status_for};
 
 pub(crate) use compiler::{HelperResponse, read_capped, run_helper_watch};
 pub use discovery::prompt_model_sources;
-pub(crate) use runtime::{find_helper, find_node};
+pub(crate) use runtime::{find_helper, find_node, run_node};
 
 pub const DEFAULT_MODEL_PATH: &str = "architecture/model.c4";
 

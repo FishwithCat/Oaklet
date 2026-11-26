@@ -10,6 +10,12 @@ use tauri::{AppHandle, Manager};
 use super::RuntimeStatus;
 use crate::shell_env::{self, ApplyEnvironment};
 
+static RUN_NODE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+pub(crate) fn run_node() -> Option<PathBuf> {
+    RUN_NODE.get_or_init(find_node).clone()
+}
+
 pub(crate) fn find_node() -> Option<PathBuf> {
     if let Some(path) = env::var_os("OAKLET_NODE") {
         let path = PathBuf::from(path);

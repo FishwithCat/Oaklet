@@ -747,7 +747,7 @@ impl ToolRegistry {
             .push(Box::new(skill::LoadSkill::new(catalog)));
 
         let runtime_started = std::time::Instant::now();
-        let node = crate::architecture::find_node();
+        let node = crate::architecture::run_node();
         let helper = crate::architecture::find_helper(app);
         crate::log::key(format_args!(
             "[oaklet] runtime discovery {} ms (node {}, helper {})",
