@@ -62,6 +62,7 @@ pub(crate) fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::shell_env::start();
     let config_path = app.path().app_config_dir()?.join("config.json");
     let mut config = read_config(&config_path).unwrap_or_default();
+    crate::http::set_proxy_mode(config.proxy_mode);
     let args: Vec<String> = std::env::args_os()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();

@@ -110,7 +110,7 @@ impl WebSearch {
             )
         })?;
 
-        let client = crate::shell_env::configure_http(reqwest::Client::builder())
+        let client = crate::http::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| format!("Could not create HTTP client: {error}"))?;

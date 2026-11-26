@@ -9,6 +9,15 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use crate::windows::workspace_for_window;
 use crate::{AppState, SharedState, tools};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProxyMode {
+    #[default]
+    System,
+    Env,
+    Direct,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -21,6 +30,8 @@ pub struct AppConfig {
     /// UI theme: `light`, `dark`, or `auto` (follow the OS).
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub proxy_mode: ProxyMode,
     /// Model for compaction summaries. Empty reuses `model` so the summary
     /// request can hit the same provider prefix cache.
     #[serde(default)]
@@ -177,6 +188,7 @@ impl Default for AppConfig {
             api_key: String::new(),
             model: default_model(),
             theme: default_theme(),
+            proxy_mode: ProxyMode::System,
             summary_model: String::new(),
             summary_context_window: None,
             context_window: default_context_window(),
@@ -400,6 +412,7 @@ pub(crate) fn save_config(
     config.mcp_servers = normalize_mcp_servers(config.mcp_servers)?;
     write_config(&state.config_path, &config)?;
     *state.config.lock().unwrap() = config.clone();
+    crate::http::set_proxy_mode(config.proxy_mode);
     if previous.allow_all_commands != config.allow_all_commands
         && let Ok(mut granted) = state.command_allow_all.lock()
     {
@@ -498,6 +511,28 @@ mod tests {
     fn configs_saved_before_theme_default_to_auto() {
         let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
         assert_eq!(config.theme, "auto");
+    }
+
+    #[test]
+    fn configs_saved_before_proxy_mode_default_to_system() {
+        let config: AppConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert_eq!(config.proxy_mode, ProxyMode::System);
+    }
+
+    #[test]
+    fn proxy_mode_round_trips_in_camel_case() {
+        let config = AppConfig {
+            proxy_mode: ProxyMode::Env,
+            ..AppConfig::default()
+        };
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(value["proxyMode"], "env");
+
+        let restored: AppConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.proxy_mode, ProxyMode::Env);
+
+        let direct: AppConfig = serde_json::from_str(r#"{"proxyMode":"direct"}"#).unwrap();
+        assert_eq!(direct.proxy_mode, ProxyMode::Direct);
     }
 
     #[test]

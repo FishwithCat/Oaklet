@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::config::ProxyMode;
 use crate::tools::cap;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -23,11 +24,17 @@ pub async fn test_connection(
     base_url: String,
     api_key: String,
     model: String,
+    proxy_mode: ProxyMode,
 ) -> Result<ConnectionTest, String> {
-    check(&base_url, &api_key, &model).await
+    check(&base_url, &api_key, &model, proxy_mode).await
 }
 
-async fn check(base_url: &str, api_key: &str, model: &str) -> Result<ConnectionTest, String> {
+async fn check(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    proxy_mode: ProxyMode,
+) -> Result<ConnectionTest, String> {
     let base_url = base_url.trim().trim_end_matches('/');
     let api_key = api_key.trim();
     let model = model.trim();
@@ -38,7 +45,7 @@ async fn check(base_url: &str, api_key: &str, model: &str) -> Result<ConnectionT
         return Err("Model is required.".into());
     }
 
-    let client = crate::shell_env::configure_http(reqwest::Client::builder())
+    let client = crate::http::builder_for(proxy_mode)
         .timeout(TIMEOUT)
         .build()
         .map_err(|err| format!("Could not prepare the connection test: {err}"))?;
@@ -119,6 +126,7 @@ mod tests {
     use serde_json::Value;
 
     use super::check;
+    use crate::config::ProxyMode;
 
     /// Minimal OpenAI-compatible endpoint that records the raw request and
     /// answers with one canned response.
@@ -175,11 +183,13 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_missing_url_or_model_without_network_access() {
-        let invalid_url = check("ftp://example.com", "key", "model")
+        let invalid_url = check("ftp://example.com", "key", "model", ProxyMode::Direct)
             .await
             .unwrap_err();
         assert!(invalid_url.contains("http://"));
-        let missing_model = check("https://example.com", "key", " ").await.unwrap_err();
+        let missing_model = check("https://example.com", "key", " ", ProxyMode::Direct)
+            .await
+            .unwrap_err();
         assert!(missing_model.contains("Model is required"));
     }
 
@@ -187,7 +197,9 @@ mod tests {
     async fn sends_a_tiny_completion_and_reports_the_answering_model() {
         let (base_url, seen, handle) =
             server(200, r#"{"model":"remote-flash","choices":[],"error":null}"#);
-        let result = check(&base_url, "secret", "deepseek-flash").await.unwrap();
+        let result = check(&base_url, "secret", "deepseek-flash", ProxyMode::Direct)
+            .await
+            .unwrap();
 
         assert_eq!(result.model, "remote-flash");
         let request = seen.lock().unwrap().clone();
@@ -206,14 +218,18 @@ mod tests {
     #[tokio::test]
     async fn reports_http_and_in_band_provider_errors() {
         let (base_url, _seen, handle) = server(401, r#"{"error":{"message":"Invalid API key"}}"#);
-        let error = check(&base_url, "bad", "model").await.unwrap_err();
+        let error = check(&base_url, "bad", "model", ProxyMode::Direct)
+            .await
+            .unwrap_err();
         assert!(error.contains("401"));
         assert!(error.contains("Check the API key"));
         assert!(error.contains("Invalid API key"));
         handle.join().unwrap();
 
         let (base_url, _seen, handle) = server(200, r#"{"error":{"message":"Model not found"}}"#);
-        let error = check(&base_url, "bad", "model").await.unwrap_err();
+        let error = check(&base_url, "bad", "model", ProxyMode::Direct)
+            .await
+            .unwrap_err();
         assert!(error.contains("Model not found"));
         handle.join().unwrap();
     }

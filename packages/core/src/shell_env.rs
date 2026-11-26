@@ -457,56 +457,59 @@ pub(crate) fn var_os(key: &str) -> Option<OsString> {
         .or_else(|| std::env::var_os(key))
 }
 
-/// Apply the login-shell proxy variables to a reqwest client.
-///
-/// Reqwest reads proxy variables when the client is built, so the child
-/// environment overlay is not enough for model, MCP, and web requests.
-pub(crate) fn configure_http(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    let Some(environment) = snapshot() else {
-        return builder;
-    };
-    let value = |key: &str| -> Option<String> {
-        environment
-            .iter()
-            .rev()
-            .find(|(name, _)| name.as_os_str() == OsStr::new(key))
-            .and_then(|(_, value)| value.to_str())
-            .map(str::to_owned)
-    };
-    let all = value("ALL_PROXY").or_else(|| value("all_proxy"));
-    let http = value("HTTP_PROXY")
-        .or_else(|| value("http_proxy"))
-        .or_else(|| all.clone());
-    let https = value("HTTPS_PROXY")
-        .or_else(|| value("https_proxy"))
-        .or(all);
-    if http.is_none() && https.is_none() {
-        return builder;
-    }
-    let no_proxy = value("NO_PROXY")
-        .or_else(|| value("no_proxy"))
-        .or_else(|| std::env::var("NO_PROXY").ok())
-        .or_else(|| std::env::var("no_proxy").ok())
-        .and_then(|raw| reqwest::NoProxy::from_string(&raw));
+pub(crate) struct EnvironmentProxies {
+    http: Option<String>,
+    https: Option<String>,
+    no_proxy: Option<reqwest::NoProxy>,
+}
 
-    let mut builder = builder;
-    if let Some(proxy) = http {
-        match reqwest::Proxy::http(&proxy) {
-            Ok(proxy) => builder = builder.proxy(proxy.no_proxy(no_proxy.clone())),
-            Err(error) => {
-                crate::log::key(format_args!("[oaklet] ignoring HTTP_PROXY: {error}"));
+impl EnvironmentProxies {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.http.is_none() && self.https.is_none()
+    }
+
+    pub(crate) fn apply(self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        let mut builder = builder;
+        if let Some(proxy) = self.http {
+            match reqwest::Proxy::http(&proxy) {
+                Ok(proxy) => builder = builder.proxy(proxy.no_proxy(self.no_proxy.clone())),
+                Err(error) => {
+                    crate::log::key(format_args!("[oaklet] ignoring HTTP_PROXY: {error}"));
+                }
             }
         }
-    }
-    if let Some(proxy) = https {
-        match reqwest::Proxy::https(&proxy) {
-            Ok(proxy) => builder = builder.proxy(proxy.no_proxy(no_proxy)),
-            Err(error) => {
-                crate::log::key(format_args!("[oaklet] ignoring HTTPS_PROXY: {error}"));
+        if let Some(proxy) = self.https {
+            match reqwest::Proxy::https(&proxy) {
+                Ok(proxy) => builder = builder.proxy(proxy.no_proxy(self.no_proxy)),
+                Err(error) => {
+                    crate::log::key(format_args!("[oaklet] ignoring HTTPS_PROXY: {error}"));
+                }
             }
         }
+        builder
     }
-    builder
+}
+
+pub(crate) fn environment_proxies() -> EnvironmentProxies {
+    resolve_proxies(&value_of)
+}
+
+fn value_of(key: &str) -> Option<String> {
+    var_os(key).and_then(|value| value.into_string().ok())
+}
+
+fn resolve_proxies(value: &dyn Fn(&str) -> Option<String>) -> EnvironmentProxies {
+    let lookup = |keys: [&str; 2]| keys.iter().find_map(|key| value(key));
+    let all = lookup(["ALL_PROXY", "all_proxy"]);
+    let http = lookup(["HTTP_PROXY", "http_proxy"]).or_else(|| all.clone());
+    let https = lookup(["HTTPS_PROXY", "https_proxy"]).or(all);
+    let no_proxy =
+        lookup(["NO_PROXY", "no_proxy"]).and_then(|raw| reqwest::NoProxy::from_string(&raw));
+    EnvironmentProxies {
+        http,
+        https,
+        no_proxy,
+    }
 }
 
 impl ApplyEnvironment for std::process::Command {
@@ -567,5 +570,45 @@ mod overlay_tests {
         );
         let output = command.output().expect("run sh");
         assert_eq!(output.stdout, b"from-login-shell");
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::resolve_proxies;
+
+    #[test]
+    fn resolves_proxy_variables_with_the_all_proxy_fallback() {
+        let value = |key: &str| match key {
+            "ALL_PROXY" => Some("socks5://127.0.0.1:7897".to_string()),
+            "https_proxy" => Some("http://127.0.0.1:7897".to_string()),
+            "NO_PROXY" => Some("localhost,127.0.0.1".to_string()),
+            _ => None,
+        };
+        let proxies = resolve_proxies(&value);
+        assert_eq!(proxies.http.as_deref(), Some("socks5://127.0.0.1:7897"));
+        assert_eq!(proxies.https.as_deref(), Some("http://127.0.0.1:7897"));
+        assert!(proxies.no_proxy.is_some());
+        assert!(!proxies.is_empty());
+    }
+
+    #[test]
+    fn prefers_uppercase_variables_over_lowercase_ones() {
+        let value = |key: &str| match key {
+            "HTTP_PROXY" => Some("http://upper:1".to_string()),
+            "http_proxy" => Some("http://lower:2".to_string()),
+            _ => None,
+        };
+        let proxies = resolve_proxies(&value);
+        assert_eq!(proxies.http.as_deref(), Some("http://upper:1"));
+        assert!(proxies.https.is_none());
+        assert!(proxies.no_proxy.is_none());
+    }
+
+    #[test]
+    fn reports_an_empty_resolution_without_proxy_variables() {
+        let proxies = resolve_proxies(&|_| None);
+        assert!(proxies.is_empty());
+        assert!(proxies.no_proxy.is_none());
     }
 }

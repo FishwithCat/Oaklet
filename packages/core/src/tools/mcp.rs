@@ -670,7 +670,7 @@ impl HttpClient {
                 .map_err(|_| format!("Invalid value for header {name}"))?;
             headers.insert(name, value);
         }
-        let client = crate::shell_env::configure_http(reqwest::Client::builder())
+        let client = crate::http::builder()
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(60))
             .build()
