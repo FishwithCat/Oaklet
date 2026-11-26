@@ -54,6 +54,10 @@ pub(super) async fn request(
             Err(err) if err.is_transient() && attempt + 1 < MAX_ATTEMPTS => {
                 let delay = err.retry_delay(attempt);
                 attempt += 1;
+                crate::log::key(format_args!(
+                    "[oaklet] model retry {attempt} after {} ms: {err}",
+                    delay.as_millis()
+                ));
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
                     _ = cancel.cancelled() => return Err("Stopped.".into()),

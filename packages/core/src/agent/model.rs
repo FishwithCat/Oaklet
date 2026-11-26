@@ -287,6 +287,7 @@ pub(super) async fn stream_step(
     if !config.api_key.is_empty() {
         request = request.bearer_auth(&config.api_key);
     }
+    let request_started = std::time::Instant::now();
     let response = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(RequestError::stream("Stopped.".into())),
@@ -309,8 +310,15 @@ pub(super) async fn stream_step(
         }
         return Err(RequestError::response(status, detail));
     }
+    crate::log::key(format_args!(
+        "[oaklet] model request headers in {} ms ({} messages)",
+        request_started.elapsed().as_millis(),
+        messages.len()
+    ));
 
     let mut stream = response.bytes_stream();
+    let mut first_text: Option<u128> = None;
+    let mut text_lines = 0usize;
     let mut buffer: Vec<u8> = Vec::new();
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -343,6 +351,10 @@ pub(super) async fn stream_step(
                     if let Some(reason) = delta.finish_reason.take() {
                         finish_reason = Some(reason);
                     }
+                    if delta.content.is_some() || delta.reasoning.is_some() {
+                        text_lines += 1;
+                        first_text.get_or_insert_with(|| request_started.elapsed().as_millis());
+                    }
                     emit_stream_delta(ctx, delta);
                 }
             }
@@ -362,6 +374,15 @@ pub(super) async fn stream_step(
         }
         emit_stream_delta(ctx, delta);
     }
+
+    crate::log::key(format_args!(
+        "[oaklet] model stream {} lines, first text at {}, {} ms total",
+        text_lines,
+        first_text
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "none".into()),
+        request_started.elapsed().as_millis()
+    ));
 
     if let Some(message) = stream_end_error(saw_done, finish_reason.as_deref()) {
         return Err(RequestError::stream(message.into()));

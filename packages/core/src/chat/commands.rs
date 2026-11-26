@@ -97,6 +97,7 @@ pub async fn session_send(
     mode: Option<SendMode>,
     retry_worktree: Option<bool>,
 ) -> Result<SendResult, String> {
+    let received = std::time::Instant::now();
     let window_workspace = workspace_for_window(&state, window.label())?;
     let mut config = state
         .config
@@ -217,6 +218,10 @@ pub async fn session_send(
         cancel,
         cancel_handle,
     )?;
+    crate::log::key(format_args!(
+        "[oaklet] send accepted in {} ms",
+        received.elapsed().as_millis()
+    ));
     // A user message ends the wake chain a job notice may have started.
     state.chat.live().wakes.remove(&session_id);
 

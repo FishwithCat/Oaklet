@@ -57,6 +57,7 @@ pub async fn run(mut config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: 
         }
     };
 
+    let setup_started = std::time::Instant::now();
     let workspace = match Workspace::new(&config.workspace) {
         Ok(workspace) => workspace,
         Err(message) => {
@@ -64,8 +65,12 @@ pub async fn run(mut config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: 
             return;
         }
     };
+    let instructions_started = std::time::Instant::now();
     let mut instructions = WorkspaceInstructions::load(workspace.root());
+    let instructions_ms = instructions_started.elapsed().as_millis();
+    let tools_started = std::time::Instant::now();
     let mut tools = workspace_tools(&ctx, &config, &cancel).await;
+    let tools_ms = tools_started.elapsed().as_millis();
     if cancel.is_cancelled() {
         crate::tools::shutdown_workspace(workspace.root());
         ctx.finish_stopped(strip_system(&input)).await;
@@ -84,14 +89,22 @@ pub async fn run(mut config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: 
         spill_root: ctx.state().spill_root.clone(),
     };
 
+    let sources_started = std::time::Instant::now();
     let mut model_sources = load_model_sources(&config.workspace).await;
+    let sources_ms = sources_started.elapsed().as_millis();
 
+    let prompt_started = std::time::Instant::now();
     let mut prompt = system_prompt(
         &config,
         &tools,
         &model_sources,
         instructions.render().as_deref(),
     );
+    let prompt_ms = prompt_started.elapsed().as_millis();
+    crate::log::key(format_args!(
+        "[oaklet] run setup {} ms (instructions {instructions_ms} ms, tools {tools_ms} ms, model sources {sources_ms} ms, prompt {prompt_ms} ms)",
+        setup_started.elapsed().as_millis()
+    ));
     let mut messages = initial_messages(&prompt, input);
     let mut meter = Meter::default();
     let mut guard = RepeatGuard::new();

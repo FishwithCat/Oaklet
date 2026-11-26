@@ -746,8 +746,15 @@ impl ToolRegistry {
             .tools
             .push(Box::new(skill::LoadSkill::new(catalog)));
 
+        let runtime_started = std::time::Instant::now();
         let node = crate::architecture::find_node();
         let helper = crate::architecture::find_helper(app);
+        crate::log::key(format_args!(
+            "[oaklet] runtime discovery {} ms (node {}, helper {})",
+            runtime_started.elapsed().as_millis(),
+            node.is_some(),
+            helper.is_some()
+        ));
         registry.tools.push(Box::new(likec4::LikeC4 {
             node: node.clone(),
             helper: helper.clone(),
@@ -755,12 +762,19 @@ impl ToolRegistry {
         registry
             .tools
             .push(Box::new(plan_diff::ValidateDiff::new(node, helper)));
+        let mcp_started = std::time::Instant::now();
         let (tools, warnings) = mcp::discover(
             &config.mcp_servers,
             std::path::Path::new(&config.workspace),
             cancel,
         )
         .await;
+        crate::log::key(format_args!(
+            "[oaklet] mcp discovery {} ms ({} tools from {} servers)",
+            mcp_started.elapsed().as_millis(),
+            tools.len(),
+            config.mcp_servers.len()
+        ));
         registry.tools.extend(tools);
         registry.warnings = warnings;
         let search_key = if config.search_api_key.trim().is_empty() {
