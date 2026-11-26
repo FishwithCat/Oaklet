@@ -8,6 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CloseRegular } from "@mingcute/react/core-regular";
+import { detectPlatform, type ShortcutPlatform } from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
 import { DataSettings } from "./DataSettings";
 import { McpSettings } from "./McpSettings";
@@ -75,23 +76,32 @@ const THEMES: { id: Theme; label: string; hint: string }[] = [
   { id: "auto", label: "Auto", hint: "Follow the system appearance." },
 ];
 
-const PROXY_MODES: { id: ProxyMode; label: string; hint: string }[] = [
-  {
-    id: "system",
-    label: "System",
-    hint: "Use the proxy this machine configures: your shell's proxy variables and the operating system proxy setting.",
-  },
-  {
-    id: "env",
-    label: "Environment only",
-    hint: "Use only HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY from your environment. Ignores the operating system proxy setting.",
-  },
-  {
-    id: "direct",
-    label: "Direct",
-    hint: "Never use a proxy. Pick this when the system proxy makes requests slow or unreachable.",
-  },
-];
+function proxyOptions(
+  platform: ShortcutPlatform,
+): { id: ProxyMode; label: string; hint: string }[] {
+  return [
+    {
+      id: "system",
+      label: "System",
+      hint:
+        platform === "linux"
+          ? "Use the proxy in HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, and NO_PROXY, including the values your login shell exports. GNOME and KDE desktop proxy settings are not read."
+          : "Use the proxy this machine configures: your shell's proxy variables and the operating system proxy setting.",
+    },
+    {
+      id: "env",
+      label: "Environment only",
+      hint: "Use only HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY from your environment. Ignores the operating system proxy setting.",
+    },
+    {
+      id: "direct",
+      label: "Direct",
+      hint: "Never use a proxy. Pick this when the system proxy makes requests slow or unreachable.",
+    },
+  ];
+}
+
+const PROXY_MODES = proxyOptions(detectPlatform());
 
 function toDraft(config: AppConfig): SettingsDraft {
   return {

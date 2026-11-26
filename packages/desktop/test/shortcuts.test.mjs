@@ -116,7 +116,27 @@ test("Windows keeps Control+X and Control+C for editing", () => {
 test("the primary key label follows the platform", () => {
   assert.equal(primaryKeyLabel("mac"), "⌘");
   assert.equal(primaryKeyLabel("windows"), "Ctrl");
+  assert.equal(primaryKeyLabel("linux"), "Ctrl");
   assert.equal(detectPlatform(), "mac");
+});
+
+test("Linux reuses the Control shortcuts", () => {
+  assert.equal(
+    agentShortcut(press({ key: "n", ctrlKey: true }), "chat", false, "linux"),
+    "new-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "w", ctrlKey: true }), "chat", false, "linux"),
+    "close-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", ctrlKey: true }), "terminal", false, "linux"),
+    "new-terminal",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", metaKey: true }), "chat", false, "linux"),
+    null,
+  );
 });
 
 test("Command+R opens session history only in the chat view", () => {

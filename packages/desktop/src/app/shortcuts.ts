@@ -20,12 +20,13 @@ export type AgentShortcut =
   | "history"
   | "stop";
 
-export type ShortcutPlatform = "mac" | "windows";
+export type ShortcutPlatform = "mac" | "windows" | "linux";
 
 export function detectPlatform(): ShortcutPlatform {
   if (typeof navigator === "undefined") return "mac";
   const text = `${navigator.userAgent ?? ""} ${navigator.platform ?? ""}`;
-  return /mac/i.test(text) ? "mac" : "windows";
+  if (/mac/i.test(text)) return "mac";
+  return /linux/i.test(text) ? "linux" : "windows";
 }
 
 export function primaryModifier(
