@@ -937,4 +937,97 @@ mod tests {
         assert_eq!(calls[1].name, "write_file");
         assert_eq!(calls[1].arguments, r#"{"path":"src"}"#);
     }
+
+    fn sse_server(chunks: Vec<&'static str>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buffer[..read]);
+                if let Some(head) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&raw[..head]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= head + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                )
+                .unwrap();
+            for chunk in chunks {
+                stream.write_all(chunk.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (format!("http://{address}"), server)
+    }
+
+    #[tokio::test]
+    async fn streams_a_reply_through_the_sse_reader() {
+        let (base_url, server) = sse_server(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"，世界\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ]);
+        let config = AppConfig {
+            base_url,
+            model: "test-model".into(),
+            ..AppConfig::default()
+        };
+        let (state, store, root) = crate::chat::test_support::state(config.clone());
+        store.create_session("s", "/tmp", 1).unwrap();
+        let started = store
+            .begin_run(
+                "s",
+                "r",
+                &crate::store::NewUserTurn {
+                    message: json!({"role":"user","content":"hi"}),
+                    display: None,
+                    title: None,
+                },
+                2,
+            )
+            .unwrap();
+        let ctx = RunContext::without_window(state, "s", "r", started);
+        let (_handle, cancel) = crate::tools::CancelHandle::new();
+        let client = reqwest::Client::new();
+        let messages = vec![json!({"role":"user","content":"hi"})];
+
+        let (content, reasoning, calls, usage) = stream_step(
+            &ctx,
+            &client,
+            &config,
+            &ToolRegistry::new(),
+            &messages,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(content, "你好，世界");
+        assert!(reasoning.is_empty());
+        assert!(calls.is_empty());
+        assert!(usage.is_none());
+        server.join().unwrap();
+        std::fs::remove_dir_all(root).ok();
+    }
 }
