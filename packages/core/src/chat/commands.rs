@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use super::input::{build_user_turn, session_title};
 use super::manual_compaction::{CompactionSlot, compact_session};
 use super::mentions;
-use super::run::{RunTrigger, start_run};
+use super::run::{RunTrigger, resume_queued, start_run};
 use super::transcript::view_from_session;
 use super::{
     CompactResult, IncomingAttachment, PendingInputView, SendMode, SendResult, SessionOperation,
@@ -183,22 +183,21 @@ pub async fn session_send(
         mode,
         pending_id,
         turn,
-        |session| {
+        |pending| {
             let _ = app.emit_to(
                 window.label(),
                 "agent:pending",
                 PendingEvent {
                     session_id: session_id.clone(),
-                    pending: session.pending.clone(),
+                    pending: pending.to_vec(),
                 },
             );
         },
     )? {
-        Ok((run_id, session)) => {
+        Ok(session) => {
             // A queued message ends the wake chain a job notice may have started.
             state.chat.live().wakes.remove(&session_id);
             return Ok(SendResult {
-                run_id,
                 session,
                 queued: true,
             });
@@ -207,7 +206,7 @@ pub async fn session_send(
         Err(turn) => turn,
     };
 
-    let (run_id, view) = start_run(
+    let view = start_run(
         &app,
         state.inner(),
         window.label(),
@@ -230,7 +229,6 @@ pub async fn session_send(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     Ok(SendResult {
-        run_id,
         session,
         queued: false,
     })
@@ -292,7 +290,7 @@ pub async fn session_confirm_plan(
         .clone();
     config.workspace = directory;
 
-    let (run_id, view) = start_run(
+    let view = start_run(
         &app,
         state.inner(),
         window.label(),
@@ -309,7 +307,6 @@ pub async fn session_confirm_plan(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     Ok(SendResult {
-        run_id,
         session,
         queued: false,
     })
@@ -644,10 +641,35 @@ pub async fn session_compact(
     };
     let result = compact_session(window.app_handle(), state.inner(), &session_id, &cancel).await;
     drop(slot);
+    let resumed = resume_queued(
+        window.app_handle(),
+        state.inner(),
+        window.label(),
+        &session_id,
+    );
 
     let (session, before, after, compacted) = result?;
+    let session = match resumed {
+        Ok(Some(view)) => view
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        Ok(None) => state.chat.view(session),
+        Err(error) => {
+            crate::log::key(format_args!(
+                "[oaklet] queued message not delivered: {error}"
+            ));
+            let mut view = state.chat.view(session);
+            view.items.push(json!({
+                "kind": "notice",
+                "tone": "error",
+                "text": format!("Queued message is still pending: {error}"),
+            }));
+            view
+        }
+    };
     Ok(CompactResult {
-        session: state.chat.view(session),
+        session,
         before,
         after,
         compacted,

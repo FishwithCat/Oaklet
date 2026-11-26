@@ -50,7 +50,7 @@ pub(super) fn start_run(
     turn: NewUserTurn,
     cancel: crate::tools::Cancel,
     cancel_handle: CancelHandle,
-) -> Result<(String, Arc<Mutex<SessionView>>), String> {
+) -> Result<Arc<Mutex<SessionView>>, String> {
     let run = prepare_run(
         state,
         window,
@@ -62,9 +62,44 @@ pub(super) fn start_run(
         cancel_handle,
     )?
     .expect("A direct run always has an input");
-    let result = (run.ctx.run_id.clone(), run.ctx.view.clone());
+    let view = run.ctx.view.clone();
     run.spawn(app.clone());
-    Ok(result)
+    Ok(view)
+}
+
+pub(super) fn resume_queued(
+    app: &AppHandle,
+    state: &SharedState,
+    window: &str,
+    session_id: &str,
+) -> Result<Option<Arc<Mutex<SessionView>>>, String> {
+    let mut config = state
+        .config
+        .lock()
+        .map_err(|_| "Agent state is unavailable.".to_string())?
+        .clone();
+    let store = state.chat.store.clone();
+    let meta = store
+        .session_meta(session_id)?
+        .ok_or_else(|| "This session no longer exists.".to_string())?;
+    config.workspace = store.worktree_directory(session_id, &meta.workspace)?;
+    let (cancel_handle, cancel) = CancelHandle::new();
+    let Some(run) = prepare_run(
+        state,
+        window,
+        session_id,
+        RunTrigger::User,
+        config,
+        RunInput::Queued,
+        cancel,
+        cancel_handle,
+    )?
+    else {
+        return Ok(None);
+    };
+    let view = run.ctx.view.clone();
+    run.spawn(app.clone());
+    Ok(Some(view))
 }
 
 struct PreparedRun {

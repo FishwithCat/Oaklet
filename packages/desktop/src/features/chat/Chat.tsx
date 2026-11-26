@@ -358,7 +358,7 @@ export function Chat({
       const accepted = await onSend(
         text,
         attachments,
-        running ? "steer" : "normal",
+        running || compacting ? "steer" : "normal",
         retryWorktree,
       );
       if (!accepted) return false;

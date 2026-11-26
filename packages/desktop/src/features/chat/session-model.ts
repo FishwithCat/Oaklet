@@ -280,7 +280,7 @@ export function applyPending(
   tab: SessionView,
   pending: PendingInput[],
 ): SessionView {
-  return { ...tab, pending, running: true };
+  return { ...tab, pending };
 }
 
 /** Move claimed messages from the queue into the thread. */
@@ -302,7 +302,6 @@ export function applySteered(
 export function applyAcceptedSend(
   current: SessionView,
   mode: SendMode,
-  runId: string,
   session: SessionView,
   queued: boolean,
 ): SessionView {
@@ -319,7 +318,7 @@ export function applyAcceptedSend(
     turns: session.turns,
     updatedAt: session.updatedAt,
     running: true,
-    activeRunId: mode === "normal" ? runId : (session.activeRunId ?? runId),
+    activeRunId: session.activeRunId,
   };
 }
 

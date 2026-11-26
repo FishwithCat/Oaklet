@@ -37,7 +37,7 @@ import { subscribeAgentEvents } from "./agent-events.ts";
 
 type OpenTab = { id: string; number: number };
 
-type SendResult = { runId: string; session: SessionView; queued: boolean };
+type SendResult = { session: SessionView; queued: boolean };
 
 type CompactResult = {
   session: SessionView;
@@ -424,9 +424,8 @@ export function useAgentSession({
     if ((!trimmed && attachments.length === 0 && retryWorktree === undefined) || !enabled) return false;
 
     const tab = sessionsRef.current[activeTabIdRef.current];
-    if (!tab || tab.compacting || compactingIdsRef.current.has(tab.id)) {
-      return false;
-    }
+    if (!tab) return false;
+    const compacting = tab.compacting || compactingIdsRef.current.has(tab.id);
     // A stale running flag on the client would otherwise be rejected by the
     // backend; steer instead, which also handles a run that already ended.
     if (mode === "normal" && tab.running) {
@@ -435,7 +434,7 @@ export function useAgentSession({
 
     const workspaceAtSend = workspaceRef.current;
     const previous = tab;
-    if (mode === "normal") {
+    if (mode === "normal" && !compacting) {
       const userItem: Item =
         attachments.length > 0
           ? {
@@ -450,13 +449,13 @@ export function useAgentSession({
           [...tab.items, userItem],
         ),
       );
-    } else {
+    } else if (!compacting) {
       // No optimistic bubble: the backend's pending list is authoritative.
       putSession({ ...tab, running: true });
     }
 
     try {
-      const { runId, session, queued } = await invoke<SendResult>(
+      const { session, queued } = await invoke<SendResult>(
         "session_send",
         {
           sessionId: tab.id,
@@ -469,8 +468,8 @@ export function useAgentSession({
       if (workspaceRef.current !== workspaceAtSend) return false;
       const current = sessionsRef.current[tab.id];
       // A terminal event may already have replaced the optimistic view.
-      if (!current || !current.running) return true;
-      putSession(applyAcceptedSend(current, mode, runId, session, queued));
+      if (!current || (!current.running && !compacting)) return true;
+      putSession(applyAcceptedSend(current, mode, session, queued));
       return true;
     } catch (error) {
       if (workspaceRef.current !== workspaceAtSend) return false;
@@ -510,7 +509,7 @@ export function useAgentSession({
     const previous = tab;
     putSession({ ...withItems(tab, tab.items), running: true, activeRunId: null });
     try {
-      const { runId, session } = await invoke<SendResult>(
+      const { session } = await invoke<SendResult>(
         "session_confirm_plan",
         { sessionId: tab.id, version },
       );
@@ -527,7 +526,7 @@ export function useAgentSession({
         turns: session.turns,
         updatedAt: session.updatedAt,
         running: true,
-        activeRunId: runId,
+        activeRunId: session.activeRunId,
       });
       return true;
     } catch (error) {

@@ -345,7 +345,7 @@ export function ChatComposer({
   }
 
   async function submit() {
-    if (compacting || reading || submittingRef.current.has(activeTabId)) return;
+    if (reading || submittingRef.current.has(activeTabId)) return;
     submittingRef.current.add(activeTabId);
     try {
       if (!await onSubmit(attachments)) return;
@@ -473,7 +473,9 @@ export function ChatComposer({
                   : "Press Enter to send"
                 : running
                   ? "Steer the current turn…"
-                  : "Message Oaklet…"
+                  : compacting
+                    ? "Message waits for compaction…"
+                    : "Message Oaklet…"
             }
             aria-label="Message"
             aria-autocomplete="list"

@@ -131,7 +131,6 @@ pub struct SessionSummary {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendResult {
-    pub run_id: String,
     pub session: SessionView,
     /// True when the turn was queued on an existing run instead of starting one.
     pub queued: bool,
@@ -336,23 +335,36 @@ impl ChatState {
         id: String,
         turn: store::NewUserTurn,
         emit: F,
-    ) -> Result<Result<(String, SessionView), store::NewUserTurn>, String>
+    ) -> Result<Result<SessionView, store::NewUserTurn>, String>
     where
-        F: FnOnce(&SessionView),
+        F: FnOnce(&[PendingInputView]),
     {
-        let Some(mode) = mode.input_mode() else {
-            return Ok(Err(turn));
-        };
         let mut live = self.live();
-        let Some((run_id, run_window, view)) = live.runs.iter().find_map(|(run_id, handle)| {
-            (handle.session_id == session_id)
-                .then(|| (run_id.clone(), handle.window.clone(), handle.view.clone()))
-        }) else {
+        let run = live
+            .runs
+            .iter()
+            .find(|(_, handle)| handle.session_id == session_id)
+            .map(|(_, handle)| (handle.window.clone(), handle.view.clone()));
+        let compacting = live
+            .compacting
+            .get(session_id)
+            .map(|handle| handle.window.clone());
+        let Some(busy_window) = run
+            .as_ref()
+            .map(|(window, _)| window.as_str())
+            .or(compacting.as_deref())
+        else {
             return Ok(Err(turn));
         };
-        if run_window != window {
+        if busy_window != window {
             return Err("This chat is running in another window.".into());
         }
+        let Some(mode) = mode
+            .input_mode()
+            .or(compacting.is_some().then_some(InputMode::Steer))
+        else {
+            return Ok(Err(turn));
+        };
         if live.closing.contains(window) {
             return Err("This window is closing or has an unsaved reply. \
                  Retry closing it to save the chat."
@@ -373,12 +385,20 @@ impl ChatState {
             created_at: store::now_ms(),
         });
         let views = pending_views(pending);
+        let Some((_, view)) = run else {
+            let window = self
+                .store
+                .get_session_window(session_id, None, store::PAGE_EVENTS)?
+                .ok_or_else(|| "This session no longer exists.".to_string())?;
+            let mut view = Self::view_locked(&live, window);
+            view.pending = views;
+            emit(&view.pending);
+            return Ok(Ok(view));
+        };
         let mut view = view.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         view.pending = views;
-        // Emit under the live lock so a claim cannot land between the queue
-        // update and the event that tells the client about it.
-        emit(&view);
-        Ok(Ok((run_id, view.clone())))
+        emit(&view.pending);
+        Ok(Ok(view.clone()))
     }
 
     /// Take every steer message queued for this session's next step.
@@ -490,17 +510,18 @@ impl ChatState {
     }
 
     fn view(&self, window: store::SessionWindow) -> SessionView {
-        let (compacting, pending) = {
-            let live = self.live();
-            (
-                live.compacting.contains_key(&window.id),
-                live.pending
-                    .get(&window.id)
-                    .map(|queue| pending_views(queue)),
-            )
-        };
+        let live = self.live();
+        Self::view_locked(&live, window)
+    }
+
+    fn view_locked(live: &ChatLive, window: store::SessionWindow) -> SessionView {
+        let compacting = live.compacting.contains_key(&window.id);
         let mut view = view_from_window(window, compacting);
-        view.pending = pending.unwrap_or_default();
+        view.pending = live
+            .pending
+            .get(&view.id)
+            .map(|queue| pending_views(queue))
+            .unwrap_or_default();
         view
     }
 

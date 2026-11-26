@@ -87,6 +87,13 @@ test("applyPending replaces the queue without touching the transcript", () => {
   assert.deepEqual(updated.pending, pending);
   assert.equal(updated.items.length, 1);
   assert.equal(updated.running, true);
+
+  const compacting = applyPending(
+    session({ running: false, compacting: true }),
+    pending,
+  );
+  assert.equal(compacting.running, false);
+  assert.deepEqual(compacting.pending, pending);
 });
 
 test("applySteered moves claimed messages to the end of the thread", () => {
@@ -117,7 +124,6 @@ test("a queued steer merges the authoritative queue without replacing the stream
   const updated = applyAcceptedSend(
     current,
     "steer",
-    "run-1",
     session({
       items: [],
       pending,
@@ -136,7 +142,6 @@ test("a steer that starts a run brings its user turn into the thread", () => {
   const updated = applyAcceptedSend(
     session({ running: true, activeRunId: "old-run" }),
     "steer",
-    "new-run",
     session({
       items: [{ kind: "user", text: "go", seq: 1 }],
       firstSeq: 1,
@@ -148,6 +153,20 @@ test("a steer that starts a run brings its user turn into the thread", () => {
 
   assert.deepEqual(updated.items, [{ kind: "user", text: "go", seq: 1 }]);
   assert.equal(updated.activeRunId, "new-run");
+});
+
+test("a message accepted during compaction waits without a run", () => {
+  const pending = [{ id: "p1", mode: "steer", text: "after compaction" }];
+  const updated = applyAcceptedSend(
+    session({ running: false, compacting: true, turns: 2, firstSeq: 1 }),
+    "steer",
+    session({ pending, turns: 2, firstSeq: 1, running: false, compacting: true }),
+    true,
+  );
+
+  assert.deepEqual(updated.pending, pending);
+  assert.equal(updated.running, false);
+  assert.equal(updated.compacting, true);
 });
 
 test("mergeWindow brings the pending queue from the persisted view", () => {

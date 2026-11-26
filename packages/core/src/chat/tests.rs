@@ -223,13 +223,16 @@ fn a_steer_joins_the_queue_and_is_claimed_once() {
             SendMode::Steer,
             "p1".into(),
             queued_turn("go left"),
-            |session| {
-                assert_eq!(session.pending.len(), 1);
-                assert_eq!(session.pending[0].text, "go left");
+            |pending| {
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].text, "go left");
             },
         )
         .unwrap();
-    assert!(matches!(result, Ok((ref run_id, _)) if run_id == "r1"));
+    assert!(matches!(
+        result,
+        Ok(ref session) if session.active_run_id.as_deref() == Some("r1")
+    ));
     assert!(state.has_pending_steer("s1"));
 
     let mut published = 0;
@@ -327,4 +330,64 @@ fn the_queue_is_bounded() {
     };
     assert!(error.contains("16"));
     assert_eq!(state.pending_views("s1").len(), MAX_PENDING);
+}
+
+fn compacting_state() -> ChatState {
+    let state = ChatState::in_memory();
+    state.store.create_session("s1", "/tmp/ws", 1).unwrap();
+    let (cancel, _cancel) = CancelHandle::new();
+    state.live().compacting.insert(
+        "s1".into(),
+        SessionOperation {
+            window: "main".into(),
+            cancel,
+        },
+    );
+    state
+}
+
+#[test]
+fn a_normal_send_waits_as_a_steer_while_compacting() {
+    let state = compacting_state();
+    let mut published: Vec<String> = Vec::new();
+    let result = state
+        .enqueue_input(
+            "s1",
+            "main",
+            SendMode::Normal,
+            "p1".into(),
+            queued_turn("after compaction"),
+            |pending| published = pending.iter().map(|row| row.text.clone()).collect(),
+        )
+        .unwrap();
+    let Ok(session) = result else {
+        panic!("a compaction holds the message instead of rejecting it");
+    };
+    assert_eq!(published, ["after compaction"]);
+    assert!(session.compacting);
+    assert!(!session.running);
+    assert_eq!(session.pending.len(), 1);
+
+    let pending = state.pending_views("s1");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].mode, InputMode::Steer);
+    assert!(state.live_view("s1").is_none());
+}
+
+#[test]
+fn another_window_cannot_queue_on_this_compaction() {
+    let state = compacting_state();
+    let error = match state.enqueue_input(
+        "s1",
+        "other",
+        SendMode::Steer,
+        "p1".into(),
+        queued_turn("go"),
+        |_| {},
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("another window must not queue on this compaction"),
+    };
+    assert!(error.contains("another window"));
+    assert!(state.pending_views("s1").is_empty());
 }
