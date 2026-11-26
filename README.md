@@ -14,8 +14,11 @@ runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 
 ## Install
 
-Oaklet currently supports macOS only (Apple Silicon and Intel). Windows and
-Linux are not supported yet.
+Oaklet supports macOS (Apple Silicon and Intel) and Windows 11 x64. Windows 10,
+Windows on ARM, and Linux are not supported yet. Keyboard shortcuts use **⌘** on
+macOS and **Ctrl** on Windows.
+
+### macOS
 
 Download the `.dmg` for your Mac from
 [Releases](https://github.com/FishwithCat/Oaklet/releases/latest).
@@ -39,6 +42,20 @@ Or clear the quarantine flag from Terminal:
 xattr -dr com.apple.quarantine /Applications/Oaklet.app
 ```
 
+### Windows
+
+Download the `_x64-setup.exe` installer from
+[Releases](https://github.com/FishwithCat/Oaklet/releases/latest) and run it. It
+installs for the current user and needs no administrator rights. Oaklet keeps
+its settings, logs, sessions, and attachments under your user profile, and adds
+a Start menu entry.
+
+If SmartScreen warns about an unsigned installer, choose **More info**, then
+**Run anyway**. Windows 11 ships the WebView2 runtime; an older machine
+downloads it during setup.
+
+## Optional Node.js
+
 The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3 or newer.
 Oaklet finds it on `PATH`, in common install locations, or via `OAKLET_NODE`;
 the rest of Oaklet works without it.
@@ -59,7 +76,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Chat
 
 - Multiple tabs, each titled by its first prompt and with its own conversation
-  and draft. **⌘N** opens a tab, **⌘X** closes the active one, and **⌘R** opens
+  and draft. **⌘N** (**Ctrl+N** on Windows) opens a tab, **⌘X** (**Ctrl+W** on
+  Windows) closes the active one, and **⌘R** (**Ctrl+R** on Windows) opens
   History, where you can restore a saved session. Sessions live in
   the backend, so they survive a restart; a live run keeps streaming while you
   switch tabs, but quitting Oaklet stops it and the next start marks it
@@ -77,15 +95,15 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
   expandable process rows. `write_file`, `edit_file`, and `apply_patch` show an
   inline diff card with the applied changes and their added/removed line counts.
-- **⌘F** finds text in the open conversation and highlights every match;
-  **Enter** and **Shift+Enter** step through them.
+- **⌘F** (**Ctrl+F** on Windows) finds text in the open conversation and
+  highlights every match; **Enter** and **Shift+Enter** step through them.
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
 - **Stop** cancels the model request, a running command, or a pending approval.
-- Closing a window or quitting with **⌘Q** asks before discarding unsaved file
-  edits or stopping a running chat. Oaklet waits for cancelled work and session
-  writes before exiting; if a reply cannot be saved, the window stays open and
-  closing it again retries the save.
+- Closing a window or quitting with **⌘Q** (**Alt+F4** on Windows) asks before
+  discarding unsaved file edits or stopping a running chat. Oaklet waits for
+  cancelled work and session writes before exiting; if a reply cannot be saved,
+  the window stays open and closing it again retries the save.
 - Long transcripts open on the latest page; scroll up and choose **Load earlier**
   to bring in older turns without reading the whole log.
 - The plant in the composer's top-left corner estimates the next request against
@@ -128,18 +146,19 @@ checkout in `.agents/worktrees/` from the current commit, then runs the message
 there. The chat shows its checkout path and current branch. Existing terminals
 retain their original directories and processes.
 
-Use **⌘R** to reopen or archive a chat from its project. Archiving can remove a
-clean, unreferenced checkout while keeping its branch and commits. **Keep
-worktrees when archiving** retains the checkout. If a checkout is missing, the
-chat offers to restore it or continue in its source project.
+Use **⌘R** (**Ctrl+R** on Windows) to reopen or archive a chat from its project.
+Archiving can remove a clean, unreferenced checkout while keeping its branch and
+commits. **Keep worktrees when archiving** retains the checkout. If a checkout is
+missing, the chat offers to restore it or continue in its source project.
 
 **Terminal** is backed by real PTYs: multiple tabs, interactive shells, colors,
 job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
 workspace.
 
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
-can be previewed, and **⌘S** saves. Use **File outline** in a saved Rust,
-JavaScript, TypeScript, Python, or Java file to jump to its declarations.
+can be previewed, and **⌘S** (**Ctrl+S** on Windows) saves. Use **File outline**
+in a saved Rust, JavaScript, TypeScript, Python, or Java file to jump to its
+declarations.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The
@@ -312,14 +331,15 @@ to 200,000 characters and reduces HTML to readable text.
   output is model input, not trusted instructions.
 - Architecture preview parses model sources in the local, pinned helper. It does
   not execute workspace configuration or JavaScript.
-- The agent stores the API key in the app config directory (`0600` on Unix),
-  never in the repository.
+- The agent stores the API key in the app config directory (`0600` on Unix,
+  user-only ACLs on Windows), never in the repository.
 
 ## Logs
 
 Release builds append key diagnostics (a session that failed to save, stale runs
 recovered at startup) to `oaklet.log` in the platform log directory, for example
-`~/Library/Logs/com.oaklet.desktop/oaklet.log` on macOS.
+`~/Library/Logs/com.oaklet.desktop/oaklet.log` on macOS and
+`%LOCALAPPDATA%\com.oaklet.desktop\logs\oaklet.log` on Windows.
 
 ## Status
 

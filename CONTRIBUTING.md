@@ -17,6 +17,11 @@ For how to use the app, see [README.md](README.md).
 - A Rust toolchain and the Tauri 2 prerequisites for your platform
 - Git, for the commit hooks and source-control view
 
+On Windows 11 x64, install the **Desktop development with C++** workload with
+the Windows SDK from the Visual Studio Build Tools installer, the WebView2
+runtime, and Git for Windows, then run the commands below from PowerShell. The
+Rust target is `x86_64-pc-windows-msvc`.
+
 ## Setup
 
 From the repository root, install the commit hooks and commitlint:
@@ -75,6 +80,31 @@ cd packages/desktop
 pnpm test
 ```
 
+### Checks on Windows
+
+Run every check from the repository root in PowerShell. The architecture helper
+must be built before `cargo test`, because `tauri-build` copies the bundle
+resources on every build.
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm --dir packages/desktop install --frozen-lockfile
+pnpm --dir packages/architecture-helper install --frozen-lockfile
+pnpm --dir packages/architecture-helper build
+pnpm --dir packages/architecture-helper test
+pnpm --dir packages/desktop test
+pnpm --dir packages/desktop build
+
+Push-Location packages/core
+cargo test
+cargo clippy --all-targets
+Pop-Location
+```
+
+`.github/workflows/test.yml` runs the same set on `windows-2025` next to the
+macOS Rust job, so a pull request that breaks the Windows build is caught
+before it reaches a release.
+
 ### Packaging
 
 Before packaging, run `pnpm --dir packages/architecture-helper build`. Tauri
@@ -82,6 +112,20 @@ embeds only `packages/architecture-helper/dist`; `node_modules` is a build-time
 dependency and is not shipped. The packaged helper is resolved from the app's
 resource directory, while development builds fall back to the helper in the
 Oaklet checkout. Both macOS builds ship the helper as plain JavaScript.
+
+### Packaging (Windows)
+
+With the helper built, create the NSIS user-level installer from the repository
+root:
+
+```powershell
+pnpm tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis
+```
+
+The installer is written to
+`packages/core/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It installs
+for the current user and downloads the WebView2 bootstrapper when the runtime is
+missing.
 
 ### Releasing (macOS, GitHub Actions)
 
@@ -105,6 +149,25 @@ If a Developer ID certificate ever becomes available, add the
 workflow then signs and notarizes instead of falling back to ad-hoc. See
 <https://v2.tauri.app/distribute/sign/macos/>.
 
+### Releasing (Windows, GitHub Actions)
+
+`.github/workflows/windows-release.yml` builds the NSIS installer for
+`x86_64-pc-windows-msvc` on `windows-2025`.
+
+- **Run workflow** in the Actions tab to download the installer as a workflow
+  artifact for internal testing.
+- Push a `v*` tag to attach the installer to the same GitHub Release as the
+  macOS builds. The two workflows publish independently, so a Windows failure
+  does not hold back the macOS release.
+
+Without a code-signing certificate the installer is unsigned and SmartScreen
+warns on first run; the workflow reports that in the log. Add the
+`WINDOWS_CERTIFICATE` (base64 PFX) and `WINDOWS_CERTIFICATE_PASSWORD` repository
+secrets to sign the installer with the Windows SDK's `signtool`, after which the
+workflow fails if `Get-AuthenticodeSignature` does not report a valid signature.
+Before publishing a Windows build, install, launch, upgrade, and uninstall it as
+a standard user on a clean Windows 11 virtual machine.
+
 ## Tool architecture
 
 Tools live in `packages/core/src/tools/`. Each tool owns its schema,
@@ -127,7 +190,16 @@ Each webview window is bound to one canonical workspace in `WindowRegistry`.
 Window-scoped commands derive that workspace from the calling window instead of
 trusting a path from the frontend. Agent runs inherit their session's workspace,
 and events, background jobs, terminals, MCP clients, and architecture loads are
-scoped to that workspace or window.
+scoped to that workspace or window. Workspace identity compares case-insensitively
+on Windows so a folder opened through a different path spelling reuses its
+window, while the stored path keeps the casing the filesystem reported.
+
+Every process Oaklet starts for a command, background job, Git worktree
+operation, MCP server, or LikeC4 helper is owned by
+`packages/core/src/process_tree.rs`. On POSIX it terminates the child's process
+group; on Windows it assigns the child to a Job Object right after spawning and
+terminates the job. Descendants created later belong to the same tree, so
+closing a window, quitting, stopping a job, or a timeout leaves nothing running.
 
 Window close and application Quit share the frontend's file and chat
 confirmations. On macOS, a native application-delegate hook routes menu, ⌘Q,
