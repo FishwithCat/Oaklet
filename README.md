@@ -194,6 +194,7 @@ Open **Settings** in the sidebar. Changes apply to the next run.
 | Model                         | `deepseek-flash`                           |
 | Summary model                 | same as Model                              |
 | Context window                | `262144` tokens                            |
+| Proxy mode                    | System                                     |
 | Run commands without approval | on                                         |
 | Search provider               | DeepSeek                                   |
 | Search API key                | none (DeepSeek falls back to API key)      |
@@ -205,6 +206,12 @@ For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a local setup with
 [Ollama](https://ollama.com), use `http://localhost:11434/v1` and a model such
 as `qwen2.5-coder`.
+
+**Settings → Network** chooses how Oaklet reaches the network. **System** uses
+your shell's proxy variables and the operating system proxy setting,
+**Environment only** reads `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` and
+ignores the OS setting, and **Direct** never uses a proxy. The **Test** button
+in the Model tab measures the choice before you save.
 
 ## Skills
 

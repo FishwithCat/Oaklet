@@ -3,11 +3,14 @@ import type { Theme } from "./theme";
 
 export const DEFAULT_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
 
+export type ProxyMode = "system" | "env" | "direct";
+
 export type AppConfig = {
   baseUrl: string;
   apiKey: string;
   model: string;
   theme: Theme;
+  proxyMode: ProxyMode;
   summaryModel: string;
   summaryContextWindow: number | null;
   contextWindow: number;

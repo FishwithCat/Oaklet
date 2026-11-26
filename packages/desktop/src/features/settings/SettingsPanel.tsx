@@ -19,10 +19,18 @@ import {
 import {
   DEFAULT_SEARCH_URL,
   type AppConfig,
+  type ProxyMode,
 } from "./config";
 import { applyTheme, type Theme } from "./theme";
 
-type SettingsTab = "model" | "web" | "commands" | "mcp" | "appearance" | "data";
+type SettingsTab =
+  | "model"
+  | "network"
+  | "web"
+  | "commands"
+  | "mcp"
+  | "appearance"
+  | "data";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -40,6 +48,7 @@ type TestStatus = {
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "model", label: "Model" },
+  { id: "network", label: "Network" },
   { id: "web", label: "Web Search" },
   { id: "commands", label: "Commands" },
   { id: "mcp", label: "MCP" },
@@ -49,6 +58,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
 
 const SUBTITLES: Record<SettingsTab, string> = {
   model: "Choose the OpenAI-compatible model provider Oaklet should use.",
+  network: "Choose how Oaklet reaches the network.",
   web: "Choose the key and endpoint the web_search tool uses.",
   commands: "Choose whether the agent asks before running commands.",
   mcp: "Connect MCP servers and choose which ones the agent can use.",
@@ -63,6 +73,24 @@ const THEMES: { id: Theme; label: string; hint: string }[] = [
   { id: "light", label: "Light", hint: "Always use the light palette." },
   { id: "dark", label: "Dark", hint: "Always use the dark palette." },
   { id: "auto", label: "Auto", hint: "Follow the system appearance." },
+];
+
+const PROXY_MODES: { id: ProxyMode; label: string; hint: string }[] = [
+  {
+    id: "system",
+    label: "System",
+    hint: "Use the proxy this machine configures: your shell's proxy variables and the operating system proxy setting.",
+  },
+  {
+    id: "env",
+    label: "Environment only",
+    hint: "Use only HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY from your environment. Ignores the operating system proxy setting.",
+  },
+  {
+    id: "direct",
+    label: "Direct",
+    hint: "Never use a proxy. Pick this when the system proxy makes requests slow or unreachable.",
+  },
 ];
 
 function toDraft(config: AppConfig): SettingsDraft {
@@ -96,6 +124,7 @@ export function SettingsPanel({
   );
   const tabRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     model: null,
+    network: null,
     web: null,
     commands: null,
     mcp: null,
@@ -116,7 +145,7 @@ export function SettingsPanel({
     testRequest.current += 1;
     setTesting(false);
     setTestStatus(null);
-  }, [draft.baseUrl, draft.apiKey, draft.model]);
+  }, [draft.baseUrl, draft.apiKey, draft.model, draft.proxyMode]);
 
   // Theme changes preview immediately; leaving the panel restores the saved one.
   useEffect(() => {
@@ -176,6 +205,7 @@ export function SettingsPanel({
         baseUrl: draft.baseUrl,
         apiKey: draft.apiKey,
         model: draft.model,
+        proxyMode: draft.proxyMode,
       });
       if (request !== testRequest.current) return;
       setTestStatus({
@@ -517,6 +547,41 @@ export function SettingsPanel({
                     })
                   }
                 />
+              </section>
+            ) : tab === "network" ? (
+              <section
+                id="settings-panel-network"
+                role="tabpanel"
+                aria-labelledby="settings-tab-network"
+                tabIndex={0}
+              >
+                <div role="radiogroup" aria-label="Proxy">
+                  {PROXY_MODES.map((option) => (
+                    <label key={option.id} className="settings-check">
+                      <input
+                        type="radio"
+                        name="proxy-mode"
+                        value={option.id}
+                        checked={draft.proxyMode === option.id}
+                        onChange={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            proxyMode: option.id,
+                          }))
+                        }
+                      />
+                      <span>
+                        <strong>{option.label}</strong>
+                        <span className="field-hint">{option.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className="field-hint">
+                  Model, web search, web fetch, and MCP requests all use this
+                  choice. The Test button in the Model tab measures the
+                  connection with the choice above before you save.
+                </p>
               </section>
             ) : (
               <section
