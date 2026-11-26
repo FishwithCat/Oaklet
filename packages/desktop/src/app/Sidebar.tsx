@@ -11,6 +11,7 @@ import {
   TerminalBoxRegular,
 } from "@mingcute/react/core-regular";
 import { FlashFilled } from "@mingcute/react/core-filled";
+import { displayPath } from "../shared/display-path";
 
 export type AppView = "chat" | "terminal" | "git" | "architecture" | "files";
 
@@ -125,7 +126,7 @@ export function Sidebar({
           onClick={onChooseWorkspace}
           disabled={browsingWorkspace}
           aria-label="Open workspace"
-          title={`Open another workspace (current: ${workspace})`}
+          title={`Open another workspace (current: ${displayPath(workspace)})`}
         >
           <FolderOpenRegular size={16} />
         </button>

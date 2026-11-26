@@ -8,6 +8,7 @@ import {
   RightSmallRegular,
 } from "@mingcute/react/core-regular";
 import { errorText } from "../../shared/error-text";
+import { displayPath } from "../../shared/display-path";
 import { statusInfo } from "../source-control/git-model";
 import { changeMarkers, fileTreeRows, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
 
@@ -146,7 +147,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
                 tabIndex={tabPath === entry.path ? 0 : -1}
                 className={`ghost files-entry${entry.path === "." ? " files-root" : ""}${selected === entry.path ? " selected" : ""}`}
                 style={{ paddingLeft: 8 + depth * 16 }}
-                title={entry.path === "." ? workspace : entry.path}
+                title={entry.path === "." ? displayPath(workspace) : entry.path}
                 onFocus={() => setFocused(entry.path)}
                 onKeyDown={(event) => navigate(event, index)}
                 onClick={() => entry.directory ? toggle(entry.path) : !busy && onOpen(entry.path)}

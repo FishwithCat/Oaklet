@@ -22,6 +22,7 @@ import {
   stickAfterScroll,
   toBlocks,
 } from "../src/features/chat/chat-model.ts";
+import { displayPath } from "../src/shared/display-path.ts";
 
 const reasoning = (text = "thinking") => ({
   kind: "reasoning",
@@ -209,6 +210,33 @@ test("the workdir shortens under the home directory", () => {
     formatWorkdir("/Users/linear/Workspace/Acorn", ""),
     "/Users/linear/Workspace/Acorn",
   );
+});
+
+test("the verbatim Windows prefix never reaches the title", () => {
+  assert.equal(
+    formatWorkdir("\\\\?\\C:\\Users\\me\\project", "C:\\Users\\me"),
+    "~/project",
+  );
+  assert.equal(formatWorkdir("\\\\?\\C:\\Users\\me", "C:\\Users\\me"), "~");
+  assert.equal(
+    formatWorkdir("\\\\?\\C:\\Users\\me\\project", ""),
+    "C:\\Users\\me\\project",
+  );
+  assert.equal(
+    formatWorkdir("\\\\?\\UNC\\server\\share\\project", ""),
+    "\\\\server\\share\\project",
+  );
+  assert.equal(
+    formatWorkdir("c:/Users/me/project", "c:/Users/me"),
+    "~/project",
+  );
+});
+
+test("a displayed path reads the way Explorer shows it", () => {
+  assert.equal(displayPath("\\\\?\\C:\\Users\\me\\project"), "C:\\Users\\me\\project");
+  assert.equal(displayPath("\\\\?\\unc\\server\\share\\project"), "\\\\server\\share\\project");
+  assert.equal(displayPath("/Users/linear/Workspace/Acorn"), "/Users/linear/Workspace/Acorn");
+  assert.equal(displayPath("~/Workspace/Acorn"), "~/Workspace/Acorn");
 });
 
 test("the context plant steps color at 30%, 60%, and 80%", () => {

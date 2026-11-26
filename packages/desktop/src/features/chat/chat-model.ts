@@ -2,6 +2,7 @@ import type { ProcessItem } from "./process-model";
 import type { SentAttachment } from "./attachments";
 import type { PlanItem } from "./plan-model";
 import type { RunUsage, StepUsage } from "./session-model";
+import { displayPath } from "../../shared/display-path.ts";
 
 export type Item = (
   | { kind: "user"; text: string; attachments?: SentAttachment[] }
@@ -123,11 +124,13 @@ export function formatRequestTitle(step: StepUsage): string {
 
 /** Show the workspace relative to the home directory: ~/Workspace/Acorn. */
 export function formatWorkdir(workspace: string, home: string): string {
-  const separator = workspace.includes("\\") ? "\\" : "/";
-  if (home && workspace === home) return "~";
-  return home && workspace.startsWith(home + separator)
-    ? `~/${workspace.slice(home.length + 1)}`
-    : workspace;
+  const root = displayPath(workspace);
+  const base = displayPath(home);
+  const separator = root.includes("\\") ? "\\" : "/";
+  if (base && root === base) return "~";
+  return base && root.startsWith(base + separator)
+    ? `~/${root.slice(base.length + 1)}`
+    : root;
 }
 
 /** Drop a provider prefix from a model id: "zai-org/GLM-5.3-Flash" -> "GLM-5.3-Flash". */
