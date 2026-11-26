@@ -1,24 +1,33 @@
 export type FileEntry = { name: string; path: string; directory: boolean };
 export type FileChange = { path: string; status: string };
 
+const WINDOWS_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
+export function isWindowsPath(path: string): boolean {
+  return WINDOWS_ABSOLUTE.test(path);
+}
+
 export function workspaceName(workspace: string): string {
-  return workspace.split(/[/\\]/).filter(Boolean).pop() || workspace;
+  const parts = workspace
+    .split(isWindowsPath(workspace) ? /[\\/]/ : "/")
+    .filter(Boolean);
+  return parts.pop() || workspace;
 }
 
 /** Path segments shown in the editor breadcrumbs, starting at the workspace. */
 export function breadcrumbParts(workspace: string, path: string): string[] {
-  return [workspaceName(workspace), ...path.split(/[/\\]/).filter(Boolean)];
+  return [workspaceName(workspace), ...path.split("/").filter(Boolean)];
 }
 
 export function absolutePath(workspace: string, path: string): string {
-  const root = workspace.replace(/[/\\]+$/, "");
-  const separator = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  return `${root}${separator}${path}`;
+  const windows = isWindowsPath(workspace);
+  const root = workspace.replace(windows ? /[\\/]+$/ : /\/+$/, "");
+  const relative = windows ? path.replace(/\//g, "\\") : path;
+  return `${root}${windows ? "\\" : "/"}${relative}`;
 }
 
-/** Match git paths and tree paths regardless of the platform separator. */
 export function treeKey(path: string): string {
-  return path.split(/[/\\]/).filter(Boolean).join("/") || ".";
+  return path.split("/").filter(Boolean).join("/") || ".";
 }
 
 /**

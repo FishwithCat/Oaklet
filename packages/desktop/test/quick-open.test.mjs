@@ -16,10 +16,18 @@ test("splits workspace paths into a filename and folder label", () => {
     dir: "packages/core/src",
   });
   assert.deepEqual(fileParts("README.md"), { name: "README.md", dir: "" });
-  assert.deepEqual(fileParts("src\\features\\Files.tsx"), {
+  assert.deepEqual(fileParts("src/features/Files.tsx"), {
     name: "Files.tsx",
     dir: "src/features",
   });
+  assert.deepEqual(fileParts("a\\b.txt"), { name: "a\\b.txt", dir: "" });
+});
+
+test("keeps a backslash name apart from a nested file", () => {
+  const names = ["a\\b.txt", "a/b.txt"];
+  assert.deepEqual(matchFiles(names, "b"), ["a/b.txt", "a\\b.txt"]);
+  assert.deepEqual(matchFiles(names, "a\\b"), ["a\\b.txt"]);
+  assert.deepEqual(matchFiles(names, "a/b"), ["a/b.txt"]);
 });
 
 test("ranks filename matches above folder matches and ignores case", () => {

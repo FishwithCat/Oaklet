@@ -1,18 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { absolutePath, breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
+import { absolutePath, breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, isWindowsPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
 
-test("breadcrumbs start at the workspace root and split both separators", () => {
+test("breadcrumbs start at the workspace root and split workspace-relative paths on slashes", () => {
   assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
     "acorn",
     "src",
     "styles",
     "theme.css",
   ]);
-  assert.deepEqual(breadcrumbParts("C:\\work\\acorn\\", "src\\main.ts"), [
+  assert.deepEqual(breadcrumbParts("C:\\work\\acorn\\", "src/main.ts"), [
     "acorn",
     "src",
     "main.ts",
+  ]);
+  assert.deepEqual(breadcrumbParts("/Users/me/a\\b", "c\\d.txt"), [
+    "a\\b",
+    "c\\d.txt",
   ]);
 });
 
@@ -20,14 +24,23 @@ test("copied paths join the workspace root with the platform separator", () => {
   assert.equal(absolutePath("/Users/me/acorn", "src/main.ts"), "/Users/me/acorn/src/main.ts");
   assert.equal(absolutePath("/Users/me/acorn/", "src/main.ts"), "/Users/me/acorn/src/main.ts");
   assert.equal(absolutePath("/", "README.md"), "/README.md");
-  assert.equal(absolutePath("C:\\work\\acorn", "src\\main.ts"), "C:\\work\\acorn\\src\\main.ts");
+  assert.equal(absolutePath("/Users/me/a\\b", "c\\d.txt"), "/Users/me/a\\b/c\\d.txt");
+  assert.equal(absolutePath("C:\\work\\acorn", "src/main.ts"), "C:\\work\\acorn\\src\\main.ts");
   assert.equal(absolutePath("C:\\work\\acorn\\", "README.md"), "C:\\work\\acorn\\README.md");
+});
+
+test("only absolute Windows roots treat a backslash as a separator", () => {
+  assert.equal(isWindowsPath("C:\\work\\acorn"), true);
+  assert.equal(isWindowsPath("C:/work/acorn"), true);
+  assert.equal(isWindowsPath("\\\\server\\share\\acorn"), true);
+  assert.equal(isWindowsPath("/Users/me/acorn"), false);
+  assert.equal(isWindowsPath("src/main.ts"), false);
 });
 
 test("change markers index files and their ancestor folders", () => {
   const markers = changeMarkers([
     { path: "src/styles/theme.css", status: "modified" },
-    { path: "src\\main.ts", status: "added" },
+    { path: "src/main.ts", status: "added" },
     { path: "README.md", status: "untracked" },
   ]);
   assert.deepEqual([...markers.folders].sort(), ["src", "src/styles"]);
@@ -35,6 +48,21 @@ test("change markers index files and their ancestor folders", () => {
   assert.equal(markers.files.get("src/styles/theme.css").status, "modified");
   assert.equal(markers.files.get("README.md").status, "untracked");
   assert.equal(markers.files.size, 3);
+});
+
+test("a file named with a backslash stays distinct from a nested file", () => {
+  assert.equal(treeKey("a\\b.txt"), "a\\b.txt");
+  assert.equal(treeKey("a/b.txt"), "a/b.txt");
+  assert.notEqual(treeKey("a\\b.txt"), treeKey("a/b.txt"));
+
+  const markers = changeMarkers([
+    { path: "a\\b.txt", status: "modified" },
+    { path: "a/b.txt", status: "added" },
+  ]);
+  assert.deepEqual([...markers.folders], ["a"]);
+  assert.equal(markers.files.size, 2);
+  assert.equal(markers.files.get("a\\b.txt").status, "modified");
+  assert.equal(markers.files.get("a/b.txt").status, "added");
 });
 
 test("tree reveals only expanded branches and preserves nested expansion", () => {

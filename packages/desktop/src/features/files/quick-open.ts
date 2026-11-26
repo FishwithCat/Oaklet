@@ -1,6 +1,6 @@
 /** Split a workspace-relative path into the filename and its folder label. */
 export function fileParts(path: string): { name: string; dir: string } {
-  const parts = path.split(/[/\\]/).filter(Boolean);
+  const parts = path.split("/").filter(Boolean);
   const name = parts.pop() ?? path;
   return { name, dir: parts.join("/") };
 }
