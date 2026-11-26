@@ -20,10 +20,15 @@ export function breadcrumbParts(workspace: string, path: string): string[] {
 }
 
 export function absolutePath(workspace: string, path: string): string {
+  if (path === ".") return workspace;
   const windows = isWindowsPath(workspace);
   const root = workspace.replace(windows ? /[\\/]+$/ : /\/+$/, "");
   const relative = windows ? path.replace(/\//g, "\\") : path;
   return `${root}${windows ? "\\" : "/"}${relative}`;
+}
+
+export function pathWithin(path: string, ancestor: string): boolean {
+  return path === ancestor || path.startsWith(`${ancestor}/`);
 }
 
 export function treeKey(path: string): string {

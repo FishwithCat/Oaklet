@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Document2Regular,
@@ -10,7 +10,7 @@ import {
 import { errorText } from "../../shared/error-text";
 import { displayPath } from "../../shared/display-path";
 import { statusInfo } from "../source-control/git-model";
-import { changeMarkers, fileTreeRows, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
+import { changeMarkers, fileTreeRows, pathWithin, treeKey, workspaceName, type FileChange, type FileEntry } from "./file-model";
 
 /** Show a load note only after a beat, so fast local reads never flash. */
 function LoadingNote({ label }: { label: string }) {
@@ -22,7 +22,7 @@ function LoadingNote({ label }: { label: string }) {
   return shown ? <p role="status" className="files-tree-status">{label}</p> : null;
 }
 
-export function FileTree({ workspace, active, refreshToken, changes, selected, busy, onOpen }: {
+export function FileTree({ workspace, active, refreshToken, changes, selected, busy, onOpen, onCopyPath, onMutate, onRefresh, onError }: {
   workspace: string;
   active: boolean;
   refreshToken: number;
@@ -30,12 +30,22 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
   selected?: string;
   busy: boolean;
   onOpen: (path: string) => void;
+  onCopyPath: (path: string) => void;
+  onMutate: (entry: FileEntry, name?: string) => Promise<{ path: string | null } | undefined>;
+  onRefresh: () => void;
+  onError: (error: string) => void;
 }) {
   const [directories, setDirectories] = useState<Record<string, FileEntry[]>>({});
   const [expanded, setExpanded] = useState(new Set(["."]));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(new Set<string>());
   const [focused, setFocused] = useState<string>();
+  const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number }>();
+  const [renameEntry, setRenameEntry] = useState<FileEntry>();
+  const [renameError, setRenameError] = useState("");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const renameTitle = useId();
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
   const generation = useRef(0);
@@ -80,6 +90,44 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
     return () => { generation.current++; };
   }, [workspace, active, refreshToken]);
 
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    if (!menu || !element) return;
+    element.style.left = `${Math.max(4, Math.min(menu.x, window.innerWidth - element.offsetWidth - 4))}px`;
+    element.style.top = `${Math.max(4, Math.min(menu.y, window.innerHeight - element.offsetHeight - 4))}px`;
+    element.querySelector("button")?.focus({ preventScroll: true });
+  }, [menu]);
+
+  useEffect(() => {
+    if (!menu) return;
+    function dismissOutside(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenu(undefined);
+    }
+    function dismiss() { setMenu(undefined); }
+    document.addEventListener("pointerdown", dismissOutside);
+    window.addEventListener("blur", dismiss);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside);
+      window.removeEventListener("blur", dismiss);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (active) return;
+    setMenu(undefined);
+    setRenameEntry(undefined);
+  }, [active]);
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!active || !renameEntry || !dialog) return;
+    dialog.showModal();
+    dialog.querySelector("input")?.select();
+    return () => dialog.close();
+  }, [active, renameEntry]);
+
   function toggle(path: string) {
     const next = new Set(expanded);
     if (next.has(path)) next.delete(path);
@@ -98,9 +146,104 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
     buttons.current.get(path)?.focus();
   }
 
+  function showMenu(entry: FileEntry, x: number, y: number) {
+    setFocused(entry.path);
+    setMenu({ entry, x, y });
+  }
+
+  function closeMenu(restoreFocus = false) {
+    if (restoreFocus && menu) focus(menu.entry.path);
+    setMenu(undefined);
+  }
+
+  function navigateMenu(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    if (event.key === "Tab") {
+      closeMenu(true);
+      return;
+    }
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+    const index = items.indexOf(event.target as HTMLButtonElement);
+    const last = items.length - 1;
+    let next: number;
+    switch (event.key) {
+      case "ArrowDown": next = index === last ? 0 : index + 1; break;
+      case "ArrowUp": next = index <= 0 ? last : index - 1; break;
+      case "Home": next = 0; break;
+      case "End": next = last; break;
+      default: return;
+    }
+    event.preventDefault();
+    items[next]?.focus();
+  }
+
+  function applyMutation(entry: FileEntry, path: string | null) {
+    if (path === entry.path) return;
+    const separator = entry.path.lastIndexOf("/");
+    const parent = separator < 0 ? "." : entry.path.slice(0, separator);
+    focus(parent);
+    setExpanded((current) => {
+      const next = new Set(current);
+      for (const expandedPath of current) {
+        if (!pathWithin(expandedPath, entry.path)) continue;
+        next.delete(expandedPath);
+        if (path !== null) next.add(path + expandedPath.slice(entry.path.length));
+      }
+      return next;
+    });
+    setDirectories((current) => {
+      const next = { ...current };
+      for (const directory of Object.keys(next)) {
+        if (pathWithin(directory, entry.path)) delete next[directory];
+      }
+      next[parent] = current[parent]?.filter((item) => item.path !== entry.path) ?? [];
+      return next;
+    });
+    onRefresh();
+  }
+
+  async function deleteEntry(entry: FileEntry) {
+    closeMenu(true);
+    try {
+      const result = await onMutate(entry);
+      if (result) applyMutation(entry, result.path);
+    } catch (error) {
+      onError(errorText(error));
+      onRefresh();
+    }
+  }
+
+  async function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!renameEntry || busy) return;
+    const name = String(new FormData(event.currentTarget).get("name") ?? "");
+    setRenameError("");
+    try {
+      const result = await onMutate(renameEntry, name);
+      if (!result) return;
+      dialogRef.current?.close();
+      setRenameEntry(undefined);
+      applyMutation(renameEntry, result.path);
+    } catch (error) {
+      setRenameError(errorText(error));
+      dialogRef.current?.querySelector("input")?.focus();
+    }
+  }
+
   function navigate(event: KeyboardEvent, index: number) {
     const { entry, parent } = rows[index];
     switch (event.key) {
+      case "ContextMenu":
+      case "F10": {
+        if (event.key === "F10" && !event.shiftKey) return;
+        const row = event.currentTarget.getBoundingClientRect();
+        showMenu(entry, row.left + 16, row.bottom);
+        break;
+      }
       case "ArrowDown": focus(rows[index + 1]?.entry.path); break;
       case "ArrowUp": focus(rows[index - 1]?.entry.path); break;
       case "Home": focus(rows[0]?.entry.path); break;
@@ -121,7 +264,7 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
   }
 
   return (
-    <nav className="files-browser" aria-label="Workspace files">
+    <nav className="files-browser" aria-label="Workspace files" onScroll={() => closeMenu()}>
       {errors["."] && <p role="alert" className="files-error">{errors["."]}</p>}
       {loading.has(".") && <LoadingNote label="Loading files…" />}
       <div role="tree" aria-label="Workspace files">
@@ -144,12 +287,17 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
                 aria-expanded={entry.directory ? open : undefined}
                 aria-selected={selected === entry.path}
                 aria-disabled={!entry.directory && busy}
+                aria-haspopup="menu"
                 tabIndex={tabPath === entry.path ? 0 : -1}
                 className={`ghost files-entry${entry.path === "." ? " files-root" : ""}${selected === entry.path ? " selected" : ""}`}
                 style={{ paddingLeft: 8 + depth * 16 }}
                 title={entry.path === "." ? displayPath(workspace) : entry.path}
                 onFocus={() => setFocused(entry.path)}
                 onKeyDown={(event) => navigate(event, index)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  showMenu(entry, event.clientX, event.clientY);
+                }}
                 onClick={() => entry.directory ? toggle(entry.path) : !busy && onOpen(entry.path)}
               >
                 {Array.from({ length: Math.max(0, depth - 1) }, (_, level) => (
@@ -172,6 +320,44 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
           );
         })}
       </div>
+      {active && menu && (
+        <div ref={menuRef} className="files-context-menu" role="menu" aria-label={`Actions for ${menu.entry.name}`}
+          onKeyDown={navigateMenu} onContextMenu={(event) => event.preventDefault()}>
+          <button type="button" role="menuitem" className="ghost" tabIndex={-1} onClick={() => {
+            closeMenu(true);
+            onCopyPath(menu.entry.path);
+          }}>Copy Path</button>
+          {menu.entry.path !== "." && <>
+            <button type="button" role="menuitem" className="ghost" tabIndex={-1} disabled={busy} onClick={() => {
+              closeMenu(true);
+              setRenameError("");
+              setRenameEntry(menu.entry);
+            }}>Rename…</button>
+            <button type="button" role="menuitem" className="ghost files-context-delete" tabIndex={-1} disabled={busy}
+              onClick={() => void deleteEntry(menu.entry)}>Delete…</button>
+          </>}
+        </div>
+      )}
+      {active && renameEntry && (
+        <dialog ref={dialogRef} className="modal files-rename" aria-labelledby={renameTitle}
+          onKeyDown={(event) => event.stopPropagation()} onCancel={(event) => {
+          event.preventDefault();
+          if (!busy) setRenameEntry(undefined);
+        }}>
+          <form onSubmit={submitRename}>
+            <h2 id={renameTitle}>{renameEntry.directory ? "Rename folder" : "Rename file"}</h2>
+            <label>
+              New name
+              <input name="name" defaultValue={renameEntry.name} required readOnly={busy} />
+            </label>
+            {renameError && <p role="alert" className="files-error">{renameError}</p>}
+            <div className="modal-actions">
+              <button type="button" className="ghost" disabled={busy} onClick={() => setRenameEntry(undefined)}>Cancel</button>
+              <button type="submit" className="primary" disabled={busy}>Rename</button>
+            </div>
+          </form>
+        </dialog>
+      )}
     </nav>
   );
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { absolutePath, breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, isWindowsPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
+import { absolutePath, breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, isWindowsPath, lineSeparator, editorText, pathWithin, savedText, treeKey } from "../src/features/files/file-model.ts";
 
 test("breadcrumbs start at the workspace root and split workspace-relative paths on slashes", () => {
   assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
@@ -27,6 +27,14 @@ test("copied paths join the workspace root with the platform separator", () => {
   assert.equal(absolutePath("/Users/me/a\\b", "c\\d.txt"), "/Users/me/a\\b/c\\d.txt");
   assert.equal(absolutePath("C:\\work\\acorn", "src/main.ts"), "C:\\work\\acorn\\src\\main.ts");
   assert.equal(absolutePath("C:\\work\\acorn\\", "README.md"), "C:\\work\\acorn\\README.md");
+  assert.equal(absolutePath("/Users/me/acorn", "."), "/Users/me/acorn");
+});
+
+test("path mutations affect exactly the entry and its descendants", () => {
+  assert.equal(pathWithin("src", "src"), true);
+  assert.equal(pathWithin("src/components/App.tsx", "src"), true);
+  assert.equal(pathWithin("src-old/App.tsx", "src"), false);
+  assert.equal(pathWithin("src\\App.tsx", "src"), false);
 });
 
 test("only absolute Windows roots treat a backslash as a separator", () => {

@@ -23,7 +23,7 @@ import type { FileEditorHandle } from "./FileEditor";
 import { fileLanguage } from "./file-language";
 import { previewFontShortcut } from "../../app/shortcuts";
 import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../source-control/git-diff";
-import { absolutePath, breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
+import { absolutePath, breadcrumbParts, editorText, isMarkdownPath, pathWithin, savedText, type FileChange, type FileEntry } from "./file-model";
 
 import { FileTree } from "./FileTree";
 import { FileSearch } from "./FileSearch";
@@ -73,6 +73,15 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const dirty = document !== null && document.content !== editorText(document.original);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  const openPath = document?.path ?? image?.path;
+
+  function closeDocument() {
+    setDocument(null);
+    setImage(null);
+    setEnlarged(false);
+    setPreview(false);
+    dirtyRef.current = false;
+  }
 
   async function canLeave() {
     if (busyRef.current) return false;
@@ -94,13 +103,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     canLeave,
     hasUnsaved: () => dirtyRef.current || busyRef.current,
     open: (path) => { void openFile(path, isMarkdownPath(path)); },
-    closeDocument: () => {
-      setDocument(null);
-      setImage(null);
-      setEnlarged(false);
-      setPreview(false);
-      dirtyRef.current = false;
-    },
+    closeDocument,
     quickOpen: () => setSearchOpen(true),
   }));
 
@@ -199,11 +202,45 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       await navigator.clipboard.writeText(absolutePath(workspace, path));
       setCopiedPath(path);
     } catch {
-      setError("Could not copy the file path.");
+      setError("Could not copy the path.");
     }
   }
 
-  const openPath = document?.path ?? image?.path;
+  async function mutateEntry(entry: FileEntry, name?: string) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    const { path } = entry;
+    const affected = openPath && pathWithin(openPath, path) ? openPath : undefined;
+    try {
+      if (name === undefined) {
+        const target = entry.directory ? `the folder “${path}” and all its contents` : `“${path}”`;
+        const unsaved = affected && dirtyRef.current ? " Unsaved changes to the open file will be lost." : "";
+        if (!await confirm(`Permanently delete ${target}?${unsaved}`, {
+          title: entry.directory ? "Delete folder" : "Delete file",
+          kind: "warning",
+          okLabel: "Delete",
+          cancelLabel: "Cancel",
+        })) return;
+        await invoke("files_delete", { workspace, path });
+        if (affected) closeDocument();
+        return { path: null };
+      }
+
+      const renamed = await invoke<string>("files_rename", { workspace, path, name });
+      if (affected && renamed !== path) {
+        const next = renamed + affected.slice(path.length);
+        setDocument((current) => current && { ...current, path: next });
+        setImage((current) => current && { ...current, path: next });
+        if (!isMarkdownPath(next)) setPreview(false);
+      }
+      return { path: renamed };
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
 
   return (
     <section className="files-panel" hidden={!active} aria-label="Files" onKeyDown={(event) => {
@@ -237,7 +274,12 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
           selected={openPath}
           busy={busy}
           onOpen={(path) => { if (path !== openPath) void openFile(path); }}
+          onCopyPath={copyPath}
+          onMutate={mutateEntry}
+          onRefresh={onRefresh}
+          onError={setError}
         />
+        <span className="sr-only" role="status">{copiedPath !== null ? "Path copied." : ""}</span>
         <PaneResizer width={browserWidth} label="Resize file browser" onChange={setBrowserWidth} />
         <div className="files-document">
           {error && <p role="alert" className="files-error">{error}</p>}
@@ -269,9 +311,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                   ? <CheckRegular size={14} aria-hidden="true" />
                   : <CopyRegular size={14} aria-hidden="true" />}
               </button>
-              <span className="sr-only" role="status">
-                {copiedPath === openPath ? "File path copied." : ""}
-              </span>
               <div className="files-actions">
                 {document && supportsOutline(document.path) && (
                   <FileOutline key={document.path} workspace={workspace} path={document.path}
@@ -280,7 +319,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                 )}
                 <button className="ghost icon-button" disabled={busy} aria-label="Reload file" title="Reload file" onClick={() => void openFile(openPath)}><Refresh3Regular size={14} /></button>
                 {document && isMarkdownPath(document.path) && <button className="ghost icon-button" aria-label="Preview" title={preview ? "Show source" : "Preview"} aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? <CodeRegular size={14} /> : <EyeRegular size={14} />}</button>}
-                <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) { setDocument(null); setImage(null); dirtyRef.current = false; } }}><CloseRegular size={14} /></button>
+                <button className="ghost icon-button" disabled={busy} aria-label="Close file" title="Close file" onClick={async () => { if (await canLeave()) closeDocument(); }}><CloseRegular size={14} /></button>
               </div>
             </div>
             {image ? <div className="files-image"><button type="button" className="files-image-button" title="Enlarge image" aria-label={`Enlarge ${image.path}`} onClick={() => setEnlarged(true)}><img src={image.src} alt={image.path} /></button></div> :

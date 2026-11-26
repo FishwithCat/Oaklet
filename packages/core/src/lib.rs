@@ -76,6 +76,8 @@ pub fn run() {
             files::files_read_dropped,
             files::files_read_image,
             files::files_save,
+            files::files_rename,
+            files::files_delete,
             git::git_log,
             git::git_switch,
             git::git_changes,

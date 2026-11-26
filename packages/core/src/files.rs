@@ -13,7 +13,7 @@ const MAX_BYTES: u64 = 2_000_000;
 /// Matches the composer's text attachment cap; larger drops keep their path.
 const MAX_DROP_TEXT_BYTES: u64 = 200_000;
 const MAX_FIND_RESULTS: usize = 20_000;
-static SAVE_LOCK: Mutex<()> = Mutex::new(());
+static FILE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +161,138 @@ pub async fn files_save(
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn files_rename(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    workspace: String,
+    path: String,
+    name: String,
+) -> Result<String, String> {
+    let root = self::workspace(&state, &window, &workspace)?;
+    tauri::async_runtime::spawn_blocking(move || rename(&root, &path, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn files_delete(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    workspace: String,
+    path: String,
+) -> Result<(), String> {
+    let root = self::workspace(&state, &window, &workspace)?;
+    tauri::async_runtime::spawn_blocking(move || delete(&root, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn entry_name(name: &str) -> bool {
+    Path::new(name).file_name().is_some_and(|part| part == name)
+        && !name.contains('\0')
+        && (!cfg!(windows) || !name.contains(['\\', ':']))
+}
+
+fn mutation_target(root: &Workspace, input: &str) -> Result<(PathBuf, fs::FileType), String> {
+    if !input.split('/').all(entry_name) {
+        return Err("Choose a workspace file or folder.".into());
+    }
+    let path = root.root().join(input);
+    root.ensure_writable(&path)?;
+    let kind = path
+        .symlink_metadata()
+        .map_err(|e| e.to_string())?
+        .file_type();
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    if (!kind.is_dir() && !kind.is_file()) || canonical != path || canonical == root.root() {
+        return Err("Choose a workspace file or folder without symbolic links.".into());
+    }
+    Ok((canonical, kind))
+}
+
+fn rename(root: &Workspace, input: &str, name: &str) -> Result<String, String> {
+    if !entry_name(name) || name.trim() != name || (cfg!(windows) && name.ends_with('.')) {
+        return Err("Enter a valid file or folder name.".into());
+    }
+    let _lock = FILE_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
+    let (path, _) = mutation_target(root, input)?;
+    let destination = path.with_file_name(name);
+    root.ensure_writable(&destination)?;
+    if path != destination {
+        rename_exclusive(&path, &destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("An item named \"{name}\" already exists in this folder.")
+            } else {
+                format!("Cannot rename item: {error}")
+            }
+        })?;
+    }
+    Ok(crate::paths::relative_text(&root.relative(&destination)))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn rename_exclusive(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: Both paths are live, NUL-terminated strings for the duration of the call.
+    let result = unsafe {
+        #[cfg(target_os = "macos")]
+        {
+            libc::renameatx_np(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        }
+        #[cfg(target_os = "linux")]
+        {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        }
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_exclusive(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileW;
+
+    let from: Vec<_> = from.as_os_str().encode_wide().chain([0]).collect();
+    let to: Vec<_> = to.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: Both paths are live, NUL-terminated UTF-16 strings.
+    if unsafe { MoveFileW(from.as_ptr(), to.as_ptr()) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn delete(root: &Workspace, input: &str) -> Result<(), String> {
+    let _lock = FILE_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
+    let (path, kind) = mutation_target(root, input)?;
+    if kind.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+    .map_err(|e| format!("Cannot delete item: {e}"))
+}
+
 fn resolve(root: &Workspace, input: &str) -> Result<PathBuf, String> {
     // The shared resolver trims tool input; never silently select a different file.
     if input.trim() != input {
@@ -286,7 +418,7 @@ fn looks_like_image(path: &Path) -> bool {
 }
 
 fn save(root: &Workspace, input: &str, original: &str, content: &str) -> Result<(), String> {
-    let _lock = SAVE_LOCK.lock().map_err(|e| e.to_string())?;
+    let _lock = FILE_WRITE_LOCK.lock().map_err(|e| e.to_string())?;
     let path = resolve(root, input)?;
     root.ensure_writable(&path)?;
     if content.len() as u64 > MAX_BYTES || content.contains('\0') {
@@ -348,6 +480,37 @@ mod tests {
         assert!(save(&root, "hello.txt", "old", "lost").is_err());
         assert_eq!(read(&path).unwrap(), "你好\r\n");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renames_and_deletes_files_and_folders_without_overwriting() {
+        let dir = temp_root("file-mutations");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        fs::create_dir(dir.join("docs")).unwrap();
+        fs::create_dir(dir.join("existing")).unwrap();
+        fs::write(dir.join("docs/old.md"), "keep").unwrap();
+        fs::write(dir.join("docs/taken.md"), "other").unwrap();
+
+        assert!(rename(&root, "docs/old.md", "taken.md").is_err());
+        assert!(rename(&root, "docs/old.md", "../new.md").is_err());
+        assert!(rename(&root, "docs/old.md", ".Git").is_err());
+        assert!(rename(&root, "docs", "existing").is_err());
+        assert!(rename(&root, ".", "elsewhere").is_err());
+        assert!(delete(&root, ".").is_err());
+        assert_eq!(read(&dir.join("docs/taken.md")).unwrap(), "other");
+        assert_eq!(
+            rename(&root, "docs/old.md", "new.md").unwrap(),
+            "docs/new.md"
+        );
+        assert_eq!(rename(&root, "docs", "notes").unwrap(), "notes");
+        assert_eq!(read(&dir.join("notes/new.md")).unwrap(), "keep");
+
+        delete(&root, "notes/new.md").unwrap();
+        assert!(!dir.join("notes/new.md").exists());
+        delete(&root, "notes").unwrap();
+        assert!(!dir.join("notes").exists());
+        assert!(dir.join("existing").is_dir());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -461,6 +624,29 @@ mod unix_tests {
     use super::*;
     use crate::tools::test_support::temp_root;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn refuses_link_entries_and_leaves_linked_contents_alone() {
+        let dir = temp_root("file-mutation-links");
+        let outside = temp_root("file-mutation-outside");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        fs::create_dir(dir.join("docs")).unwrap();
+        fs::write(dir.join("docs/keep.txt"), "local").unwrap();
+        fs::write(outside.join("keep.txt"), "external").unwrap();
+        symlink(dir.join("docs"), dir.join("alias")).unwrap();
+        symlink(&outside, dir.join("outside")).unwrap();
+        symlink(&outside, dir.join("docs/contained")).unwrap();
+
+        assert!(delete(&root, "alias").is_err());
+        assert!(delete(&root, "alias/keep.txt").is_err());
+        assert!(rename(&root, "outside/keep.txt", "lost.txt").is_err());
+        assert!(rename(&root, "docs/keep.txt", "contained").is_err());
+        assert_eq!(read(&dir.join("docs/keep.txt")).unwrap(), "local");
+        delete(&root, "docs").unwrap();
+        assert_eq!(read(&outside.join("keep.txt")).unwrap(), "external");
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
 
     #[test]
     fn preserves_permissions_and_blocks_external_symlinks() {

@@ -81,6 +81,15 @@ button.files-entry.selected, button.files-entry.selected:hover:not(:disabled) { 
 .files-tree-spacer { flex: none; width: 12px; }
 .files-tree-status { color: var(--muted); margin: 4px 0; padding: 4px; font-size: 12px; }
 .files-entry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.files-context-menu { position: fixed; z-index: 15; min-width: 144px; padding: 4px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 18px var(--shadow-color); }
+.files-context-menu button { display: block; width: 100%; min-height: 28px; padding: 4px 8px; border: 0; text-align: left; }
+.files-context-menu button:focus-visible { background: var(--panel-2); }
+.files-context-menu button.files-context-delete { color: var(--red); }
+.files-rename { position: fixed; width: min(360px, calc(100% - 32px)); color: var(--text); }
+.files-rename::backdrop { background: var(--backdrop); }
+.files-rename label { display: grid; gap: 6px; margin-top: 14px; font-size: 13px; }
+.files-rename input { min-width: 0; width: 100%; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--text); }
+.files-rename .files-error { margin-top: 10px; border-radius: 6px; }
 .files-search-backdrop { position: fixed; inset: 0; z-index: 20; }
 .files-search { position: fixed; top: 10vh; left: 50%; display: flex; flex-direction: column; width: min(640px, calc(100vw - 32px)); max-height: min(70vh, 540px); overflow: hidden; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 24px 70px var(--shadow-color); }
 .files-search-input { flex: none; width: 100%; height: 40px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--border); outline: none; background: var(--panel); color: var(--text); font-size: 13px; }
