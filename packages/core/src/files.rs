@@ -488,3 +488,54 @@ mod unix_tests {
         fs::remove_dir_all(outside).unwrap();
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::tools::test_support::temp_root;
+
+    #[test]
+    fn replaces_the_file_and_leaves_no_staging_file() {
+        let dir = temp_root("file-save-windows");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        let path = dir.join("notes.txt");
+        fs::write(&path, "one\r\ntwo\r\n").unwrap();
+
+        save(&root, "notes.txt", "one\r\ntwo\r\n", "你好\r\ntwo\r\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "你好\r\ntwo\r\n");
+        let staging = fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| {
+                entry.as_ref().is_ok_and(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".oaklet-save-")
+                })
+            })
+            .count();
+        assert_eq!(staging, 0);
+        assert!(save(&root, "notes.txt", "stale", "changed").is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn refuses_a_read_only_file() {
+        let dir = temp_root("file-save-readonly");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        let path = dir.join("locked.txt");
+        fs::write(&path, "locked").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        assert!(save(&root, "locked.txt", "locked", "changed").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "locked");
+
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+}
