@@ -1,8 +1,8 @@
 name: Test
 
 # Runs the checks documented in CONTRIBUTING.md ("Checks") on every pull request
-# and push to main. Windows/Linux packaging is not covered yet; the Rust job uses
-# macOS because that is the only platform Oaklet ships on.
+# and push to main. The Rust job runs on macOS and Windows; Linux packaging is not
+# covered yet, and Linux is not a supported Oaklet platform.
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
           cache-dependency-path: packages/desktop/pnpm-lock.yaml
 
@@ -53,7 +53,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
           cache-dependency-path: packages/architecture-helper/pnpm-lock.yaml
 
@@ -78,7 +78,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
           cache-dependency-path: packages/architecture-helper/pnpm-lock.yaml
 
@@ -98,3 +98,59 @@ jobs:
       - run: cargo test
 
       - run: cargo clippy --all-targets
+
+  windows:
+    # The Windows runner image ships the MSVC desktop C++ workload, Windows SDK,
+    # Edge WebView2 runtime, and Git for Windows, which Tauri and the Rust build
+    # need. Tests exercise the same code paths the Windows installer ships.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from the packageManager field in package.json.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            packages/desktop/pnpm-lock.yaml
+            packages/architecture-helper/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+          key: windows-msvc
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir packages/desktop install --frozen-lockfile
+          pnpm --dir packages/architecture-helper install --frozen-lockfile
+
+      - name: Build the architecture helper
+        # tauri-build copies bundle resources on every build, including cargo test.
+        run: pnpm --dir packages/architecture-helper build
+
+      - name: Check the architecture helper
+        run: pnpm --dir packages/architecture-helper test
+
+      - name: Check the desktop frontend
+        run: |
+          pnpm --dir packages/desktop test
+          pnpm --dir packages/desktop build
+
+      - name: Check the Rust backend
+        working-directory: packages/core
+        run: |
+          cargo test
+          cargo clippy --all-targets
