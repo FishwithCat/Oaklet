@@ -1,6 +1,6 @@
 //! Apply the checked plan in order, reporting partial completion.
 
-use super::apply::{apply_hunks, mismatch_message, normalize_lf};
+use super::apply::{apply_hunks, mismatch_message, normalize_lf, restore_line_endings, uses_crlf};
 use super::parse::{PatchHunk, PatchOperation};
 use super::plan::{Kind, ResolvedPatch};
 use crate::tools::fs::write_atomic;
@@ -9,6 +9,7 @@ use crate::tools::{Cancel, ToolError};
 fn updated_text(operation: &ResolvedPatch, hunks: &[PatchHunk]) -> Result<String, String> {
     let text = std::fs::read_to_string(&operation.source)
         .map_err(|error| format!("cannot read \"{}\": {error}", operation.source_display))?;
+    let crlf = uses_crlf(&text);
     let text = normalize_lf(&text);
     if text.contains('\0') {
         return Err(format!(
@@ -16,8 +17,9 @@ fn updated_text(operation: &ResolvedPatch, hunks: &[PatchHunk]) -> Result<String
             operation.source_display
         ));
     }
-    apply_hunks(&text, hunks)
-        .map_err(|failure| mismatch_message(&operation.source_display, &failure))
+    let patched = apply_hunks(&text, hunks)
+        .map_err(|failure| mismatch_message(&operation.source_display, &failure))?;
+    Ok(restore_line_endings(crlf, patched))
 }
 
 pub(super) fn execute_one(operation: &ResolvedPatch) -> Result<(), String> {

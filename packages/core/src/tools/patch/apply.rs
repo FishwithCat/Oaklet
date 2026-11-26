@@ -165,3 +165,22 @@ fn preview(lines: &[String]) -> String {
 pub(super) fn normalize_lf(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
+
+pub(super) fn uses_crlf(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if !bytes.contains(&b'\n') {
+        return false;
+    }
+    !bytes
+        .iter()
+        .enumerate()
+        .any(|(index, byte)| *byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r'))
+}
+
+pub(super) fn restore_line_endings(crlf: bool, patched: String) -> String {
+    if crlf {
+        patched.replace('\n', "\r\n")
+    } else {
+        patched
+    }
+}

@@ -207,9 +207,39 @@ fn reports_applied_diffs_for_each_operation() {
 }
 
 #[test]
-fn normalizes_crlf_before_patching() {
+fn keeps_crlf_line_endings_when_patching() {
     let (ctx, root, _handle) = context("patch-crlf");
     std::fs::write(root.join("a.txt"), "one\r\ntwo\r\n").unwrap();
+
+    run(
+        &ctx,
+        "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n*** End Patch",
+    )
+    .unwrap();
+
+    assert_eq!(text(root.join("a.txt")), "ONE\r\ntwo\r\n");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn keeps_crlf_without_a_trailing_newline() {
+    let (ctx, root, _handle) = context("patch-crlf-tail");
+    std::fs::write(root.join("a.txt"), "one\r\ntwo").unwrap();
+
+    run(
+        &ctx,
+        "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n*** End Patch",
+    )
+    .unwrap();
+
+    assert_eq!(text(root.join("a.txt")), "ONE\r\ntwo\r\n");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn mixed_line_endings_stay_lf_after_patching() {
+    let (ctx, root, _handle) = context("patch-mixed-endings");
+    std::fs::write(root.join("a.txt"), "one\r\ntwo\n").unwrap();
 
     run(
         &ctx,
