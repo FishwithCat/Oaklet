@@ -128,8 +128,8 @@ export function DataSettings() {
             return (
               <li key={row.workspace} className="data-workspace">
                 <div className="data-workspace-main">
-                  <span className="data-workspace-path" title={row.workspace}>
-                    {row.workspace}
+                  <span className="data-workspace-path" title={row.label || row.workspace}>
+                    {row.label || row.workspace}
                   </span>
                   <span className="data-workspace-meta">
                     {sessionsLabel(row.sessions)} ·{" "}

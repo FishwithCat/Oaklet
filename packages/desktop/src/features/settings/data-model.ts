@@ -1,5 +1,6 @@
 export type WorkspaceUsage = {
   workspace: string;
+  label: string;
   sessions: number;
   messages: number;
   bytes: number;
