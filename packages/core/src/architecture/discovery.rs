@@ -304,7 +304,7 @@ fn path_string(path: &Path) -> String {
     if path.as_os_str().is_empty() {
         ".".into()
     } else {
-        path.to_string_lossy().replace('\\', "/")
+        crate::paths::relative_text(path)
     }
 }
 

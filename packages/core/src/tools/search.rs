@@ -68,10 +68,6 @@ pub(super) fn matches(glob: &GlobMatcher, relative: &Path) -> bool {
             .is_some_and(|name| glob.is_match(Path::new(name)))
 }
 
-pub(super) fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 fn relative_path<'a>(workspace: &'a Workspace, path: &'a Path) -> &'a Path {
     path.strip_prefix(workspace.root()).unwrap_or(path)
 }
@@ -197,7 +193,11 @@ fn glob(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
         total,
         if scan_truncated { " (scan capped)" } else { "" }
     )];
-    lines.extend(found.into_iter().map(|(path, _)| display_path(&path)));
+    lines.extend(
+        found
+            .into_iter()
+            .map(|(path, _)| crate::paths::relative_text(&path)),
+    );
     if total > MAX_GLOB_RESULTS || scan_truncated {
         lines.push(format!(
             "[... more files omitted; showing at most {MAX_GLOB_RESULTS}]"
@@ -333,7 +333,7 @@ fn grep(workspace: &Workspace, cancel: &super::Cancel, args: Value) -> Result<St
                 0
             };
             let mut hits = FileHits {
-                path: display_path(relative),
+                path: crate::paths::relative_text(relative),
                 lines: Vec::new(),
                 total: 0,
             };
@@ -652,6 +652,30 @@ mod tests {
                 .await
                 .is_err()
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keeps_a_backslash_in_a_name_apart_from_a_folder() {
+        let (ctx, root, _handle) = context("search-backslash");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a\\b.txt"), "backslash\n").unwrap();
+        std::fs::write(root.join("a/b.txt"), "slash nested\n").unwrap();
+
+        let files = Grep
+            .execute(&ctx, json!({ "pattern": "slash", "mode": "files" }))
+            .await
+            .unwrap();
+        assert!(files.text.contains("a\\b.txt"));
+        assert!(files.text.contains("a/b.txt"));
+
+        let glob = Glob
+            .execute(&ctx, json!({ "pattern": "*.txt" }))
+            .await
+            .unwrap();
+        assert!(glob.text.contains("a\\b.txt"));
+        assert!(glob.text.contains("a/b.txt"));
         std::fs::remove_dir_all(&root).ok();
     }
 }

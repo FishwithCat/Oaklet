@@ -114,7 +114,9 @@ impl WorkspaceInstructions {
                 continue;
             }
             self.files.push(InstructionFile {
-                display: display_path(project_root, &path),
+                display: crate::paths::relative_text(
+                    path.strip_prefix(project_root).unwrap_or(&path),
+                ),
                 path,
                 content,
             });
@@ -149,13 +151,6 @@ fn root_to_workspace(root: &Path, workspace: &Path) -> Vec<PathBuf> {
     }
     directories.reverse();
     directories
-}
-
-fn display_path(project_root: &Path, path: &Path) -> String {
-    path.strip_prefix(project_root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 #[cfg(test)]

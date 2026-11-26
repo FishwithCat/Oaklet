@@ -15,6 +15,17 @@ pub(crate) fn display_path(path: &Path) -> String {
     without_verbatim_prefix(&path.to_string_lossy())
 }
 
+pub(crate) fn relative_text(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.to_string_lossy().replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 pub(crate) fn process_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -94,7 +105,7 @@ fn same_component(expected: std::path::Component<'_>, actual: std::path::Compone
 mod tests {
     use std::path::Path;
 
-    use super::{display_path, same_workspace, strip_workspace, workspace_identity};
+    use super::{display_path, relative_text, same_workspace, strip_workspace, workspace_identity};
 
     #[test]
     fn identity_is_stable_for_the_same_directory() {
@@ -140,6 +151,21 @@ mod tests {
     #[test]
     fn display_keeps_posix_paths_unchanged() {
         assert_eq!(display_path(Path::new("/work/project")), "/work/project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_text_keeps_a_backslash_that_belongs_to_a_name() {
+        assert_eq!(relative_text(Path::new("src/main.rs")), "src/main.rs");
+        assert_eq!(relative_text(Path::new("a\\b.txt")), "a\\b.txt");
+        assert_eq!(relative_text(Path::new("src/a\\b.txt")), "src/a\\b.txt");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relative_text_writes_forward_slashes_on_windows() {
+        assert_eq!(relative_text(Path::new(r"src\main.rs")), "src/main.rs");
+        assert_eq!(relative_text(Path::new("src/main.rs")), "src/main.rs");
     }
 
     #[test]

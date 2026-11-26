@@ -66,7 +66,7 @@ pub async fn files_read(
 ) -> Result<String, String> {
     let root = self::workspace(&state, &window, &workspace)?;
     let target = resolve(&root, &path)?;
-    let label = root.relative(&target).to_string_lossy().into_owned();
+    let label = crate::paths::relative_text(&root.relative(&target));
     tauri::async_runtime::spawn_blocking(move || {
         read(&target).map_err(|error| format!("{label}: {error}"))
     })
@@ -183,7 +183,7 @@ fn list(root: &Workspace, path: &str) -> Result<Vec<Entry>, String> {
         }
         entries.push(Entry {
             name,
-            path: root.relative(&entry.path()).to_string_lossy().into_owned(),
+            path: crate::paths::relative_text(&root.relative(&entry.path())),
             directory: kind.is_dir(),
         });
     }
@@ -205,7 +205,10 @@ fn find(root: &Workspace) -> Result<Vec<String>, String> {
         if entry.depth() == 0 || !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;
         }
-        files.push(root.relative(entry.path()).to_string_lossy().into_owned());
+        if entry.path().to_str().is_none() {
+            continue;
+        }
+        files.push(crate::paths::relative_text(&root.relative(entry.path())));
         if files.len() == MAX_FIND_RESULTS {
             break;
         }
@@ -244,12 +247,14 @@ fn read_dropped(path: &Path) -> Result<DroppedFile, String> {
     if !metadata.is_file() {
         return Err("Only files can be dropped into the chat.".into());
     }
+    let Some(absolute) = path.to_str() else {
+        return Err("Only files with UTF-8 paths can be dropped into the chat.".into());
+    };
     let bytes = metadata.len();
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let absolute = path.to_string_lossy().into_owned();
 
     if bytes <= crate::tools::image::MAX_IMAGE_BYTES && looks_like_image(path) {
         let (data, _) = crate::tools::image::read_image(path)?;
@@ -264,7 +269,9 @@ fn read_dropped(path: &Path) -> Result<DroppedFile, String> {
     {
         return Ok(DroppedFile::Text { name, bytes, text });
     }
-    Ok(DroppedFile::Path { path: absolute })
+    Ok(DroppedFile::Path {
+        path: absolute.to_string(),
+    })
 }
 
 fn looks_like_image(path: &Path) -> bool {
@@ -486,6 +493,59 @@ mod unix_tests {
         );
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn keeps_a_backslash_in_a_name_apart_from_a_folder() {
+        let dir = temp_root("file-backslash");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        fs::create_dir(dir.join("a")).unwrap();
+        fs::write(dir.join("a\\b.txt"), "backslash").unwrap();
+        fs::write(dir.join("a/b.txt"), "nested").unwrap();
+
+        let top = list(&root, ".").unwrap();
+        assert!(
+            top.iter()
+                .any(|entry| entry.path == "a\\b.txt" && !entry.directory)
+        );
+        assert!(top.iter().any(|entry| entry.path == "a" && entry.directory));
+
+        let folder = list(&root, "a").unwrap();
+        assert!(folder.iter().any(|entry| entry.path == "a/b.txt"));
+
+        assert_eq!(
+            read(&resolve(&root, "a\\b.txt").unwrap()).unwrap(),
+            "backslash"
+        );
+        assert_eq!(read(&resolve(&root, "a/b.txt").unwrap()).unwrap(), "nested");
+
+        let found = find(&root).unwrap();
+        assert!(found.contains(&"a\\b.txt".to_string()));
+        assert!(found.contains(&"a/b.txt".to_string()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn skips_names_and_drops_paths_that_are_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = temp_root("file-non-utf8");
+        let root = Workspace::new(dir.to_str().unwrap()).unwrap();
+        let invalid = OsStr::from_bytes(b"bad-\xff.txt");
+        if fs::write(dir.join(invalid), "x").is_err() {
+            eprintln!("skipping non-UTF-8 name test: this filesystem rejects the name");
+            fs::remove_dir_all(dir).ok();
+            return;
+        }
+        fs::write(dir.join("good.txt"), "x").unwrap();
+
+        let entries = list(&root, ".").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "good.txt");
+        assert_eq!(find(&root).unwrap(), vec!["good.txt".to_string()]);
+        assert!(read_dropped(&dir.join(invalid)).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }
 

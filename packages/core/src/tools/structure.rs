@@ -6,9 +6,7 @@ use serde_json::{Value, json};
 
 use crate::syntax::{Grammar, Structure};
 
-use super::search::{
-    MAX_GREP_MATCHES, SEARCH_TIMEOUT, compile_glob, display_path, matches, scan_text_files,
-};
+use super::search::{MAX_GREP_MATCHES, SEARCH_TIMEOUT, compile_glob, matches, scan_text_files};
 use super::{
     Cancel, TOOL_OUTPUT_THRESHOLD_CHARS, Tool, ToolAccess, ToolContext, ToolError, ToolOutput,
     Workspace, parse_args,
@@ -107,7 +105,7 @@ fn search(workspace: &Workspace, cancel: &Cancel, args: Args) -> Result<String, 
             let Some(grammar) = Grammar::for_path(&path.to_string_lossy()) else {
                 return true;
             };
-            let path = display_path(path);
+            let path = crate::paths::relative_text(path);
             let limit = MAX_GREP_MATCHES + 1 - hits.len();
             match query.lines(grammar, source, limit, || {
                 cancel.is_cancelled() || Instant::now() >= deadline
