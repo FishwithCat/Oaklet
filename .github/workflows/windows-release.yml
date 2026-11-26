@@ -1,0 +1,141 @@
+name: Windows release
+
+# Builds the NSIS user-level installer for Windows 11 x64 and verifies it before
+# uploading. Manual runs upload workflow artifacts for internal testing; pushing a
+# v* tag also attaches the installer to that tag's GitHub Release, which the macOS
+# workflow creates independently.
+#
+# Signing is optional. Add these repository secrets to enable Authenticode signing
+# (see CONTRIBUTING.md, "Releasing"):
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+# Without them the installer is unsigned: Windows SmartScreen warns on first run.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from the packageManager field in package.json.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            packages/desktop/pnpm-lock.yaml
+            packages/architecture-helper/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+          key: windows-msvc
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir packages/desktop install --frozen-lockfile
+          pnpm --dir packages/architecture-helper install --frozen-lockfile
+
+      - name: Build the architecture helper
+        # The helper ships as plain JavaScript next to the app resources.
+        run: pnpm --dir packages/architecture-helper build
+
+      - name: Build the installer
+        shell: pwsh
+        run: pnpm tauri build --ci --target $env:TARGET --bundles nsis
+
+      - name: Verify and collect the installer
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $bundle = "packages/core/target/$env:TARGET/release/bundle/nsis"
+          $installer = Get-ChildItem -Path $bundle -Filter "*-setup.exe" |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) {
+            throw "No NSIS installer was produced in $bundle"
+          }
+
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP "oaklet.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe was not found in the Windows SDK" }
+            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing the installer failed" }
+            Remove-Item $pfx
+          }
+
+          $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
+          Write-Host "$($installer.FullName): $($signature.Status)"
+          if ($env:WINDOWS_CERTIFICATE -and $signature.Status -ne "Valid") {
+            throw "Authenticode signature is not valid: $($signature.StatusMessage)"
+          }
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Host "::notice::Installer is unsigned; SmartScreen warns on first run."
+          }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          Copy-Item $installer.FullName "release-assets/$($installer.Name)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Oaklet-windows-x64
+          retention-days: 14
+          if-no-files-found: error
+          path: release-assets/
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Oaklet-windows-x64
+          path: release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*-setup.exe
+          fail_on_unmatched_files: true
+          append_body: true
+          body: |
+            ## Install (Windows 11 x64)
+
+            Download and run the `-setup.exe` installer. It installs for the
+            current user only and needs no administrator rights.
+
+            The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3
+            or newer on `PATH` or set through `OAKLET_NODE`; the rest of Oaklet
+            works without it. Without a code-signing certificate Windows
+            SmartScreen asks before running the installer: choose **More info**,
+            then **Run anyway**.
