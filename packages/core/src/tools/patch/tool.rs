@@ -113,7 +113,7 @@ impl Tool for ApplyPatch {
     }
 
     fn guidance(&self) -> &'static str {
-        "Prefer apply_patch over separate edit_file calls for changes across files or separated regions. Give every hunk enough surrounding context lines to match one place in the current file. The whole patch is checked first (syntax, hunk matching, missing files) and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed."
+        "Use one apply_patch for edits already determined for the same independently verifiable change, including multiple hunks in a file or edits across related files. Give each hunk enough context to match one place in the current file. The whole patch is checked before writing. Operations run in order and stop at the first failure. Re-read affected files before retrying when needed because completed operations are kept."
     }
 
     fn summary(&self, args: &Value) -> String {

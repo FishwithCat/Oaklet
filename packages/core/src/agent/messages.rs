@@ -208,9 +208,12 @@ pub(crate) fn system_prompt(
         );
         rules.push(
             "After changing code, including while implementing an approved plan, run the checks \
-             relevant to the change before replying. Break multistep work into steps you can \
-             check independently, reuse existing tests and scripts, and prefer the smallest \
-             change that fixes the issue."
+             relevant to the change before replying. Reuse existing tests and scripts and prefer \
+             the smallest change that fixes the issue. Use targeted checks for intermediate \
+             steps and run broader checks once after their \
+             relevant inputs are final. Rerun a check when its relevant inputs changed or to \
+             reproduce a failure or investigate flakiness. Reuse captured output to inspect \
+             a check that already ran."
                 .into(),
         );
         rules.push(
@@ -281,6 +284,8 @@ mod tests {
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
         assert!(prompt.contains("Run checks with command plus arguments"));
+        assert!(prompt.contains("Use one scoped git diff"));
+        assert!(prompt.contains("Use one apply_patch for edits already determined"));
     }
 
     #[test]
@@ -289,6 +294,8 @@ mod tests {
         assert!(prompt.contains("reproduce the failure before editing"));
         assert!(prompt.contains("verification-only request"));
         assert!(prompt.contains("do not edit source files or change Git staging state"));
+        assert!(prompt.contains("run broader checks once"));
+        assert!(prompt.contains("Reuse captured output"));
         assert!(prompt.contains("list each check that actually ran"));
         assert!(prompt.contains("A successful compile only shows that the code compiles"));
 

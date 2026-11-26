@@ -46,7 +46,7 @@ impl Tool for RunCommand {
     }
 
     fn guidance(&self) -> &'static str {
-        "run_command starts in the workspace root, so never prefix commands with cd <workspace>. Commands may need approval, so keep them focused. Run checks with command plus arguments. Prefer native project-directory and quiet flags that preserve failure details. Use the captured exit status and output or read the saved log if it spills. Shell filters such as head, tail, and grep can hide failures. Use run_in_background for long commands and collect the existing job's results."
+        "run_command starts in the workspace root, so never prefix commands with cd <workspace>. Commands may need approval, so keep them focused. Run checks with command plus arguments. Prefer native project-directory and quiet flags that preserve failure details. Use the captured exit status and output or read the saved log if it spills. Shell filters such as head, tail, and grep can hide failures. Use run_in_background for long commands and collect the existing job's results. Use one scoped git diff for related paths or request separate diffs in one tool-call batch if the combined output would be large."
     }
 
     fn summary(&self, args: &Value) -> String {
