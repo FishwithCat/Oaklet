@@ -105,7 +105,7 @@ fn add_versioned_nodes(candidates: &mut BTreeSet<PathBuf>, root: &Path, suffix: 
 }
 
 fn node_version(node: &Path) -> Option<String> {
-    let mut command = std::process::Command::new(node);
+    let mut command = crate::launcher::command(node);
     command.arg("--version");
     command.apply_environment();
     let output = command.output().ok()?;

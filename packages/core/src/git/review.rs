@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use tauri::{State, WebviewWindow};
@@ -461,7 +461,7 @@ fn patch_matches(source: &str, section: &str, old: bool) -> Option<()> {
 }
 
 fn hash_blob(workspace: &Path, bytes: &[u8]) -> Option<String> {
-    let mut command = Command::new("git");
+    let mut command = crate::launcher::command("git");
     command
         .arg("-C")
         .arg(crate::paths::display_path(workspace))

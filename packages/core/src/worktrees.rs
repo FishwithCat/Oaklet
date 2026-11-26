@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
 
 use crate::shell_env::ApplyEnvironment;
 use crate::store::{NewUserTurn, Store};
@@ -84,7 +83,7 @@ async fn read_output(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, String> 
 }
 
 async fn git_output(path: &Path, args: &[&str], allow_failure: bool) -> Result<GitOutput, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::launcher::async_command("git");
     command.as_std_mut().apply_environment();
     let hooks_path = format!("core.hooksPath={}", crate::git::NULL_DEVICE);
     command

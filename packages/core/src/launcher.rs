@@ -1,6 +1,26 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 #[cfg(windows)]
 use std::path::PathBuf;
+use std::process::Command;
+
+/// Build a command for an app-managed process without opening a Windows console.
+pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(windows))]
+    Command::new(program)
+}
+
+pub(crate) fn async_command(program: impl AsRef<OsStr>) -> tokio::process::Command {
+    command(program).into()
+}
 
 pub(crate) struct Launch {
     pub(crate) program: OsString,
@@ -94,6 +114,47 @@ fn comspec() -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn background_commands_have_no_console() {
+        use windows_sys::Win32::System::Console::GetConsoleWindow;
+
+        const CHILD: &str = "OAKLET_TEST_BACKGROUND_CONSOLE";
+        const CHECKED: &str = "Oaklet child has no console";
+        const ARGS: &[&str] = &[
+            "--exact",
+            "launcher::tests::background_commands_have_no_console",
+            "--nocapture",
+        ];
+        if std::env::var_os(CHILD).is_some() {
+            // SAFETY: GetConsoleWindow takes no arguments and returns a borrowed handle.
+            assert!(unsafe { GetConsoleWindow() }.is_null());
+            println!("{CHECKED}");
+            return;
+        }
+
+        let executable = std::env::current_exe().unwrap();
+        let sync = command(&executable)
+            .args(ARGS)
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let asynchronous = async_command(&executable)
+            .args(ARGS)
+            .env(CHILD, "1")
+            .output()
+            .await
+            .unwrap();
+        for output in [sync, asynchronous] {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains(CHECKED),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     #[test]
     fn keeps_the_configured_program_when_nothing_resolves() {

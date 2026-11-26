@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::{Component, Path};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 use tauri::{State, WebviewWindow};
@@ -51,7 +51,7 @@ pub(crate) const NULL_DEVICE: &str = "NUL";
 pub(crate) const NULL_DEVICE: &str = "/dev/null";
 
 fn run_git_bytes(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::launcher::command("git");
     command
         .arg("--literal-pathspecs")
         .arg("-C")
@@ -83,7 +83,7 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<String, String> {
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
 
 fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::launcher::command("git");
     command
         .arg("--literal-pathspecs")
         .arg("-C")

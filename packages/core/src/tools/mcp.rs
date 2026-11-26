@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use super::web_fetch::read_limited;
@@ -535,7 +535,7 @@ struct StdioClient {
 impl StdioClient {
     fn start(name: &str, server: &McpServerConfig, workspace: &Path) -> Result<Self, String> {
         let launch = crate::launcher::resolve(&server.command);
-        let mut command = Command::new(&launch.program);
+        let mut command = crate::launcher::async_command(&launch.program);
         if let Some(batch) = &launch.batch {
             command.arg("/C").arg(batch);
         }

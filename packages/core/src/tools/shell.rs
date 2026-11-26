@@ -193,17 +193,15 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
 
 /// The shell invocation shared by foreground commands and background jobs.
 pub(super) fn shell_command(command: &str) -> tokio::process::Command {
-    if cfg!(windows) {
-        let mut process = tokio::process::Command::new("cmd");
-        process.args(["/C", command]);
-        process.apply_environment();
-        process
+    let (program, switch) = if cfg!(windows) {
+        ("cmd", "/C")
     } else {
-        let mut process = tokio::process::Command::new("sh");
-        process.args(["-c", command]);
-        process.apply_environment();
-        process
-    }
+        ("sh", "-c")
+    };
+    let mut process = crate::launcher::async_command(program);
+    process.args([switch, command]);
+    process.apply_environment();
+    process
 }
 
 async fn read_to_end<R>(reader: Option<R>) -> std::io::Result<Vec<u8>>

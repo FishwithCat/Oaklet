@@ -9,7 +9,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
 use super::{Diagnostic, ViewInfo};
 use crate::shell_env::ApplyEnvironment;
@@ -108,7 +107,7 @@ async fn run_helper_inner(
     timeout: Duration,
 ) -> Result<HelperResponse, String> {
     let script = helper.join("src").join("compile.mjs");
-    let mut command = Command::new(node);
+    let mut command = crate::launcher::async_command(node);
     command
         .arg(&script)
         .current_dir(crate::paths::process_path(helper))

@@ -53,6 +53,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 
 # Keep dev artifacts small: the default `debug = true` embeds full DWARF for every
 # codegen unit, which is what made `target/debug/deps` grow into tens of GB.

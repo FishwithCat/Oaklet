@@ -101,7 +101,7 @@ impl Tool for LikeC4 {
             if track_baseline {
                 check_plan_baseline(ctx).await?;
             }
-            let mut command = tokio::process::Command::new(node);
+            let mut command = crate::launcher::async_command(node);
             command
                 .arg(crate::paths::display_path(&helper.join("src/mcp.mjs")))
                 .arg(crate::paths::display_path(ctx.workspace.root()))

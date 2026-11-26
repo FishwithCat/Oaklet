@@ -167,7 +167,7 @@ mod imp {
                 return;
             }
             if let Some(pid) = self.pid {
-                let _ = std::process::Command::new("taskkill")
+                let _ = crate::launcher::command("taskkill")
                     .args(["/T", "/F", "/PID", &pid.to_string()])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
