@@ -20,6 +20,7 @@ import { errorText } from "../../shared/error-text";
 import { supportsOutline } from "../../shared/source-symbol";
 import { FileOutline } from "./FileOutline";
 import type { FileEditorHandle } from "./FileEditor";
+import { fileLanguage } from "./file-language";
 import { previewFontShortcut } from "../../app/shortcuts";
 import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../source-control/git-diff";
 import { absolutePath, breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
@@ -44,20 +45,6 @@ export type FilesHandle = {
 };
 type Document = { path: string; original: string; content: string };
 type ImageDocument = { path: string; src: string };
-
-async function language(path: string): Promise<Extension> {
-  const ext = path.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "js": case "jsx": case "ts": case "tsx": case "mjs": case "cjs":
-      return (await import("@codemirror/lang-javascript")).javascript({ jsx: ext.endsWith("x"), typescript: ext === "ts" || ext === "tsx" });
-    case "json": return (await import("@codemirror/lang-json")).json();
-    case "md": case "mdx": return (await import("@codemirror/lang-markdown")).markdown();
-    case "rs": return (await import("@codemirror/lang-rust")).rust();
-    case "css": return (await import("@codemirror/lang-css")).css();
-    case "html": case "htm": return (await import("@codemirror/lang-html")).html();
-    default: return [];
-  }
-}
 
 export default function Files({ ref, active, workspace, refreshToken, changes, onRefresh, onSaved }: {
   ref?: Ref<FilesHandle>;
@@ -120,8 +107,8 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   useEffect(() => {
     let cancelled = false;
     setSyntax([]);
-    if (document) void language(document.path)
-      .then((value) => { if (!cancelled) setSyntax(value); })
+    if (document) void fileLanguage(document.path)
+      .then((value) => { if (!cancelled && value) setSyntax(value); })
       .catch(() => {}); // Plain text remains usable if a language chunk cannot load.
     return () => { cancelled = true; };
   }, [document?.path]);
