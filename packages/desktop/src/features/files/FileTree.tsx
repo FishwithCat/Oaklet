@@ -332,9 +332,9 @@ export function FileTree({ workspace, active, refreshToken, changes, selected, b
               closeMenu(true);
               setRenameError("");
               setRenameEntry(menu.entry);
-            }}>Rename…</button>
+            }}>Rename</button>
             <button type="button" role="menuitem" className="ghost files-context-delete" tabIndex={-1} disabled={busy}
-              onClick={() => void deleteEntry(menu.entry)}>Delete…</button>
+              onClick={() => void deleteEntry(menu.entry)}>Delete</button>
           </>}
         </div>
       )}
