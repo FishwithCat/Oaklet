@@ -26,9 +26,9 @@ impl Tool for RunCommand {
 
     fn description(&self) -> &'static str {
         if cfg!(windows) {
-            "Run a command with cmd.exe in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit as a failed command."
+            "Run an executable or a cmd.exe command from the workspace root. Returns stdout, stderr, and exit status. Use run_in_background for long builds or servers."
         } else {
-            "Run a shell command with sh in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit or signal as a failed command."
+            "Run an executable or a sh command from the workspace root. Returns stdout, stderr, and exit status. Use run_in_background for long builds or servers."
         }
     }
 
@@ -36,7 +36,8 @@ impl Tool for RunCommand {
         json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "Shell command to run." },
+                "command": { "type": "string", "description": "Shell command, or executable name or path when arguments is provided." },
+                "arguments": { "type": "array", "items": { "type": "string" }, "description": "Run the executable directly with these arguments. Use an empty array for an executable with no arguments." },
                 "run_in_background": { "type": "boolean", "description": "Run in the background and return a job id immediately. Collect output with job_output and stop it with job_kill." }
             },
             "required": ["command"],
@@ -45,26 +46,24 @@ impl Tool for RunCommand {
     }
 
     fn guidance(&self) -> &'static str {
-        "run_command already runs in the workspace root; do not prefix commands with cd <workspace>. Commands may need approval depending on Settings, so keep them focused. Long-running commands should use run_in_background. Base conclusions on the reported exit status, not on whether output was captured."
+        "run_command starts in the workspace root, so never prefix commands with cd <workspace>. Commands may need approval, so keep them focused. Run checks with command plus arguments. Prefer native project-directory and quiet flags that preserve failure details. Use the captured exit status and output or read the saved log if it spills. Shell filters such as head, tail, and grep can hide failures. Use run_in_background for long commands and collect the existing job's results."
     }
 
     fn summary(&self, args: &Value) -> String {
-        args.get("command")
-            .and_then(Value::as_str)
+        parse_args::<RunCommandArgs>(args.clone())
+            .map(|args| command_label(&args.command, args.arguments.as_deref()))
             .unwrap_or_default()
-            .trim()
-            .to_string()
     }
 
     fn approval(&self, args: &Value) -> Option<ApprovalRequest> {
-        let command = args.get("command").and_then(Value::as_str)?.trim();
-        if command.is_empty() {
+        let detail = self.summary(args);
+        if detail.is_empty() {
             return None;
         }
         Some(ApprovalRequest {
             tool: self.name().to_string(),
             prompt: "Run this command in the workspace?".into(),
-            detail: command.to_string(),
+            detail,
             args: args.clone(),
         })
     }
@@ -86,6 +85,7 @@ impl Tool for RunCommand {
 #[serde(deny_unknown_fields)]
 struct RunCommandArgs {
     command: String,
+    arguments: Option<Vec<String>>,
     #[serde(default)]
     run_in_background: bool,
 }
@@ -106,6 +106,7 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
             .start(
                 ctx.workspace.root(),
                 &args.command,
+                args.arguments.as_deref(),
                 super::jobs::JobOwner {
                     session_id: ctx.session_id.clone(),
                     window: ctx.window.clone(),
@@ -118,7 +119,7 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
         return Ok(ToolOutput::text(text).with_outcome(ProcessOutcome::Running { job_id: id }));
     }
 
-    let mut process = shell_command(&args.command);
+    let mut process = command_process(&args.command, args.arguments.as_deref());
     process
         .current_dir(crate::paths::process_path(ctx.workspace.root()))
         .stdin(Stdio::null())
@@ -191,15 +192,32 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
     Ok(ToolOutput::text(text).with_outcome(outcome))
 }
 
-/// The shell invocation shared by foreground commands and background jobs.
-pub(super) fn shell_command(command: &str) -> tokio::process::Command {
-    let (program, switch) = if cfg!(windows) {
-        ("cmd", "/C")
+pub(super) fn command_label(command: &str, arguments: Option<&[String]>) -> String {
+    match arguments {
+        Some(arguments) if !command.trim().is_empty() => format!("{command:?} {arguments:?}"),
+        _ => command.trim().to_owned(),
+    }
+}
+
+pub(super) fn command_process(
+    command: &str,
+    arguments: Option<&[String]>,
+) -> tokio::process::Command {
+    let mut process = if let Some(arguments) = arguments {
+        let launch = crate::launcher::resolve(command);
+        let mut process = crate::launcher::async_command(launch.batch.unwrap_or(launch.program));
+        process.args(arguments);
+        process
     } else {
-        ("sh", "-c")
+        let (program, switch) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let mut process = crate::launcher::async_command(program);
+        process.args([switch, command]);
+        process
     };
-    let mut process = crate::launcher::async_command(program);
-    process.args([switch, command]);
     process.apply_environment();
     process
 }
@@ -282,6 +300,39 @@ mod tests {
         assert!(output.contains("to-stdout"));
         assert!(output.contains("to-stderr"));
         assert_eq!(output.outcome, Some(ProcessOutcome::Exited { code: 7 }));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_command_keeps_arguments_diagnostics_and_status() {
+        let (ctx, root, _handle) = context("direct-command");
+        let (program, switch) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let mut args = json!({"command": program, "arguments": [switch, both_streams_and_fail(7)]});
+        let approval = RunCommand.approval(&args).unwrap();
+        assert_eq!(approval.args, args);
+        assert!(approval.detail.contains("to-stderr"));
+
+        let output = run_command(&ctx, args.clone()).await.unwrap();
+        assert_eq!(output.outcome, Some(ProcessOutcome::Exited { code: 7 }));
+        assert!(output.contains("to-stdout"));
+        assert!(output.contains("to-stderr"));
+
+        args["run_in_background"] = json!(true);
+        let output = run_command(&ctx, args).await.unwrap();
+        let Some(ProcessOutcome::Running { job_id }) = output.outcome else {
+            panic!("a background command should report a running job");
+        };
+        tokio::time::timeout(Duration::from_secs(5), ctx.jobs.wait_for_exit(Some(&root)))
+            .await
+            .unwrap();
+        let output = ctx.jobs.output(&root, &job_id, false, None).await.unwrap();
+        assert!(output.contains("failed (exit 7)"));
+        assert!(output.contains("to-stdout"));
+        assert!(output.contains("to-stderr"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 

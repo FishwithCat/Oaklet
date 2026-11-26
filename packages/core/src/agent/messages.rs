@@ -280,6 +280,7 @@ mod tests {
         assert!(prompt.contains("never prefix them with cd <workspace>"));
         assert!(prompt.contains("Prefer edit_file"));
         assert!(prompt.contains("Read a file before editing it"));
+        assert!(prompt.contains("Run checks with command plus arguments"));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::process_tree::ProcessTree;
 use crate::store;
 
-use super::shell::shell_command;
+use super::shell::{command_label, command_process};
 use super::{Cancel, CancelHandle, Tool, ToolContext, ToolError, ToolOutput, parse_args};
 
 const MAX_JOB_OUTPUT: usize = 1_000_000;
@@ -244,11 +244,12 @@ impl JobRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
     }
 
-    /// Start one detached shell command and return its job id immediately.
+    /// Start one detached command and return its job id immediately.
     pub fn start(
         &self,
         workspace: &Path,
         command: &str,
+        arguments: Option<&[String]>,
         owner: JobOwner,
     ) -> Result<String, String> {
         let closed = self
@@ -259,7 +260,7 @@ impl JobRegistry {
             return Err("The workspace window is closed.".into());
         }
         self.prune();
-        let mut process = shell_command(command);
+        let mut process = command_process(command, arguments);
         process
             .current_dir(crate::paths::process_path(workspace))
             .stdin(Stdio::null())
@@ -282,7 +283,7 @@ impl JobRegistry {
             id: id.clone(),
             workspace: crate::paths::workspace_identity(workspace),
             owner,
-            command: command.to_string(),
+            command: command_label(command, arguments),
             started_at: store::now_ms() as u64,
             state: Mutex::new(JobState {
                 status: JobStatus::Running,
@@ -724,7 +725,7 @@ mod tests {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, "echo hello", owner())
+            .start(&root, "echo hello", None, owner())
             .expect("job should start");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let output = registry
@@ -754,7 +755,7 @@ mod tests {
         let first = crate::tools::test_support::temp_root("job-workspace-a");
         let second = crate::tools::test_support::temp_root("job-workspace-b");
         let id = registry
-            .start(&first, succeed(), owner())
+            .start(&first, succeed(), None, owner())
             .expect("job should start");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -772,11 +773,15 @@ mod tests {
         let registry = JobRegistry::new();
         let workspace = crate::tools::test_support::temp_root("job-closed-workspace");
         registry.close_workspace(&workspace);
-        assert!(registry.start(&workspace, succeed(), owner()).is_err());
+        assert!(
+            registry
+                .start(&workspace, succeed(), None, owner())
+                .is_err()
+        );
 
         registry.open_workspace(&workspace);
         let id = registry
-            .start(&workspace, succeed(), owner())
+            .start(&workspace, succeed(), None, owner())
             .expect("job should start");
         assert!(registry.list(&workspace).contains(&id));
 
@@ -829,7 +834,7 @@ mod tests {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, &sleep(30), owner())
+            .start(&root, &sleep(30), None, owner())
             .expect("job should start");
         let message = registry.kill(&root, &id, Some("test")).await.unwrap();
         assert!(message.contains("Requested cancellation"));
@@ -847,7 +852,9 @@ mod tests {
     async fn stopping_a_job_after_its_shell_exits_kills_the_remaining_process_group() {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
-        let id = registry.start(&root, detached_hang(), owner()).unwrap();
+        let id = registry
+            .start(&root, detached_hang(), None, owner())
+            .unwrap();
         let job = registry.get(&root, &id).unwrap();
         job.wait_for_output(std::time::Duration::from_secs(2)).await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -866,7 +873,7 @@ mod tests {
         let registry = JobRegistry::new();
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, detached_hang_silent(), owner())
+            .start(&root, detached_hang_silent(), None, owner())
             .unwrap();
         let job = registry.get(&root, &id).unwrap();
         job.wait_for_output(std::time::Duration::from_secs(2)).await;
@@ -892,7 +899,9 @@ mod tests {
             sink.lock().unwrap().push(job);
         }));
         let root = std::env::temp_dir();
-        registry.start(&root, "echo notice-me", owner()).unwrap();
+        registry
+            .start(&root, "echo notice-me", None, owner())
+            .unwrap();
         registry.wait_for_exit(Some(&root)).await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -913,7 +922,7 @@ mod tests {
         }));
         let root = std::env::temp_dir();
         let id = registry
-            .start(&root, &sleep(30), owner())
+            .start(&root, &sleep(30), None, owner())
             .expect("job should start");
         registry.kill(&root, &id, None).await.unwrap();
         registry.wait_for_exit(Some(&root)).await;
