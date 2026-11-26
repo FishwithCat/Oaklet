@@ -27,6 +27,8 @@ mod imp {
     const MAX_OUTPUT: usize = 4 * 1024 * 1024;
     static ENVIRONMENT: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
     static START: Once = Once::new();
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     /// Variables describing the probe shell, plus launcher-owned configuration
     /// the shell must not overwrite.
     const SKIPPED: [&str; 7] = [
@@ -45,19 +47,24 @@ mod imp {
     /// The captured environment is applied to child processes through
     /// [`super::ApplyEnvironment`].
     pub(crate) fn start() {
+        STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
         START.call_once(|| {
             if let Err(error) = std::thread::Builder::new()
                 .name("login-shell-env".into())
-                .spawn(|| match capture() {
-                    Ok(environment) => {
-                        let _ = ENVIRONMENT.set(environment);
+                .spawn(|| {
+                    match capture() {
+                        Ok(environment) => {
+                            let _ = ENVIRONMENT.set(environment);
+                        }
+                        Err(reason) => crate::log::key(format_args!("[oaklet] {reason}")),
                     }
-                    Err(reason) => crate::log::key(format_args!("[oaklet] {reason}")),
+                    FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
                 })
             {
                 crate::log::key(format_args!(
                     "[oaklet] could not start the login shell environment probe: {error}"
                 ));
+                FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         });
     }
@@ -65,6 +72,11 @@ mod imp {
     /// The filtered login-shell environment, once the background probe finishes.
     pub(crate) fn environment() -> Option<&'static [(OsString, OsString)]> {
         ENVIRONMENT.get().map(Vec::as_slice)
+    }
+
+    pub(crate) fn ready() -> bool {
+        !STARTED.load(std::sync::atomic::Ordering::SeqCst)
+            || FINISHED.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn capture() -> Result<Vec<(OsString, OsString)>, String> {
@@ -404,6 +416,14 @@ pub(crate) use imp::start;
 
 #[cfg(not(unix))]
 pub(crate) fn start() {}
+
+#[cfg(unix)]
+pub(crate) use imp::ready;
+
+#[cfg(not(unix))]
+pub(crate) fn ready() -> bool {
+    true
+}
 
 /// Add the captured login-shell environment to a child process.
 pub(crate) trait ApplyEnvironment {

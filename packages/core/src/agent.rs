@@ -9,7 +9,6 @@ mod tool_calls;
 mod window;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -41,11 +40,7 @@ pub async fn run(mut config: AppConfig, input: Vec<Value>, cancel: Cancel, ctx: 
         return;
     }
 
-    let client = match crate::shell_env::configure_http(reqwest::Client::builder())
-        .connect_timeout(Duration::from_secs(30))
-        .read_timeout(Duration::from_secs(120))
-        .build()
-    {
+    let client = match crate::http::client() {
         Ok(client) => client,
         Err(err) => {
             ctx.finish_error(

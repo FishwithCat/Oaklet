@@ -8,6 +8,7 @@ mod connection;
 mod context;
 mod files;
 mod git;
+mod http;
 mod instructions;
 mod launcher;
 mod log;
