@@ -53,7 +53,7 @@ impl Workspace {
         let real = ancestor
             .canonicalize()
             .map_err(|error| format!("Cannot resolve path: {error}"))?;
-        if !real.starts_with(&self.root) {
+        if !crate::paths::is_inside(&self.root, &real) {
             return Err(format!("Path is outside the workspace: {input}"));
         }
 
@@ -65,8 +65,8 @@ impl Workspace {
     }
 
     /// Workspace-relative form for messages; falls back to the full path.
-    pub fn relative<'a>(&'a self, path: &'a Path) -> &'a Path {
-        path.strip_prefix(&self.root).unwrap_or(path)
+    pub fn relative(&self, path: &Path) -> PathBuf {
+        crate::paths::strip_workspace(&self.root, path).unwrap_or_else(|| path.to_path_buf())
     }
 
     /// Refuse writes anywhere inside a `.git` directory.
@@ -138,5 +138,51 @@ mod tests {
         assert!(workspace.resolve("link/file.txt").is_err());
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[cfg(windows)]
+    fn junction(link: &std::path::Path, target: &std::path::Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_junctions_that_leave_the_workspace() {
+        let (workspace, root) = workspace("junction");
+        let outside = temp_root("junction-target");
+        if !junction(&root.join("link"), &outside) {
+            eprintln!("skipping junction test: mklink /J is unavailable");
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::remove_dir_all(&outside).ok();
+            return;
+        }
+
+        assert!(workspace.resolve("link").is_err());
+        assert!(workspace.resolve("link/file.txt").is_err());
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn matches_paths_regardless_of_case() {
+        let (workspace, root) = workspace("case");
+        std::fs::create_dir_all(root.join("Src")).unwrap();
+        std::fs::write(root.join("Src/main.rs"), "fn main() {}").unwrap();
+
+        assert!(workspace.resolve("src/MAIN.RS").is_ok());
+        assert_eq!(
+            workspace.relative(&root.join("src/main.rs")),
+            std::path::PathBuf::from("src/main.rs")
+        );
+        assert!(workspace.ensure_writable(&root.join("src/main.rs")).is_ok());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

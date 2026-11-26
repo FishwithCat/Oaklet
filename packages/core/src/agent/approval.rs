@@ -124,7 +124,9 @@ fn auto_approves_command(
     store: &Store,
 ) -> bool {
     tool == "run_command"
-        && (granted.contains(workspace)
+        && (granted
+            .iter()
+            .any(|key| crate::paths::same_workspace(key, workspace))
             || granted
                 .iter()
                 .any(|project| store.worktree_access(project, workspace).unwrap_or(false)))
@@ -176,7 +178,11 @@ pub(crate) fn command_allow_all_active(
     Ok(state
         .command_allow_all
         .lock()
-        .map(|granted| granted.contains(&workspace))
+        .map(|granted| {
+            granted
+                .iter()
+                .any(|key| crate::paths::same_workspace(key, &workspace))
+        })
         .unwrap_or(false))
 }
 
@@ -187,7 +193,7 @@ pub(crate) fn revoke_command_allow_all(
 ) -> Result<(), String> {
     let workspace = workspace_for_window(&state, window.label())?;
     if let Ok(mut granted) = state.command_allow_all.lock() {
-        granted.remove(&workspace);
+        granted.retain(|key| !crate::paths::same_workspace(key, &workspace));
     }
     Ok(())
 }
@@ -198,7 +204,11 @@ pub(crate) fn grant_command_allow_all(
     state: State<'_, SharedState>,
 ) -> Result<(), String> {
     let workspace = workspace_for_window(&state, window.label())?;
-    if let Ok(mut granted) = state.command_allow_all.lock() {
+    if let Ok(mut granted) = state.command_allow_all.lock()
+        && !granted
+            .iter()
+            .any(|key| crate::paths::same_workspace(key, &workspace))
+    {
         granted.insert(workspace);
     }
     Ok(())

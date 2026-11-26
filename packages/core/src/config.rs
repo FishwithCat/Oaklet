@@ -432,7 +432,7 @@ pub(crate) fn remember_default_workspace(
             .config
             .lock()
             .map_err(|_| "Agent state is unavailable.".to_string())?;
-        if config.workspace == path {
+        if crate::paths::same_workspace(Path::new(&config.workspace), workspace) {
             return Ok(());
         }
         let mut snapshot = config.clone();

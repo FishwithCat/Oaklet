@@ -227,10 +227,11 @@ pub(crate) fn system_prompt(
     let base = format!(
         "You are Oaklet, a coding agent running locally in a desktop app. You help the user \
          inspect and change the project in their workspace.\n\n\
-         Workspace: {workspace}\nPlatform: {platform}\n\n\
+         Workspace: {workspace}\nPlatform: {platform}\nShell: {shell}\n\n\
          Rules:\n- {rules}",
-        workspace = config.workspace,
+        workspace = crate::paths::display_path(std::path::Path::new(&config.workspace)),
         platform = std::env::consts::OS,
+        shell = if cfg!(windows) { "cmd.exe" } else { "sh" },
         rules = rules.join("\n- "),
     );
     SystemPrompt {

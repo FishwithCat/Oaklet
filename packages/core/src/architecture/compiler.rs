@@ -111,7 +111,7 @@ async fn run_helper_inner(
     let mut command = Command::new(node);
     command
         .arg(&script)
-        .current_dir(helper)
+        .current_dir(crate::paths::process_path(helper))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -120,6 +120,7 @@ async fn run_helper_inner(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the LikeC4 compiler: {error}"))?;
+    let mut tree = crate::process_tree::ProcessTree::new(child.id());
 
     let request = serde_json::to_vec(request)
         .map_err(|error| format!("Could not encode the architecture request: {error}"))?;
@@ -176,6 +177,7 @@ async fn run_helper_inner(
         }
     };
     let (stdout, stderr, status) = outcome;
+    tree.disarm();
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);

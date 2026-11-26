@@ -103,9 +103,9 @@ impl Tool for LikeC4 {
             }
             let mut command = tokio::process::Command::new(node);
             command
-                .arg(helper.join("src/mcp.mjs"))
-                .arg(ctx.workspace.root())
-                .current_dir(helper)
+                .arg(crate::paths::display_path(&helper.join("src/mcp.mjs")))
+                .arg(crate::paths::display_path(ctx.workspace.root()))
+                .current_dir(crate::paths::process_path(helper))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -114,6 +114,7 @@ impl Tool for LikeC4 {
             let mut child = command
                 .spawn()
                 .map_err(|error| format!("Could not start LikeC4 MCP: {error}"))?;
+            let mut tree = crate::process_tree::ProcessTree::new(child.id());
             let mut stdin = child.stdin.take().unwrap();
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take().unwrap();
@@ -129,6 +130,7 @@ impl Tool for LikeC4 {
                     read_capped(stderr, 16_000),
                     wait
                 )?;
+                tree.disarm();
                 if !status.success() {
                     return Err(format!(
                         "LikeC4 MCP failed ({status}): {}",

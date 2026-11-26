@@ -31,13 +31,21 @@ struct HistoryPurged {
 fn read_usage(state: &SharedState) -> Result<StorageUsage, String> {
     let stored = state.chat.store().usage()?;
     let (spill_bytes, spill_files) = spill::usage(&state.spill_root);
+    let workspaces = stored
+        .workspaces
+        .into_iter()
+        .map(|row| WorkspaceUsage {
+            label: crate::paths::display_path(std::path::Path::new(&row.workspace)),
+            ..row
+        })
+        .collect();
     Ok(StorageUsage {
         database_bytes: stored.database_bytes,
         spill_bytes,
         spill_files,
         sessions: stored.sessions,
         messages: stored.messages,
-        workspaces: stored.workspaces,
+        workspaces,
     })
 }
 

@@ -17,7 +17,8 @@ pub struct WindowRegistry {
 
 impl WindowRegistry {
     pub(crate) fn register(&mut self, label: String, workspace: PathBuf) -> Result<(), String> {
-        if let Some(existing) = self.by_workspace.get(&workspace)
+        let key = crate::paths::workspace_identity(&workspace);
+        if let Some(existing) = self.by_workspace.get(&key)
             && existing != &label
         {
             return Err(format!(
@@ -27,24 +28,26 @@ impl WindowRegistry {
         if let Some(previous) = self.by_label.insert(label.clone(), workspace.clone())
             && self
                 .by_workspace
-                .get(&previous)
+                .get(&crate::paths::workspace_identity(&previous))
                 .is_some_and(|existing| existing == &label)
         {
-            self.by_workspace.remove(&previous);
+            self.by_workspace
+                .remove(&crate::paths::workspace_identity(&previous));
         }
-        self.by_workspace.insert(workspace, label.clone());
+        self.by_workspace.insert(key, label.clone());
         self.last_focused = Some(label);
         Ok(())
     }
 
     fn remove_label(&mut self, label: &str) -> Option<PathBuf> {
         let workspace = self.by_label.remove(label)?;
+        let key = crate::paths::workspace_identity(&workspace);
         if self
             .by_workspace
-            .get(&workspace)
+            .get(&key)
             .is_some_and(|value| value == label)
         {
-            self.by_workspace.remove(&workspace);
+            self.by_workspace.remove(&key);
         }
         if self.last_focused.as_deref() == Some(label) {
             self.last_focused = self.by_label.keys().next().cloned();
@@ -61,7 +64,9 @@ impl WindowRegistry {
     }
 
     fn label_for(&self, workspace: &Path) -> Option<&str> {
-        self.by_workspace.get(workspace).map(String::as_str)
+        self.by_workspace
+            .get(&crate::paths::workspace_identity(workspace))
+            .map(String::as_str)
     }
 
     fn focus(&mut self, label: &str) {
@@ -93,7 +98,10 @@ pub(crate) fn workspace_for_window(state: &AppState, label: &str) -> Result<Path
     {
         let workspace = workspace.clone();
         if !workspace.is_dir() {
-            return Err(format!("Workspace is unavailable: {}", workspace.display()));
+            return Err(format!(
+                "Workspace is unavailable: {}",
+                crate::paths::display_path(&workspace)
+            ));
         }
         return Ok(workspace);
     }
@@ -271,7 +279,7 @@ fn open_workspace_window(
         windows.register(label.clone(), workspace.clone())?;
     }
 
-    let title = workspace.to_string_lossy().into_owned();
+    let title = crate::paths::display_path(&workspace);
     let mut builder =
         tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App("index.html".into()))
             .title(&title)

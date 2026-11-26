@@ -9,6 +9,7 @@ use super::Store;
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceUsage {
     pub workspace: String,
+    pub label: String,
     pub sessions: usize,
     pub messages: usize,
     pub bytes: u64,
@@ -52,6 +53,7 @@ impl Store {
                 .query_map([], |row| {
                     Ok(WorkspaceUsage {
                         workspace: row.get(0)?,
+                        label: String::new(),
                         sessions: row.get::<_, i64>(1)?.max(0) as usize,
                         messages: row.get::<_, i64>(2)?.max(0) as usize,
                         bytes: row.get::<_, i64>(3)?.max(0) as u64,
