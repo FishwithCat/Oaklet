@@ -86,15 +86,10 @@ async fn read_output(reader: impl AsyncRead + Unpin) -> Result<Vec<u8>, String> 
 async fn git_output(path: &Path, args: &[&str], allow_failure: bool) -> Result<GitOutput, String> {
     let mut command = Command::new("git");
     command.as_std_mut().apply_environment();
+    let hooks_path = format!("core.hooksPath={}", crate::git::NULL_DEVICE);
     command
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-C",
-        ])
-        .arg(path)
+        .args(["-c", &hooks_path, "-c", "core.fsmonitor=false", "-C"])
+        .arg(crate::paths::display_path(path))
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
@@ -111,8 +106,7 @@ async fn git_output(path: &Path, args: &[&str], allow_failure: bool) -> Result<G
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not run Git: {error}"))?;
-    #[cfg(unix)]
-    let mut group = crate::tools::ProcessGroupGuard::new(child.id());
+    let mut tree = crate::process_tree::ProcessTree::new(child.id());
     let stdout = child.stdout.take().expect("piped Git stdout");
     let stderr = child.stderr.take().expect("piped Git stderr");
     tokio::time::timeout(Duration::from_secs(90), async {
@@ -120,8 +114,7 @@ async fn git_output(path: &Path, args: &[&str], allow_failure: bool) -> Result<G
             tokio::try_join!(read_output(stdout), read_output(stderr), async {
                 child.wait().await.map_err(|error| error.to_string())
             },)?;
-        #[cfg(unix)]
-        group.disarm();
+        tree.disarm();
         if !status.success() && !allow_failure {
             let message = String::from_utf8_lossy(&errors);
             return Err(if message.trim().is_empty() {
@@ -297,7 +290,8 @@ async fn registered(source: &Path, target: &Path) -> Result<Option<Vec<String>>,
     Ok(listing.split("\0\0").find_map(|entry| {
         let mut fields = entry.split('\0');
         let path = fields.next()?.strip_prefix("worktree ")?;
-        (Path::new(path) == target).then(|| fields.map(str::to_owned).collect())
+        crate::paths::same_workspace(Path::new(path), target)
+            .then(|| fields.map(str::to_owned).collect())
     }))
 }
 
@@ -350,6 +344,7 @@ pub(crate) async fn create(
     stopped(cancel)?;
     let target = assure_pool_path(&source, name, true)?;
     let path = text(&target)?.to_owned();
+    let argument = crate::paths::display_path(&target);
     std::fs::create_dir(&target)
         .map_err(|error| format!("Could not allocate worktree {path}: {error}"))?;
     let result = async {
@@ -362,7 +357,7 @@ pub(crate) async fn create(
                 "-b",
                 branch,
                 "--",
-                &path,
+                &argument,
                 commit,
             ],
         )
@@ -464,6 +459,7 @@ pub(crate) async fn restore(
     )
     .await?;
     let commit = commit.trim();
+    let argument = crate::paths::display_path(&target);
     if let Some(fields) = registered(source, &target).await? {
         if fields
             .iter()
@@ -472,7 +468,7 @@ pub(crate) async fn restore(
             return Err("The recorded worktree is locked.".into());
         }
         stopped(cancel)?;
-        git(source, &["worktree", "remove", "--", &entry.path]).await?;
+        git(source, &["worktree", "remove", "--", &argument]).await?;
     }
     stopped(cancel)?;
     let name = target
@@ -483,14 +479,7 @@ pub(crate) async fn restore(
     if exists {
         git(
             source,
-            &[
-                "worktree",
-                "add",
-                "--no-checkout",
-                "--",
-                &entry.path,
-                branch,
-            ],
+            &["worktree", "add", "--no-checkout", "--", &argument, branch],
         )
         .await?;
     } else {
@@ -503,7 +492,7 @@ pub(crate) async fn restore(
                 "-b",
                 branch,
                 "--",
-                &entry.path,
+                &argument,
                 commit,
             ],
         )

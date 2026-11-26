@@ -45,6 +45,14 @@ rusqlite = { version = "0.42", features = ["bundled"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 
 # Keep dev artifacts small: the default `debug = true` embeds full DWARF for every
 # codegen unit, which is what made `target/debug/deps` grow into tens of GB.

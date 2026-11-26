@@ -10,57 +10,12 @@ use tokio::io::AsyncReadExt;
 use super::{
     ApprovalRequest, ProcessOutcome, Tool, ToolContext, ToolError, ToolOutput, parse_args,
 };
+use crate::process_tree::ProcessTree;
 use crate::shell_env::ApplyEnvironment;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: usize = 1_000_000;
 const TRUNCATED: &[u8] = b"[... earlier command output truncated ...]\n";
-
-/// Kill the whole POSIX process group unless the command finished normally.
-/// This covers both an explicit Stop and the pipeline's 120-second timeout,
-/// which drops the command future without running its cancel branch.
-#[cfg(unix)]
-pub(crate) struct ProcessGroupGuard {
-    pid: Option<u32>,
-}
-
-#[cfg(unix)]
-impl ProcessGroupGuard {
-    pub(crate) fn new(pid: Option<u32>) -> Self {
-        Self { pid }
-    }
-
-    pub(crate) fn kill(&self) {
-        if let Some(pid) = self.pid {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    }
-
-    pub(super) fn running(&mut self) -> bool {
-        let Some(pid) = self.pid else {
-            return false;
-        };
-        let result = unsafe { libc::kill(-(pid as i32), 0) };
-        if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            self.disarm();
-            return false;
-        }
-        true
-    }
-
-    pub(crate) fn disarm(&mut self) {
-        self.pid = None;
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        self.kill();
-    }
-}
 
 pub struct RunCommand;
 
@@ -70,7 +25,11 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &'static str {
-        "Run a shell command in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit or signal as a failed command."
+        if cfg!(windows) {
+            "Run a command with cmd.exe in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit as a failed command."
+        } else {
+            "Run a shell command with sh in the workspace. The command starts in the workspace root, so relative paths work and no cd to the workspace is needed. Set run_in_background for long builds or servers; it returns a job id immediately and this chat is told when the job finishes. Returns combined stdout and stderr plus the exit status, and reports a nonzero exit or signal as a failed command."
+        }
     }
 
     fn parameters(&self) -> Value {
@@ -161,7 +120,7 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
 
     let mut process = shell_command(&args.command);
     process
-        .current_dir(ctx.workspace.root())
+        .current_dir(crate::paths::process_path(ctx.workspace.root()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -172,8 +131,7 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
     let mut child = process
         .spawn()
         .map_err(|error| format!("Could not start command: {error}"))?;
-    #[cfg(unix)]
-    let mut group = ProcessGroupGuard::new(child.id());
+    let mut tree = ProcessTree::new(child.id());
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -189,16 +147,14 @@ async fn run_command(ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolE
             ))
         } => result?,
         _ = ctx.cancel.cancelled() => {
-            #[cfg(unix)]
-            group.kill();
+            tree.kill();
             let _ = child.kill().await;
             let _ = child.wait().await;
             return Err(ToolError::Cancelled);
         }
     };
 
-    #[cfg(unix)]
-    group.disarm();
+    tree.disarm();
     let mut output = String::new();
     if !stdout.is_empty() {
         output.push_str(&String::from_utf8_lossy(&stdout));
@@ -287,20 +243,30 @@ mod tests {
     use serde_json::json;
 
     use super::{ProcessOutcome, RunCommand, Tool, run_command};
-    use crate::tools::test_support::context;
+    use crate::tools::test_support::{
+        both_streams_and_fail, context, detached_hang, exit_with, print_directory, sleep, succeed,
+    };
     use crate::tools::{CancelHandle, ToolContext, ToolError, Workspace};
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn runs_commands_in_the_workspace_and_reports_status() {
         let (ctx, root, _handle) = context("command");
-        let output = run_command(&ctx, json!({ "command": "pwd && echo oaklet" }))
-            .await
-            .unwrap();
-        assert!(output.contains(root.to_str().unwrap()));
+        let output = run_command(
+            &ctx,
+            json!({ "command": format!("{} && echo oaklet", print_directory()) }),
+        )
+        .await
+        .unwrap();
+        assert!(output.contains(&crate::paths::display_path(&root)));
         assert!(output.contains("oaklet"));
 
-        let failed = run_command(&ctx, json!({ "command": "exit 3" }))
+        let ok = run_command(&ctx, json!({ "command": succeed() }))
+            .await
+            .unwrap();
+        assert!(ok.starts_with("Command succeeded."));
+        assert_eq!(ok.outcome, Some(ProcessOutcome::Succeeded));
+
+        let failed = run_command(&ctx, json!({ "command": exit_with(3) }))
             .await
             .unwrap();
         assert!(failed.starts_with("Exit code 3."));
@@ -308,18 +274,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn nonzero_exits_keep_stdout_and_stderr() {
         let (ctx, root, _handle) = context("command-streams");
-        let output = run_command(
-            &ctx,
-            json!({
-                "command": "printf 'to-stdout'; printf 'to-stderr' >&2; exit 7"
-            }),
-        )
-        .await
-        .unwrap();
+        let output = run_command(&ctx, json!({ "command": both_streams_and_fail(7) }))
+            .await
+            .unwrap();
         assert!(output.starts_with("Exit code 7."));
         assert!(output.contains("to-stdout"));
         assert!(output.contains("to-stderr"));
@@ -368,13 +328,13 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_still_works_after_the_shell_exits() {
         let (ctx, root, handle) = context("command-pipe-cancel");
-        let task = tokio::spawn(async move {
-            run_command(&ctx, json!({ "command": "sleep 30 & echo shell-done" })).await
-        });
+        let task =
+            tokio::spawn(
+                async move { run_command(&ctx, json!({ "command": detached_hang() })).await },
+            );
         tokio::time::sleep(Duration::from_millis(100)).await;
         handle.cancel();
         let result = tokio::time::timeout(Duration::from_secs(2), task)
@@ -395,7 +355,6 @@ mod tests {
         assert!(RunCommand.approval(&json!({})).is_none());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn cancels_a_running_command() {
         let root = crate::tools::test_support::temp_root("cancel");
@@ -416,7 +375,7 @@ mod tests {
 
         let task = tokio::spawn(async move {
             let started = Instant::now();
-            let result = run_command(&ctx, json!({ "command": "sleep 5" })).await;
+            let result = run_command(&ctx, json!({ "command": sleep(5) })).await;
             (result, started.elapsed())
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -431,13 +390,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn starts_background_commands_with_a_job_id() {
         let (ctx, root, _handle) = context("background");
         let output = run_command(
             &ctx,
-            json!({ "command": "printf hi", "run_in_background": true }),
+            json!({ "command": "echo hi", "run_in_background": true }),
         )
         .await
         .unwrap();

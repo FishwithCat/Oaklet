@@ -46,16 +46,16 @@ pub struct GitChange {
 /// Field/record separators keep subjects and multi-line bodies unambiguous.
 const LOG_FORMAT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%D%x1f%b%x1e";
 #[cfg(windows)]
-const NULL_DEVICE: &str = "NUL";
+pub(crate) const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
-const NULL_DEVICE: &str = "/dev/null";
+pub(crate) const NULL_DEVICE: &str = "/dev/null";
 
 fn run_git_bytes(workspace: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
         .arg("--literal-pathspecs")
         .arg("-C")
-        .arg(workspace)
+        .arg(crate::paths::display_path(workspace))
         .args(args);
     command.apply_environment();
     command.env("GIT_OPTIONAL_LOCKS", "0");
@@ -87,7 +87,7 @@ fn run_patch(workspace: &Path, args: &[&str], allow_one: bool) -> Result<String,
     command
         .arg("--literal-pathspecs")
         .arg("-C")
-        .arg(workspace)
+        .arg(crate::paths::display_path(workspace))
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

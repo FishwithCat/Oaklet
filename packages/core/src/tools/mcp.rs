@@ -526,6 +526,7 @@ impl McpClient {
 
 struct StdioClient {
     _child: Child,
+    _tree: crate::process_tree::ProcessTree,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr: Arc<std::sync::Mutex<String>>,
@@ -533,13 +534,17 @@ struct StdioClient {
 
 impl StdioClient {
     fn start(name: &str, server: &McpServerConfig, workspace: &Path) -> Result<Self, String> {
-        let mut command = Command::new(&server.command);
+        let launch = crate::launcher::resolve(&server.command);
+        let mut command = Command::new(&launch.program);
+        if let Some(batch) = &launch.batch {
+            command.arg("/C").arg(batch);
+        }
         // Server-specific environment below must win over the login shell.
         command.apply_environment();
         command
             .args(&server.args)
             .envs(&server.env)
-            .current_dir(workspace)
+            .current_dir(crate::paths::process_path(workspace))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -550,6 +555,7 @@ impl StdioClient {
                 name, server.command
             )
         })?;
+        let tree = crate::process_tree::ProcessTree::new(child.id());
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
@@ -576,6 +582,7 @@ impl StdioClient {
         });
         Ok(Self {
             _child: child,
+            _tree: tree,
             stdin,
             stdout: BufReader::new(stdout),
             stderr: stderr_text,

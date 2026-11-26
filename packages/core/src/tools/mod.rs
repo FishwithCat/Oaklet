@@ -43,8 +43,6 @@ mod workspace;
 pub(crate) mod worktree;
 
 pub use diff::FileDiff;
-#[cfg(unix)]
-pub(crate) use shell::ProcessGroupGuard;
 pub use workspace::Workspace;
 
 /// Release process-wide tool resources during app shutdown.
@@ -1090,6 +1088,54 @@ pub(crate) mod test_support {
             root,
             handle,
         )
+    }
+
+    pub fn succeed() -> &'static str {
+        if cfg!(windows) { "exit /b 0" } else { "true" }
+    }
+
+    pub fn print_directory() -> &'static str {
+        if cfg!(windows) { "cd" } else { "pwd" }
+    }
+
+    pub fn exit_with(code: i32) -> String {
+        if cfg!(windows) {
+            format!("exit /b {code}")
+        } else {
+            format!("exit {code}")
+        }
+    }
+
+    pub fn both_streams_and_fail(code: i32) -> String {
+        if cfg!(windows) {
+            format!("echo to-stdout& echo to-stderr 1>&2& exit /b {code}")
+        } else {
+            format!("printf 'to-stdout'; printf 'to-stderr' >&2; exit {code}")
+        }
+    }
+
+    pub fn sleep(seconds: u32) -> String {
+        if cfg!(windows) {
+            format!("ping -n {} 127.0.0.1 >nul", seconds + 1)
+        } else {
+            format!("sleep {seconds}")
+        }
+    }
+
+    pub fn detached_hang() -> &'static str {
+        if cfg!(windows) {
+            "start /b ping -n 31 127.0.0.1 & echo shell-done"
+        } else {
+            "sleep 30 & echo shell-done"
+        }
+    }
+
+    pub fn detached_hang_silent() -> &'static str {
+        if cfg!(windows) {
+            "start /b ping -n 31 127.0.0.1 >nul 2>&1 & echo shell-done"
+        } else {
+            "sleep 30 >/dev/null 2>&1 & echo shell-done"
+        }
     }
 }
 

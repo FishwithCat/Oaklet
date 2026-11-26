@@ -11,6 +11,7 @@ use std::thread;
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::process_tree::ProcessTree;
 use crate::shell_env::ApplyEnvironment;
 
 pub(crate) mod commands;
@@ -73,6 +74,7 @@ pub struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    tree: ProcessTree,
 }
 
 impl Session {
@@ -100,6 +102,7 @@ impl Drop for Session {
         self.output_flow.close();
         // The shell is the PTY session leader; killing it hangs up its jobs.
         let _ = self.killer.kill();
+        self.tree.kill();
     }
 }
 
@@ -127,7 +130,7 @@ fn spawn_shell(
         Some(program) => CommandBuilder::new(program),
         None => CommandBuilder::new_default_prog(),
     };
-    command.cwd(workspace);
+    command.cwd(crate::paths::process_path(workspace));
     command.apply_environment();
     // Keep the terminal's own values even if the login shell exports these.
     command.env("TERM", "xterm-256color");
@@ -140,6 +143,7 @@ fn spawn_shell(
     drop(pair.slave);
 
     let killer = child.clone_killer();
+    let tree = ProcessTree::new(child.process_id());
     let mut reader = pair
         .master
         .try_clone_reader()
@@ -173,6 +177,7 @@ fn spawn_shell(
             master: pair.master,
             writer,
             killer,
+            tree,
         },
         events,
     ))

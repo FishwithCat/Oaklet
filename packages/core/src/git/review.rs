@@ -464,7 +464,7 @@ fn hash_blob(workspace: &Path, bytes: &[u8]) -> Option<String> {
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(workspace)
+        .arg(crate::paths::display_path(workspace))
         .args(["hash-object", "--no-filters", "--stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
