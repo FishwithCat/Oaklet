@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
+import { absolutePath, breadcrumbParts, changeMarkers, fileTreeRows, isMarkdownPath, lineSeparator, editorText, savedText, treeKey } from "../src/features/files/file-model.ts";
 
 test("breadcrumbs start at the workspace root and split both separators", () => {
   assert.deepEqual(breadcrumbParts("/Users/me/acorn", "src/styles/theme.css"), [
@@ -14,6 +14,14 @@ test("breadcrumbs start at the workspace root and split both separators", () => 
     "src",
     "main.ts",
   ]);
+});
+
+test("copied paths join the workspace root with the platform separator", () => {
+  assert.equal(absolutePath("/Users/me/acorn", "src/main.ts"), "/Users/me/acorn/src/main.ts");
+  assert.equal(absolutePath("/Users/me/acorn/", "src/main.ts"), "/Users/me/acorn/src/main.ts");
+  assert.equal(absolutePath("/", "README.md"), "/README.md");
+  assert.equal(absolutePath("C:\\work\\acorn", "src\\main.ts"), "C:\\work\\acorn\\src\\main.ts");
+  assert.equal(absolutePath("C:\\work\\acorn\\", "README.md"), "C:\\work\\acorn\\README.md");
 });
 
 test("change markers index files and their ancestor folders", () => {

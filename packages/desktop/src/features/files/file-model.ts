@@ -10,6 +10,12 @@ export function breadcrumbParts(workspace: string, path: string): string[] {
   return [workspaceName(workspace), ...path.split(/[/\\]/).filter(Boolean)];
 }
 
+export function absolutePath(workspace: string, path: string): string {
+  const root = workspace.replace(/[/\\]+$/, "");
+  const separator = root.includes("\\") && !root.includes("/") ? "\\" : "/";
+  return `${root}${separator}${path}`;
+}
+
 /** Match git paths and tree paths regardless of the platform separator. */
 export function treeKey(path: string): string {
   return path.split(/[/\\]/).filter(Boolean).join("/") || ".";

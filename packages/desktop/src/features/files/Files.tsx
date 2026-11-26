@@ -2,8 +2,10 @@ import { Fragment, lazy, Suspense, useEffect, useImperativeHandle, useRef, useSt
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
+  CheckRegular,
   CloseRegular,
   CodeRegular,
+  CopyRegular,
   Document2Regular,
   EyeRegular,
   FolderTreeRegular,
@@ -20,7 +22,7 @@ import { FileOutline } from "./FileOutline";
 import type { FileEditorHandle } from "./FileEditor";
 import { previewFontShortcut } from "../../app/shortcuts";
 import { changedLines, isImagePath, parseDiff, type ChangedLine } from "../source-control/git-diff";
-import { breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
+import { absolutePath, breadcrumbParts, editorText, isMarkdownPath, savedText, type FileChange } from "./file-model";
 
 import { FileTree } from "./FileTree";
 import { FileSearch } from "./FileSearch";
@@ -78,6 +80,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [editorReadyPath, setEditorReadyPath] = useState<string | null>(null);
   const [lineMarks, setLineMarks] = useState<{ path: string; marks: readonly ChangedLine[] } | null>(null);
   const [browserWidth, setBrowserWidth] = useState(300);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const busyRef = useRef(false);
   const editor = useRef<FileEditorHandle>(null);
   const dirty = document !== null && document.content !== editorText(document.original);
@@ -143,6 +146,12 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
     if (!active) setSearchOpen(false);
   }, [active]);
 
+  useEffect(() => {
+    if (copiedPath === null) return;
+    const timeout = window.setTimeout(() => setCopiedPath(null), 1200);
+    return () => window.clearTimeout(timeout);
+  }, [copiedPath]);
+
   // Gutter marks come from the file on disk. While the buffer is dirty it
   // keeps its mapped marks, and saving refetches the diff.
   useEffect(() => {
@@ -196,6 +205,15 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
       onSaved();
     } catch (err) { setError(errorText(err)); }
     finally { busyRef.current = false; setBusy(false); }
+  }
+
+  async function copyPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(absolutePath(workspace, path));
+      setCopiedPath(path);
+    } catch {
+      setError("Could not copy the file path.");
+    }
   }
 
   const openPath = document?.path ?? image?.path;
@@ -253,6 +271,20 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                   );
                 })}
               </nav>
+              <button
+                type="button"
+                className="ghost icon-button"
+                aria-label="Copy file path"
+                title={copiedPath === openPath ? "File path copied" : "Copy file path"}
+                onClick={() => void copyPath(openPath)}
+              >
+                {copiedPath === openPath
+                  ? <CheckRegular size={14} aria-hidden="true" />
+                  : <CopyRegular size={14} aria-hidden="true" />}
+              </button>
+              <span className="sr-only" role="status">
+                {copiedPath === openPath ? "File path copied." : ""}
+              </span>
               <div className="files-actions">
                 {document && supportsOutline(document.path) && (
                   <FileOutline key={document.path} workspace={workspace} path={document.path}

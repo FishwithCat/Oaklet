@@ -158,7 +158,7 @@ workspace.
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
 can be previewed, and **⌘S** (**Ctrl+S** on Windows) saves. Use **File outline**
 in a saved Rust, JavaScript, TypeScript, Python, or Java file to jump to its
-declarations.
+declarations. The copy button next to the path copies the file's absolute path.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The
