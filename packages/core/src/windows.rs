@@ -320,6 +320,17 @@ fn open_workspace_window(
     Ok(())
 }
 
+fn open_workspace_window_off_thread(
+    app: AppHandle,
+    state: SharedState,
+    workspace: String,
+) -> tauri::async_runtime::JoinHandle<Result<(), String>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = canonical_workspace(&workspace)?;
+        open_workspace_window(&app, &state, workspace)
+    })
+}
+
 pub(crate) fn requested_workspace(args: &[String]) -> Option<PathBuf> {
     let mut args = args.iter().skip(1);
     while let Some(arg) = args.next() {
@@ -382,13 +393,14 @@ pub(crate) fn window_workspace(
 }
 
 #[tauri::command]
-pub(crate) fn open_workspace(
+pub(crate) async fn open_workspace(
     app: AppHandle,
     state: State<'_, SharedState>,
     workspace: String,
 ) -> Result<(), String> {
-    let workspace = canonical_workspace(&workspace)?;
-    open_workspace_window(&app, &state, workspace)
+    open_workspace_window_off_thread(app, state.inner().clone(), workspace)
+        .await
+        .map_err(|error| format!("Could not open a workspace window: {error}"))?
 }
 
 pub(crate) fn handle_second_instance(app: &AppHandle, args: &[String]) {
@@ -402,23 +414,24 @@ pub(crate) fn handle_second_instance(app: &AppHandle, args: &[String]) {
     };
     match requested_workspace(args) {
         Some(workspace) => {
-            let workspace = workspace.to_string_lossy();
-            match canonical_workspace(&workspace) {
-                Ok(workspace) => {
-                    if let Err(error) = open_workspace_window(app, &state, workspace) {
-                        log::key(format_args!(
-                            "[oaklet] could not open workspace window: {error}"
-                        ));
-                        focus_last_window(app, &state);
-                    }
-                }
-                Err(error) => {
+            let workspace = workspace.to_string_lossy().into_owned();
+            let worker_app = app.clone();
+            let worker_state = state.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let opened = open_workspace_window_off_thread(
+                    worker_app.clone(),
+                    worker_state.clone(),
+                    workspace,
+                )
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+                if let Err(error) = opened {
                     log::key(format_args!(
-                        "[oaklet] could not open requested workspace: {error}"
+                        "[oaklet] could not open workspace window: {error}"
                     ));
-                    focus_last_window(app, &state);
+                    focus_last_window(&worker_app, &worker_state);
                 }
-            }
+            });
         }
         None => focus_last_window(app, &state),
     }
