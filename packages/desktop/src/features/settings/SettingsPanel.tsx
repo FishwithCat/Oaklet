@@ -565,6 +565,11 @@ export function SettingsPanel({
                 aria-labelledby="settings-tab-network"
                 tabIndex={0}
               >
+                <p className="field-hint network-intro">
+                  Model, web search, web fetch, and MCP requests all use this
+                  choice. The Test button in the Model tab measures the
+                  connection with the choice below before you save.
+                </p>
                 <div role="radiogroup" aria-label="Proxy">
                   {PROXY_MODES.map((option) => (
                     <label key={option.id} className="settings-check">
@@ -587,11 +592,6 @@ export function SettingsPanel({
                     </label>
                   ))}
                 </div>
-                <p className="field-hint">
-                  Model, web search, web fetch, and MCP requests all use this
-                  choice. The Test button in the Model tab measures the
-                  connection with the choice above before you save.
-                </p>
               </section>
             ) : (
               <section
