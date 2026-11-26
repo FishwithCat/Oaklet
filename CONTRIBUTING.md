@@ -22,6 +22,16 @@ the Windows SDK from the Visual Studio Build Tools installer, the WebView2
 runtime, and Git for Windows, then run the commands below from PowerShell. The
 Rust target is `x86_64-pc-windows-msvc`.
 
+On Ubuntu 24.04 LTS x64, install the compiler, WebKitGTK 4.1, and the OpenSSL
+development headers; the checks and the `.deb` below use the same baseline:
+
+```sh
+sudo apt update
+sudo apt install build-essential pkg-config git curl wget file \
+  libwebkit2gtk-4.1-dev libssl-dev libxdo-dev \
+  libayatana-appindicator3-dev librsvg2-dev
+```
+
 ## Setup
 
 From the repository root, install the commit hooks and commitlint:
@@ -102,8 +112,31 @@ Pop-Location
 ```
 
 `.github/workflows/test.yml` runs the same set on `windows-2025` next to the
-macOS Rust job, so a pull request that breaks the Windows build is caught
-before it reaches a release.
+macOS and `ubuntu-24.04` Rust jobs, so a pull request that breaks either build
+is caught before it reaches a release.
+
+### Checks on Linux
+
+Run every check from the repository root. The architecture helper must be built
+before `cargo test`, because `tauri-build` copies the bundle resources on every
+build. This is the same sequence the `linux` job in
+`.github/workflows/test.yml` runs on `ubuntu-24.04`.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --dir packages/desktop install --frozen-lockfile
+pnpm --dir packages/architecture-helper install --frozen-lockfile
+pnpm --dir packages/architecture-helper build
+pnpm --dir packages/architecture-helper test
+pnpm --dir packages/desktop test
+pnpm --dir packages/desktop build
+
+(cd packages/core && cargo test && cargo clippy --all-targets)
+```
+
+The PTY tests need `/dev/ptmx`; a container or sandbox that denies it makes
+them skip with a message instead of failing. Check that message does not appear
+before treating a Linux run as green.
 
 ### Packaging
 
@@ -126,6 +159,32 @@ The installer is written to
 `packages/core/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It installs
 for the current user and downloads the WebView2 bootstrapper when the runtime is
 missing.
+
+### Packaging (Linux)
+
+With the helper built, create the Debian package on Ubuntu 24.04 x64 from the
+repository root:
+
+```sh
+pnpm tauri build --ci --target x86_64-unknown-linux-gnu --bundles deb
+```
+
+The package is written to
+`packages/core/target/x86_64-unknown-linux-gnu/release/bundle/deb/`. It declares
+`libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libssl3t64` through
+`bundle.linux.deb.depends` in `packages/core/tauri.conf.json`. Check the
+metadata and contents before sharing a build:
+
+```sh
+dpkg-deb -f packages/core/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb \
+  Architecture Version Depends
+dpkg-deb -c packages/core/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb \
+  | grep -E "\.desktop|icons/|architecture-helper"
+ldd packages/core/target/x86_64-unknown-linux-gnu/release/oaklet | grep -E "libssl|libcrypto"
+```
+
+Build on the oldest distribution you intend to support: a newer glibc or
+WebKitGTK is not forward compatible with an older one.
 
 ### Releasing (macOS, GitHub Actions)
 
@@ -167,6 +226,27 @@ secrets to sign the installer with the Windows SDK's `signtool`, after which the
 workflow fails if `Get-AuthenticodeSignature` does not report a valid signature.
 Before publishing a Windows build, install, launch, upgrade, and uninstall it as
 a standard user on a clean Windows 11 virtual machine.
+
+### Releasing (Linux, GitHub Actions)
+
+`.github/workflows/linux-release.yml` builds the `.deb` for
+`x86_64-unknown-linux-gnu` on `ubuntu-24.04`, then checks the package metadata,
+the `.desktop` entry, the icon, the helper resource, and an OpenSSL dependency
+that matches the binary's `ldd` output.
+
+- **Run workflow** in the Actions tab to download the package as a workflow
+  artifact for internal testing.
+- Push a `v*` tag to attach the `.deb` to the same GitHub Release as the macOS
+  and Windows builds. The three workflows publish independently. Tag a release
+  only after the checklist below passes, because the tag publishes the package.
+
+Before publishing a Linux build, install it on a clean Ubuntu 24.04 virtual
+machine as a standard user and launch it from both GNOME's application menu
+(Wayland and Xorg) and a terminal. Verify the workspace, chat history, file
+editing, Git, `@worktree`, terminal, MCP transports, the proxy modes, and input
+methods, then upgrade from the previous `.deb` and reinstall over it to confirm
+the user data directory survives. Hold the Linux release when the workspace
+boundary, process cleanup, dependency resolution, or upgrade loses data.
 
 ## Tool architecture
 

@@ -14,9 +14,10 @@ runtime. Inspired by the host-side loop, scoped tools, and explicit approvals in
 
 ## Install
 
-Oaklet supports macOS (Apple Silicon and Intel) and Windows 11 x64. Windows 10,
-Windows on ARM, and Linux are not supported yet. Keyboard shortcuts use **⌘** on
-macOS and **Ctrl** on Windows.
+Oaklet supports macOS (Apple Silicon and Intel), Windows 11 x64, and Ubuntu
+24.04 LTS x64. Windows 10, Windows on ARM, other Linux distributions, and ARM64
+Linux are not supported yet. Keyboard shortcuts use **⌘** on macOS and **Ctrl**
+on Windows and Linux.
 
 ### macOS
 
@@ -73,6 +74,21 @@ same way.
 Windows 11 ships the WebView2 runtime; an older machine downloads it during
 setup.
 
+### Linux
+
+Download the `_amd64.deb` package from
+[Releases](https://github.com/FishwithCat/Oaklet/releases/latest) and install it
+with apt so its dependencies resolve:
+
+```sh
+sudo apt install ./*_amd64.deb
+```
+
+The package targets Ubuntu 24.04 LTS x64 on GNOME with Wayland or Xorg. Oaklet
+keeps its settings in `~/.config/com.oaklet.desktop/` and its sessions,
+attachments, and logs in `~/.local/share/com.oaklet.desktop/`, so uninstalling
+or upgrading keeps your data.
+
 ## Optional Node.js
 
 The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3 or newer.
@@ -95,12 +111,12 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Chat
 
 - Multiple tabs, each titled by its first prompt and with its own conversation
-  and draft. **⌘N** (**Ctrl+N** on Windows) opens a tab, **⌘X** (**Ctrl+W** on
-  Windows) closes the active one, and **⌘R** (**Ctrl+R** on Windows) opens
-  History, where you can restore a saved session. Sessions live in
-  the backend, so they survive a restart; a live run keeps streaming while you
-  switch tabs, but quitting Oaklet stops it and the next start marks it
-  interrupted.
+  and draft. **⌘N** (**Ctrl+N** on Windows and Linux) opens a tab, **⌘X**
+  (**Ctrl+W** on Windows and Linux) closes the active one, and **⌘R**
+  (**Ctrl+R** on Windows and Linux) opens History, where you can restore a
+  saved session. Sessions live in the backend, so they survive a restart; a
+  live run keeps streaming while you switch tabs, but quitting Oaklet stops it
+  and the next start marks it interrupted.
 - Each window belongs to one workspace. Opening the same folder again focuses
   its existing window instead of creating a second one. A second app launch
   focuses the last active window; `oaklet --workspace <path>` opens or focuses
@@ -114,15 +130,16 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Replies stream as Markdown. Thinking and tool calls fold into compact,
   expandable process rows. `write_file`, `edit_file`, and `apply_patch` show an
   inline diff card with the applied changes and their added/removed line counts.
-- **⌘F** (**Ctrl+F** on Windows) finds text in the open conversation and
-  highlights every match; **Enter** and **Shift+Enter** step through them.
+- **⌘F** (**Ctrl+F** on Windows and Linux) finds text in the open
+  conversation and highlights every match; **Enter** and **Shift+Enter** step
+  through them.
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
 - **Stop** cancels the model request, a running command, or a pending approval.
-- Closing a window or quitting with **⌘Q** (**Alt+F4** on Windows) asks before
-  discarding unsaved file edits or stopping a running chat. Oaklet waits for
-  cancelled work and session writes before exiting; if a reply cannot be saved,
-  the window stays open and closing it again retries the save.
+- Closing a window or quitting with **⌘Q** (**Alt+F4** on Windows and Linux)
+  asks before discarding unsaved file edits or stopping a running chat. Oaklet
+  waits for cancelled work and session writes before exiting; if a reply cannot
+  be saved, the window stays open and closing it again retries the save.
 - Long transcripts open on the latest page; scroll up and choose **Load earlier**
   to bring in older turns without reading the whole log.
 - The plant in the composer's top-left corner estimates the next request against
@@ -165,7 +182,8 @@ checkout in `.agents/worktrees/` from the current commit, then runs the message
 there. The chat shows its checkout path and current branch. Existing terminals
 retain their original directories and processes.
 
-Use **⌘R** (**Ctrl+R** on Windows) to reopen or archive a chat from its project.
+Use **⌘R** (**Ctrl+R** on Windows and Linux) to reopen or archive a chat from
+its project.
 Archiving can remove a clean, unreferenced checkout while keeping its branch and
 commits. **Keep worktrees when archiving** retains the checkout. If a checkout is
 missing, the chat offers to restore it or continue in its source project.
@@ -175,9 +193,10 @@ job control (`Ctrl+C`), and 5,000 lines of scrollback, starting in the
 workspace.
 
 **Files** browses the workspace as a tree and opens files in an editor. Markdown
-can be previewed, and **⌘S** (**Ctrl+S** on Windows) saves. Use **File outline**
-in a saved Rust, JavaScript, TypeScript, Python, or Java file to jump to its
-declarations. The copy button next to the path copies the file's absolute path.
+can be previewed, and **⌘S** (**Ctrl+S** on Windows and Linux) saves. Use **File
+outline** in a saved Rust, JavaScript, TypeScript, Python, or Java file to jump
+to its declarations. The copy button next to the path copies the file's
+absolute path.
 
 **Source control** has **Changes** (uncommitted files with diffs) and
 **Commits** (last 100 commits, and the diff of each with per-file stats). The
@@ -231,6 +250,11 @@ your shell's proxy variables and the operating system proxy setting,
 **Environment only** reads `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` and
 ignores the OS setting, and **Direct** never uses a proxy. The **Test** button
 in the Model tab measures the choice before you save.
+
+Linux has no native system proxy setting in Oaklet: **System** reads
+`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` from the environment,
+including what your login shell exports. GNOME and KDE desktop proxy settings
+are not read.
 
 ## Skills
 
@@ -365,7 +389,8 @@ to 200,000 characters and reduces HTML to readable text.
 Release builds append key diagnostics (a session that failed to save, stale runs
 recovered at startup) to `oaklet.log` in the platform log directory, for example
 `~/Library/Logs/com.oaklet.desktop/oaklet.log` on macOS and
-`%LOCALAPPDATA%\com.oaklet.desktop\logs\oaklet.log` on Windows.
+`%LOCALAPPDATA%\com.oaklet.desktop\logs\oaklet.log` on Windows. On Linux it is
+`~/.local/share/com.oaklet.desktop/logs/oaklet.log`.
 
 ## Status
 
