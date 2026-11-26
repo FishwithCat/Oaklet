@@ -1,0 +1,177 @@
+name: Linux release
+
+# Builds the Debian package for Ubuntu 24.04 LTS x64 and verifies its metadata
+# and contents before uploading. Manual runs upload a workflow artifact for
+# internal testing; pushing a v* tag also attaches the package to that tag's
+# GitHub Release, which the macOS workflow creates independently.
+#
+# The build runs on the oldest supported baseline (Ubuntu 24.04) so the linked
+# glibc and WebKitGTK stay inside what the first supported release ships.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev \
+            libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from the packageManager field in package.json.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            packages/desktop/pnpm-lock.yaml
+            packages/architecture-helper/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+          key: ubuntu-24.04
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir packages/desktop install --frozen-lockfile
+          pnpm --dir packages/architecture-helper install --frozen-lockfile
+
+      - name: Build the architecture helper
+        # The helper ships as plain JavaScript next to the app resources.
+        run: pnpm --dir packages/architecture-helper build
+
+      - name: Build the Debian package
+        run: pnpm tauri build --ci --target "$TARGET" --bundles deb
+
+      - name: Verify and collect the package
+        run: |
+          set -euo pipefail
+          bundle="packages/core/target/$TARGET/release/bundle/deb"
+          deb="$(find "$bundle" -maxdepth 1 -name '*.deb' -print -quit)"
+          if [ -z "$deb" ]; then
+            echo "::error::No .deb was produced in $bundle"
+            exit 1
+          fi
+
+          dpkg-deb -f "$deb" Package Version Architecture Depends
+          architecture="$(dpkg-deb -f "$deb" Architecture)"
+          if [ "$architecture" != "amd64" ]; then
+            echo "::error::Unexpected Architecture: $architecture"
+            exit 1
+          fi
+
+          depends="$(dpkg-deb -f "$deb" Depends)"
+          for needed in libwebkit2gtk-4.1-0 libgtk-3-0; do
+            case "$depends" in
+              *"$needed"*) ;;
+              *)
+                echo "::error::Depends is missing $needed: $depends"
+                exit 1
+                ;;
+            esac
+          done
+
+          contents="$(dpkg-deb -c "$deb")"
+          case "$contents" in
+            *usr/share/applications/*.desktop*) ;;
+            *)
+              echo "::error::The package has no .desktop entry"
+              exit 1
+              ;;
+          esac
+          case "$contents" in
+            *usr/share/icons/*.png*) ;;
+            *)
+              echo "::error::The package has no application icon"
+              exit 1
+              ;;
+          esac
+          case "$contents" in
+            *architecture-helper*) ;;
+            *)
+              echo "::error::The package has no architecture helper resource"
+              exit 1
+              ;;
+          esac
+
+          binary="packages/core/target/$TARGET/release/oaklet"
+          if ldd "$binary" | grep -Eq 'libssl|libcrypto'; then
+            case "$depends" in
+              *libssl*|*libcrypto*) ;;
+              *)
+                echo "::error::The binary links OpenSSL but Depends does not declare it: $depends"
+                exit 1
+                ;;
+            esac
+          fi
+
+          mkdir -p release-assets
+          cp "$deb" release-assets/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Oaklet-linux-x64
+          retention-days: 14
+          if-no-files-found: error
+          path: release-assets/
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Oaklet-linux-x64
+          path: release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.deb
+          fail_on_unmatched_files: true
+          append_body: true
+          body: |
+            ## Install (Ubuntu 24.04 x64)
+
+            Download the `.deb` and install it:
+
+            ```sh
+            sudo apt install ./*_amd64.deb
+            ```
+
+            The first supported target is Ubuntu 24.04 LTS x64 on GNOME Wayland
+            or Xorg. Other distributions, ARM64, and network filesystems are not
+            covered yet. The Architecture view and the `likec4_mcp` tool need
+            Node.js 22.23.3 or newer on `PATH` or set through `OAKLET_NODE`; the
+            rest of Oaklet works without it.
