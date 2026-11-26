@@ -35,8 +35,8 @@ pub use windows::WindowRegistry;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            windows::handle_second_instance(app, &args);
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            windows::handle_second_instance(app, &args, Some(std::path::Path::new(&cwd)));
         }))
         .on_window_event(windows::handle_window_event)
         .plugin(tauri_plugin_opener::init())

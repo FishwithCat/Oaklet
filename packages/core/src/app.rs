@@ -66,7 +66,8 @@ pub(crate) fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args_os()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    let cli_workspace = requested_workspace(&args).and_then(|path| {
+    let cwd = std::env::current_dir().ok();
+    let cli_workspace = requested_workspace(&args, cwd.as_deref()).and_then(|path| {
         match canonical_workspace(&path.to_string_lossy()) {
             Ok(path) => Some(path),
             Err(error) => {

@@ -331,7 +331,15 @@ fn open_workspace_window_off_thread(
     })
 }
 
-pub(crate) fn requested_workspace(args: &[String]) -> Option<PathBuf> {
+pub(crate) fn requested_workspace(args: &[String], cwd: Option<&Path>) -> Option<PathBuf> {
+    let requested = requested_argument(args)?;
+    match cwd.filter(|cwd| !cwd.as_os_str().is_empty()) {
+        Some(cwd) if requested.is_relative() => Some(cwd.join(requested)),
+        _ => Some(requested),
+    }
+}
+
+fn requested_argument(args: &[String]) -> Option<PathBuf> {
     let mut args = args.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--workspace" || arg == "-w" {
@@ -403,7 +411,7 @@ pub(crate) async fn open_workspace(
         .map_err(|error| format!("Could not open a workspace window: {error}"))?
 }
 
-pub(crate) fn handle_second_instance(app: &AppHandle, args: &[String]) {
+pub(crate) fn handle_second_instance(app: &AppHandle, args: &[String], cwd: Option<&Path>) {
     let Some(state) = app.try_state::<SharedState>() else {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
@@ -412,7 +420,7 @@ pub(crate) fn handle_second_instance(app: &AppHandle, args: &[String]) {
         }
         return;
     };
-    match requested_workspace(args) {
+    match requested_workspace(args, cwd) {
         Some(workspace) => {
             let workspace = workspace.to_string_lossy().into_owned();
             let worker_app = app.clone();
@@ -490,7 +498,7 @@ mod tests {
             .map(String::from)
             .collect::<Vec<_>>();
         assert_eq!(
-            requested_workspace(&args),
+            requested_workspace(&args, None),
             Some(PathBuf::from("/tmp/project"))
         );
 
@@ -499,11 +507,68 @@ mod tests {
             .map(String::from)
             .collect::<Vec<_>>();
         assert_eq!(
-            requested_workspace(&args),
+            requested_workspace(&args, None),
             Some(PathBuf::from("/tmp/positional"))
         );
 
-        assert_eq!(requested_workspace(&["oaklet".to_string()]), None);
+        assert_eq!(requested_workspace(&["oaklet".to_string()], None), None);
+    }
+
+    #[test]
+    fn resolves_a_relative_workspace_against_the_requesting_directory() {
+        let args = ["oaklet", "--workspace", "."]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let cwd = Path::new("/home/me/project");
+        assert_eq!(
+            requested_workspace(&args, Some(cwd)),
+            Some(PathBuf::from("/home/me/project"))
+        );
+
+        let args = ["oaklet", "-w", "sub/dir"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args, Some(cwd)),
+            Some(PathBuf::from("/home/me/project/sub/dir"))
+        );
+
+        let args = ["oaklet", "--workspace=."]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args, Some(cwd)),
+            Some(PathBuf::from("/home/me/project"))
+        );
+
+        let args = ["oaklet", "sibling"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args, Some(cwd)),
+            Some(PathBuf::from("/home/me/project/sibling"))
+        );
+
+        assert_eq!(
+            requested_workspace(&args, Some(Path::new(""))),
+            Some(PathBuf::from("sibling"))
+        );
+    }
+
+    #[test]
+    fn leaves_an_absolute_workspace_alone() {
+        let args = ["oaklet", "--workspace", "/elsewhere/project"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_workspace(&args, Some(Path::new("/home/me/project"))),
+            Some(PathBuf::from("/elsewhere/project"))
+        );
     }
 
     fn work_area(width: i32, height: i32) -> Frame {
