@@ -50,9 +50,28 @@ installs for the current user and needs no administrator rights. Oaklet keeps
 its settings, logs, sessions, and attachments under your user profile, and adds
 a Start menu entry.
 
-If SmartScreen warns about an unsigned installer, choose **More info**, then
-**Run anyway**. Windows 11 ships the WebView2 runtime; an older machine
-downloads it during setup.
+The installer is not code-signed yet, so on first run Microsoft Defender
+SmartScreen holds it with **"Windows protected your PC"**
+(**Windows 已保护你的电脑**). That message means Windows has not seen this file
+often enough to vouch for it; it is not a virus report.
+
+1. Click **More info**, then **Run anyway**.
+2. If there is no **Run anyway**, or the download stays marked as blocked,
+   clear the mark first and run the file again.
+
+   ```powershell
+   Unblock-File .\Oaklet_<version>_x64-setup.exe
+   ```
+
+   From Explorer, right-click the installer, open **Properties**, tick
+   **Unblock**, and click **Apply**.
+
+The same warning can appear on the first launch of Oaklet itself, since
+SmartScreen checks the installed app separately from the installer; allow it the
+same way.
+
+Windows 11 ships the WebView2 runtime; an older machine downloads it during
+setup.
 
 ## Optional Node.js
 
