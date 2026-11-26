@@ -163,6 +163,11 @@ export async function readDroppedFile(path: string): Promise<Attachment | null> 
   };
 }
 
+/** Quote dropped paths inserted into the composer so spaces stay in the path. */
+export function quotePaths(paths: readonly string[]): string {
+  return paths.map((path) => `'${path.replace(/'/g, "'\\''")}'`).join(" ");
+}
+
 export function sentAttachments(
   attachments: readonly Attachment[],
 ): SentAttachment[] {

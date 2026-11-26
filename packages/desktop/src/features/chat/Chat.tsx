@@ -20,7 +20,7 @@ import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatThread } from "./ChatThread";
 import { Welcome } from "./Welcome";
-import { readDroppedFile, type Attachment } from "./attachments";
+import { quotePaths, readDroppedFile, type Attachment } from "./attachments";
 import type { WorktreeInfo } from "./WorktreeControl";
 import {
   isAtBottom,
@@ -314,7 +314,7 @@ export function Chat({
       }
     }
     if (added.length > 0) addAttachments(added, tabId);
-    if (fallback.length > 0) appendDraft(fallback.join(" "), tabId);
+    if (fallback.length > 0) appendDraft(quotePaths(fallback), tabId);
     if (activeTabIdRef.current === tabId) {
       requestAnimationFrame(() => composerRef.current?.focus());
     }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatBytes,
+  quotePaths,
   sentAttachments,
 } from "../src/features/chat/attachments.ts";
 
@@ -31,4 +32,10 @@ test("byte sizes stay short", () => {
   assert.equal(formatBytes(512), "512 B");
   assert.equal(formatBytes(2048), "2.0 KB");
   assert.equal(formatBytes(5 * 1024 * 1024), "5.0 MB");
+});
+
+test("dropped paths are quoted so spaces stay in the path", () => {
+  assert.equal(quotePaths(["/tmp/My Notes.md"]), "'/tmp/My Notes.md'");
+  assert.equal(quotePaths(["/tmp/a b", "/tmp/c"]), "'/tmp/a b' '/tmp/c'");
+  assert.equal(quotePaths(["/tmp/it's.txt"]), "'/tmp/it'\\''s.txt'");
 });
