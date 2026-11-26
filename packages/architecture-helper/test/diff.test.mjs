@@ -84,7 +84,9 @@ test("returns diagnostics for a diff that references an unknown element", async 
     assert.ok(diagnostics.length > 0);
     assert.ok(
       diagnostics.every((diagnostic) =>
-        diagnostic.sourceFsPath.endsWith("architecture/draft.c4"),
+        diagnostic.sourceFsPath
+          .replaceAll("\\", "/")
+          .endsWith("architecture/draft.c4"),
       ),
     );
     assert.ok(

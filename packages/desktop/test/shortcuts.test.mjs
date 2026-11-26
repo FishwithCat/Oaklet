@@ -114,10 +114,12 @@ test("Windows keeps Control+X and Control+C for editing", () => {
 });
 
 test("the primary key label follows the platform", () => {
+  const hostPlatform =
+    { darwin: "mac", linux: "linux" }[process.platform] ?? "windows";
   assert.equal(primaryKeyLabel("mac"), "⌘");
   assert.equal(primaryKeyLabel("windows"), "Ctrl");
   assert.equal(primaryKeyLabel("linux"), "Ctrl");
-  assert.equal(detectPlatform(), "mac");
+  assert.equal(detectPlatform(), hostPlatform);
 });
 
 test("Linux reuses the Control shortcuts", () => {
