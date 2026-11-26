@@ -36,7 +36,9 @@ if (process.argv.includes("--version")) {
 
 function diagnosticFrom(error) {
   const message = String(error?.message ?? error ?? "LikeC4 reported an error.");
-  const source = String(error?.sourceFsPath ?? "");
+  // LikeC4 reports the virtual workspace as a file-system path, so Windows
+  // separates it with backslashes. Normalize before stripping the root.
+  const source = String(error?.sourceFsPath ?? "").replaceAll("\\", "/");
   const file = source.startsWith(`${VIRTUAL_ROOT}/`)
     ? source.slice(VIRTUAL_ROOT.length + 1)
     : source || null;
