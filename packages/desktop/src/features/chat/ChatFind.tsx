@@ -11,6 +11,7 @@ import {
   stepMatch,
   type TextRuns,
 } from "./find-model";
+import { primaryModifier } from "../../app/shortcuts";
 
 const ALL_HIGHLIGHT = "chat-find";
 const CURRENT_HIGHLIGHT = "chat-find-current";
@@ -117,8 +118,7 @@ export function ChatFind({
     function onKeyDown(event: KeyboardEvent) {
       if (document.querySelector(".modal-backdrop, .skills-backdrop")) return;
       if (
-        event.metaKey &&
-        !event.ctrlKey &&
+        primaryModifier(event) &&
         !event.altKey &&
         !event.shiftKey &&
         event.key.toLowerCase() === "f"

@@ -18,6 +18,7 @@ import {
   createCompositionGuard,
   isImeEvent,
   isSendEnter,
+  primaryKeyLabel,
 } from "../../app/shortcuts";
 import { errorText } from "../../shared/error-text";
 import { ImageLightbox } from "../../shared/ImageLightbox";
@@ -192,6 +193,7 @@ export function ChatComposer({
   const compositionRef = useRef(createCompositionGuard());
   const submittingRef = useRef(new Set<string>());
   const modelLabel = formatModelId(model);
+  const modifierKey = primaryKeyLabel();
   const options = mention ? mentionOptions(mention.query) : [];
   const mentionOpen = options.length > 0;
   const activeIndex =
@@ -607,7 +609,7 @@ export function ChatComposer({
                     {!welcome && (
                       <div className="shortcut">
                         <dt>
-                          <kbd>⌘ N</kbd>
+                          <kbd>{modifierKey} N</kbd>
                         </dt>
                         <dd>New session</dd>
                       </div>
@@ -615,21 +617,21 @@ export function ChatComposer({
                     {!welcome && (
                       <div className="shortcut">
                         <dt>
-                          <kbd>⌘ X</kbd>
+                          <kbd>{modifierKey} {modifierKey === "⌘" ? "X" : "W"}</kbd>
                         </dt>
                         <dd>Close tab</dd>
                       </div>
                     )}
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌘ R</kbd>
+                        <kbd>{modifierKey} R</kbd>
                       </dt>
                       <dd>Search history</dd>
                     </div>
                     {!welcome && (
                       <div className="shortcut">
                         <dt>
-                          <kbd>⌘ F</kbd>
+                          <kbd>{modifierKey} F</kbd>
                         </dt>
                         <dd>Find in chat</dd>
                       </div>
@@ -637,7 +639,7 @@ export function ChatComposer({
                     {running && (
                       <div className="shortcut">
                         <dt>
-                          <kbd>⌃ C</kbd>
+                          <kbd>Ctrl C</kbd>
                         </dt>
                         <dd>Stop run</dd>
                       </div>
@@ -656,7 +658,7 @@ export function ChatComposer({
                     </div>
                     <div className="shortcut">
                       <dt>
-                        <kbd>⌘ V</kbd>
+                        <kbd>{modifierKey} V</kbd>
                       </dt>
                       <dd>Paste image or file</dd>
                     </div>

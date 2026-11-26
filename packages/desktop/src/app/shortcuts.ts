@@ -20,6 +20,29 @@ export type AgentShortcut =
   | "history"
   | "stop";
 
+export type ShortcutPlatform = "mac" | "windows";
+
+export function detectPlatform(): ShortcutPlatform {
+  if (typeof navigator === "undefined") return "mac";
+  const text = `${navigator.userAgent ?? ""} ${navigator.platform ?? ""}`;
+  return /mac/i.test(text) ? "mac" : "windows";
+}
+
+export function primaryModifier(
+  event: KeyEvent,
+  platform: ShortcutPlatform = detectPlatform(),
+): boolean {
+  return platform === "mac"
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
+}
+
+export function primaryKeyLabel(
+  platform: ShortcutPlatform = detectPlatform(),
+): string {
+  return platform === "mac" ? "⌘" : "Ctrl";
+}
+
 type EnterEvent = Pick<
   KeyboardEvent,
   "key" | "shiftKey" | "isComposing" | "keyCode"
@@ -108,16 +131,16 @@ export function agentShortcut(
   event: KeyEvent,
   view: string,
   running: boolean,
+  platform: ShortcutPlatform = detectPlatform(),
 ): AgentShortcut | null {
   if (event.altKey || event.shiftKey || event.repeat) {
     return null;
   }
 
   const key = event.key.toLowerCase();
+  const primary = primaryModifier(event, platform);
   if (view === "terminal") {
-    return event.metaKey && !event.ctrlKey && key === "n"
-      ? "new-terminal"
-      : null;
+    return primary && key === "n" ? "new-terminal" : null;
   }
   if (view === "files" && event.metaKey !== event.ctrlKey && key === "p") {
     return "quick-open";
@@ -126,12 +149,20 @@ export function agentShortcut(
     return null;
   }
 
-  if (event.metaKey && !event.ctrlKey && key === "n") return "new-session";
-  if (event.metaKey && !event.ctrlKey && key === "x") {
+  if (primary && key === "n") return "new-session";
+  if (primary && key === (platform === "mac" ? "x" : "w")) {
     return hasTextSelection(event.target) ? null : "close-session";
   }
-  if (event.metaKey && !event.ctrlKey && key === "r") return "history";
-  if (event.ctrlKey && !event.metaKey && key === "c" && running) return "stop";
+  if (primary && key === "r") return "history";
+  if (
+    event.ctrlKey &&
+    !event.metaKey &&
+    key === "c" &&
+    running &&
+    !hasTextSelection(event.target)
+  ) {
+    return "stop";
+  }
   // Escape stops like Ctrl+C, unless it is cancelling IME input or a popover
   // (e.g. find) already consumed it.
   if (

@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   agentShortcut,
   createCompositionGuard,
+  detectPlatform,
   isImeEvent,
   isSendEnter,
   previewFontShortcut,
+  primaryKeyLabel,
 } from "../src/app/shortcuts.ts";
 
 const press = (overrides) => ({
@@ -34,39 +36,100 @@ test("Command or Control with +, -, and 0 changes the preview font size", () => 
 
 test("Command+N opens a new session in chat and a new tab in the terminal", () => {
   assert.equal(
-    agentShortcut(press({ key: "n", metaKey: true }), "chat", false),
+    agentShortcut(press({ key: "n", metaKey: true }), "chat", false, "mac"),
     "new-session",
   );
   assert.equal(
-    agentShortcut(press({ key: "n", metaKey: true }), "chat", true),
+    agentShortcut(press({ key: "n", metaKey: true }), "chat", true, "mac"),
     "new-session",
   );
   assert.equal(
-    agentShortcut(press({ key: "n", metaKey: true }), "terminal", false),
+    agentShortcut(press({ key: "n", metaKey: true }), "terminal", false, "mac"),
     "new-terminal",
   );
   assert.equal(
-    agentShortcut(press({ key: "n", ctrlKey: true }), "terminal", false),
+    agentShortcut(press({ key: "n", ctrlKey: true }), "terminal", false, "mac"),
     null,
   );
   assert.equal(
-    agentShortcut(press({ key: "n", metaKey: true }), "git", false),
+    agentShortcut(press({ key: "n", metaKey: true }), "git", false, "mac"),
     null,
   );
-  assert.equal(agentShortcut(press({ key: "n" }), "chat", false), null);
+  assert.equal(agentShortcut(press({ key: "n" }), "chat", false, "mac"), null);
+});
+
+test("Windows uses Control for the same session shortcuts", () => {
+  assert.equal(
+    agentShortcut(press({ key: "n", ctrlKey: true }), "chat", false, "windows"),
+    "new-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", ctrlKey: true }), "terminal", false, "windows"),
+    "new-terminal",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "r", ctrlKey: true }), "chat", false, "windows"),
+    "history",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "w", ctrlKey: true }), "chat", false, "windows"),
+    "close-session",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "w", ctrlKey: true }), "terminal", false, "windows"),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "x", ctrlKey: true }), "chat", false, "windows"),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "n", metaKey: true }), "chat", false, "windows"),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "w", ctrlKey: true, shiftKey: true }), "chat", false, "windows"),
+    null,
+  );
+});
+
+test("Windows keeps Control+X and Control+C for editing", () => {
+  assert.equal(
+    agentShortcut(
+      press({ key: "c", ctrlKey: true, target: { selectionStart: 0, selectionEnd: 4 } }),
+      "chat",
+      true,
+      "windows",
+    ),
+    null,
+  );
+  assert.equal(
+    agentShortcut(press({ key: "c", ctrlKey: true }), "chat", true, "windows"),
+    "stop",
+  );
+  assert.equal(
+    agentShortcut(press({ key: "v", ctrlKey: true }), "chat", false, "windows"),
+    null,
+  );
+});
+
+test("the primary key label follows the platform", () => {
+  assert.equal(primaryKeyLabel("mac"), "⌘");
+  assert.equal(primaryKeyLabel("windows"), "Ctrl");
+  assert.equal(detectPlatform(), "mac");
 });
 
 test("Command+R opens session history only in the chat view", () => {
   assert.equal(
-    agentShortcut(press({ key: "r", metaKey: true }), "chat", false),
+    agentShortcut(press({ key: "r", metaKey: true }), "chat", false, "mac"),
     "history",
   );
   assert.equal(
-    agentShortcut(press({ key: "r", metaKey: true }), "terminal", false),
+    agentShortcut(press({ key: "r", metaKey: true }), "terminal", false, "mac"),
     null,
   );
   assert.equal(
-    agentShortcut(press({ key: "r", metaKey: true, shiftKey: true }), "chat", false),
+    agentShortcut(press({ key: "r", metaKey: true, shiftKey: true }), "chat", false, "mac"),
     null,
   );
 });
@@ -96,19 +159,19 @@ test("Command+P opens file search only in the files view", () => {
 
 test("Command+X closes the active chat tab unless text is selected", () => {
   assert.equal(
-    agentShortcut(press({ key: "x", metaKey: true }), "chat", false),
+    agentShortcut(press({ key: "x", metaKey: true }), "chat", false, "mac"),
     "close-session",
   );
   assert.equal(
-    agentShortcut(press({ key: "x", metaKey: true }), "chat", true),
+    agentShortcut(press({ key: "x", metaKey: true }), "chat", true, "mac"),
     "close-session",
   );
   assert.equal(
-    agentShortcut(press({ key: "x", metaKey: true }), "terminal", false),
+    agentShortcut(press({ key: "x", metaKey: true }), "terminal", false, "mac"),
     null,
   );
   assert.equal(
-    agentShortcut(press({ key: "x", ctrlKey: true }), "chat", false),
+    agentShortcut(press({ key: "x", ctrlKey: true }), "chat", false, "mac"),
     null,
   );
   assert.equal(
@@ -116,6 +179,7 @@ test("Command+X closes the active chat tab unless text is selected", () => {
       press({ key: "x", metaKey: true, shiftKey: true }),
       "chat",
       false,
+      "mac",
     ),
     null,
   );
@@ -128,6 +192,7 @@ test("Command+X closes the active chat tab unless text is selected", () => {
       }),
       "chat",
       false,
+      "mac",
     ),
     null,
   );
@@ -140,6 +205,7 @@ test("Command+X closes the active chat tab unless text is selected", () => {
       }),
       "chat",
       false,
+      "mac",
     ),
     "close-session",
   );
