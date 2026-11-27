@@ -3,10 +3,33 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 .chat-pane[hidden] {
   display: none;
+}
+
+.chat-jump {
+  position: absolute;
+  right: calc(var(--scrollbar-size) + 14px);
+  bottom: 14px;
+  z-index: 6;
+  border: 0;
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px var(--shadow-color);
+  color: var(--muted);
+}
+
+.chat-jump:hover:not(:disabled) {
+  background: var(--palette-primary);
+  color: var(--on-accent);
+}
+
+[data-theme="dark"] .chat-jump:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
 }
 
 .chat {

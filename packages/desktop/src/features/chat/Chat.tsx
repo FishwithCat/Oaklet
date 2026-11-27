@@ -9,6 +9,7 @@ import {
   type WheelEvent,
 } from "react";
 import { TerminalBoxRegular } from "@mingcute/react/core-regular";
+import { ArrowBigUpDashFilled } from "@mingcute/react/core-filled";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
@@ -125,6 +126,7 @@ export function Chat({
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [scrolled, setScrolled] = useState(false);
   const chatPaneRef = useRef<HTMLElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
@@ -160,6 +162,7 @@ export function Chat({
     // scroll event reads as "not at the bottom".
     element.scrollTop = element.scrollHeight;
     lastScrollTopRef.current = element.scrollTop;
+    setScrolled(element.scrollTop > 0);
   }
 
   useLayoutEffect(() => {
@@ -235,6 +238,7 @@ export function Chat({
       lastScrollTopRef.current,
     );
     lastScrollTopRef.current = top;
+    setScrolled(top > 0);
   }
 
   function onWheel(event: WheelEvent<HTMLElement>) {
@@ -245,6 +249,23 @@ export function Chat({
     if (event.deltaY < 0 && element && element.scrollTop > 0) {
       stickToBottomRef.current = false;
     }
+  }
+
+  function jumpToLastUserMessage() {
+    const element = chatRef.current;
+    if (!element) return;
+    const anchors = element.querySelectorAll<HTMLElement>(".msg.user");
+    const target = anchors[anchors.length - 1];
+    if (!target) return;
+    stickToBottomRef.current = false;
+    const top =
+      target.getBoundingClientRect().top -
+      element.getBoundingClientRect().top +
+      element.scrollTop;
+    // Keep the message in the thread's top padding instead of flush with the
+    // pane edge, and clamp at the start for the first message.
+    const inset = Number.parseFloat(getComputedStyle(element).paddingTop) || 0;
+    element.scrollTo({ top: Math.max(0, top - inset), behavior: "smooth" });
   }
 
   function updateDraft(value: string) {
@@ -482,15 +503,27 @@ export function Chat({
             />
           )}
         </div>
-        {active && pending.length > 0 && (
-          <PendingMessages
-            key={activeTabId}
-            sessionId={activeTabId}
-            pending={pending}
-            onRemovePending={onRemovePending}
-          />
+        {scrolled && (
+          <button
+            type="button"
+            className="icon-button chat-jump"
+            aria-label="Back to your last message"
+            title="Back to your last message"
+            onClick={jumpToLastUserMessage}
+          >
+            <ArrowBigUpDashFilled size={16} aria-hidden="true" />
+          </button>
         )}
       </main>
+
+      {active && pending.length > 0 && (
+        <PendingMessages
+          key={activeTabId}
+          sessionId={activeTabId}
+          pending={pending}
+          onRemovePending={onRemovePending}
+        />
+      )}
 
       {!welcome && (
         <ChatFind
