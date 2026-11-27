@@ -11,3 +11,10 @@
 - `packages/core/build.rs` embeds the files at compile time, and `packages/core/src/store/migrations.rs` applies pending migrations at startup, one transaction per migration.
 - The runner never drops tables. A pre-V0 database is refused with a clear error; reset it manually from the shell (delete `oaklet.db`) before first running this build.
 - Run `cargo test` and `cargo clippy --all-targets` in `packages/core` after changing a migration or the runner. The in-house runner is intentional; do not replace it with a migration framework as part of an unrelated change.
+
+# UI Style
+
+- **Minimize borders and background fills**: separate content with spacing, typography, alignment, and subtle dividers before adding a border or a colored surface. Do not wrap ordinary settings rows, messages, or status text in bordered or tinted cards.
+- Reserve borders and backgrounds for controls and states that need them: inputs, focus rings, selection, dialogs/popovers and their backdrop, warnings/errors, and code or diff blocks.
+- Use the existing theme tokens (`--border`, `--panel`, `--panel-muted`, `--accent-soft`, `--hover-overlay`, `--subtle-overlay`) instead of hard-coded colors, and do not introduce one-off card treatments.
+- When unsure, remove the container: a heading plus well-spaced content is usually enough.
