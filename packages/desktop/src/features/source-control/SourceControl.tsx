@@ -190,7 +190,7 @@ export function SourceControl({
               text={patch}
               error={tab === "changes" && changesError ? "Refresh to load this diff." : diffError}
               landing={landing}
-              onQuote={onQuote}
+              onQuote={active ? onQuote : undefined}
               onPreviousFile={previous ? () => selectFile(previous.path, "last") : undefined}
               onNextFile={next ? () => selectFile(next.path, "first") : undefined}
             />

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -11,6 +12,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { QuoteToChatButton } from "../../shared/SelectionActionButton";
+import { useSelectionAction } from "../../shared/useSelectionAction";
 import { commandForTerminal } from "./terminal-command";
 import { scrollbarGeometry } from "./terminal-scrollbar";
 import { terminalTheme } from "./terminal-theme";
@@ -22,7 +25,6 @@ type TerminalExit = { id: string; code: number | null };
 export type TerminalPaneHandle = {
   focus: () => void;
   run: (command: string) => void;
-  getSelection: () => string;
 };
 
 function getTerminalTheme() {
@@ -41,12 +43,12 @@ export function newSessionId(): string {
 export function TerminalPane({
   active,
   workspace,
-  onSelectionChange,
+  onQuote,
   ref,
 }: {
   active: boolean;
   workspace: string;
-  onSelectionChange: (selected: boolean) => void;
+  onQuote?: (text: string) => void;
   ref?: Ref<TerminalPaneHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -66,6 +68,31 @@ export function TerminalPane({
   const readyRef = useRef(false);
   const pendingRef = useRef<string[]>([]);
   const theme = useResolvedTheme();
+  const readSelection = useCallback((host: HTMLElement) => {
+    const text = termRef.current?.getSelection();
+    const highlight = host.querySelector(".xterm-selection");
+    if (!text || !highlight) return;
+    // xterm's DOM renderer paints the visible cells for wrapped and column selections.
+    const rows = Array.from(highlight.children, (row) => row.getBoundingClientRect())
+      .filter(({ width, height }) => width > 0 && height > 0);
+    if (!rows.length) return;
+    return {
+      text,
+      rect: {
+        left: Math.min(...rows.map(({ left }) => left)),
+        right: Math.max(...rows.map(({ right }) => right)),
+        top: rows[0].top,
+        bottom: rows[rows.length - 1].bottom,
+      },
+    };
+  }, []);
+  const selection = useSelectionAction({
+    active: active && !!onQuote,
+    containerRef: hostRef,
+    readSelection,
+    preferBelow: true,
+  });
+  const { clearSelection } = selection;
 
   function flushPending() {
     const sessionId = sessionIdRef.current;
@@ -246,10 +273,15 @@ export function TerminalPane({
       }
       sync();
     });
-    const stopScroll = term.onScroll(sync);
+    const stopScroll = term.onScroll(() => {
+      sync();
+      clearSelection();
+    });
     const stopWrite = term.onWriteParsed(sync);
     const stopBuffer = term.buffer.onBufferChange(sync);
-    const stopSelection = term.onSelectionChange(() => onSelectionChange(term.hasSelection()));
+    const stopSelection = term.onSelectionChange(() => {
+      if (!term.hasSelection()) clearSelection();
+    });
     const observer = new ResizeObserver(fitToHost);
     observer.observe(host);
 
@@ -344,7 +376,6 @@ export function TerminalPane({
     () => ({
       focus: () => termRef.current?.focus(),
       run,
-      getSelection: () => termRef.current?.getSelection() ?? "",
     }),
     [],
   );
@@ -371,6 +402,7 @@ export function TerminalPane({
           }}
         />
       </div>
+      {active && onQuote && <QuoteToChatButton selection={selection} onAction={onQuote} />}
     </div>
   );
 }

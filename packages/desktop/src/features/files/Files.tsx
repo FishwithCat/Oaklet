@@ -16,7 +16,6 @@ import type { Extension } from "@codemirror/state";
 import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import { PaneResizer } from "../../shared/PaneResizer";
-import { QuoteToChatButton } from "../../shared/QuoteToChatButton";
 import { errorText } from "../../shared/error-text";
 import { supportsOutline } from "../../shared/source-symbol";
 import { FileOutline } from "./FileOutline";
@@ -67,7 +66,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
   const [previewFontSize, setPreviewFontSize] = useState(PREVIEW_FONT_SIZE_DEFAULT);
   const [syntax, setSyntax] = useState<Extension>([]);
   const [editorReadyPath, setEditorReadyPath] = useState<string | null>(null);
-  const [editorHasSelection, setEditorHasSelection] = useState(false);
   const [lineMarks, setLineMarks] = useState<{ path: string; marks: readonly ChangedLine[] } | null>(null);
   const [browserWidth, setBrowserWidth] = useState(300);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
@@ -315,12 +313,6 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                   : <CopyRegular size={14} aria-hidden="true" />}
               </button>
               <div className="files-actions">
-                {document && !preview && onQuote && (
-                  <QuoteToChatButton disabled={busy || !editorHasSelection} onClick={() => {
-                    const quote = editor.current?.quoteSelection();
-                    if (quote) onQuote(quote);
-                  }} />
-                )}
                 {document && supportsOutline(document.path) && (
                   <FileOutline key={document.path} workspace={workspace} path={document.path}
                     source={document.original} dirty={dirty} busy={busy || editorReadyPath !== document.path}
@@ -336,7 +328,7 @@ export default function Files({ ref, active, workspace, refreshToken, changes, o
                 <Suspense fallback={<div className="files-editor" />}>
                   <FileEditor key={document.path} ref={editor} path={document.path} value={document.content} syntax={syntax} readOnly={busy}
                     onReadyChange={setEditorReadyPath}
-                    onSelectionChange={setEditorHasSelection}
+                    onQuote={active ? onQuote : undefined}
                     marks={lineMarks?.path === document.path ? lineMarks.marks : NO_CHANGES}
                     onChange={(content) => {
                       dirtyRef.current = content !== editorText(document.original);

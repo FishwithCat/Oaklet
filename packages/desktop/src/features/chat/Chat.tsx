@@ -34,7 +34,8 @@ import type {
   SendMode,
   StepUsage,
 } from "./session-model";
-import { useSelectionAction } from "./useSelectionAction";
+import { SelectionActionButton } from "../../shared/SelectionActionButton";
+import { useSelectionAction } from "../../shared/useSelectionAction";
 
 export type ChatHandle = {
   prefill: (prompt: string) => void;
@@ -146,8 +147,7 @@ export function Chat({
   activeRef.current = active;
   // Any blank thread is a welcome screen, including a new tab from Command+N.
   const welcome = items.length === 0 && !hasMore;
-  const { selectionAction, selectionButtonRef, clearSelection } =
-    useSelectionAction({ active: active && !welcome, containerRef: chatRef });
+  const selection = useSelectionAction({ active: active && !welcome, containerRef: chatRef });
 
   function pinToBottom() {
     const element = chatRef.current;
@@ -164,7 +164,7 @@ export function Chat({
     lastTabIdRef.current = activeTabId;
     setInput(draftsRef.current.get(activeTabId) ?? "");
     setAttachments(attachmentsRef.current.get(activeTabId) ?? []);
-    clearSelection();
+    selection.clearSelection();
     setHistoryAnchor(null);
     stickToBottomRef.current = true;
     pinToBottom();
@@ -232,7 +232,6 @@ export function Chat({
       lastScrollTopRef.current,
     );
     lastScrollTopRef.current = top;
-    if (selectionAction) clearSelection();
   }
 
   function onWheel(event: WheelEvent<HTMLElement>) {
@@ -496,24 +495,11 @@ export function Chat({
         />
       )}
 
-      {active && selectionAction && (
-        <button
-          ref={selectionButtonRef}
-          type="button"
-          className={`selection-action${
-            selectionAction.above ? "" : " below"
-          }`}
-          style={{ left: selectionAction.x, top: selectionAction.y }}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => {
-            onSendToTerminal(selectionAction.text);
-            clearSelection();
-          }}
-          title="Run the selected text in the terminal"
-        >
-          <TerminalBoxRegular size={13} />
+      {active && (
+        <SelectionActionButton selection={selection} onAction={onSendToTerminal} title="Run the selected text in the terminal">
+          <TerminalBoxRegular size={13} aria-hidden="true" />
           Send to Terminal
-        </button>
+        </SelectionActionButton>
       )}
 
       {active && checkoutControl?.((keepRequest, text) => { void submit(attachments, keepRequest, text); })}

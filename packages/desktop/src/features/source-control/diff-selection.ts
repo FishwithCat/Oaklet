@@ -2,12 +2,7 @@ import { formatLineSpan, quoteExcerpt } from "../../shared/chat-quote.ts";
 
 type SelectedRow = { oldLine: number; newLine: number; text: string };
 
-export function readDiffSelection(container: HTMLElement | null): SelectedRow[] {
-  const selection = container?.ownerDocument.getSelection();
-  if (!container || !selection?.rangeCount || selection.isCollapsed) return [];
-  const range = selection.getRangeAt(0);
-  if (!container.contains(range.commonAncestorContainer)) return [];
-
+export function readDiffSelection(container: HTMLElement, range: Range): SelectedRow[] {
   const rows: SelectedRow[] = [];
   for (const cell of container.querySelectorAll<HTMLElement>("[data-old-line], [data-new-line]")) {
     if (!range.intersectsNode(cell)) continue;
