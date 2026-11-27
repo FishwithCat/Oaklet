@@ -1,0 +1,150 @@
+.plan-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-compare-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-view-select {
+  margin-left: auto;
+  max-width: 55%;
+}
+
+.plan-compare-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-muted);
+}
+
+.plan-compare-tabs button {
+  flex: 1;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.plan-compare-tabs button.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+
+.plan-compare-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.plan-compare-legend .added {
+  color: var(--green);
+}
+
+.plan-compare-legend .modified {
+  color: var(--yellow);
+}
+
+.plan-compare-legend .removed {
+  color: var(--red);
+}
+
+.plan-compare-canvas {
+  position: relative;
+  height: clamp(220px, 30vh, 320px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-muted);
+}
+
+.plan-compare-expand {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.plan-compare-expand:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.plan-compare-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--backdrop);
+}
+
+.plan-compare-canvas.expanded {
+  position: fixed;
+  inset: 18px;
+  z-index: 51;
+  height: auto;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px var(--shadow-color);
+}
+
+.plan-compare-modes {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 3;
+  width: min(340px, calc(100% - 240px));
+  background: var(--panel);
+  box-shadow: 0 4px 16px var(--shadow-color);
+  transform: translateX(-50%);
+}
+
+.plan-compare-diagram {
+  width: 100%;
+  height: 100%;
+}
+
+.plan-compare-status,
+.plan-compare-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.plan-compare-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.plan-compare-error p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

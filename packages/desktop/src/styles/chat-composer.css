@@ -1,0 +1,632 @@
+.composer-wrap {
+  flex: none;
+  padding: 7px 12px 5px;
+  border-top: 1px solid var(--panel-muted-border);
+  background: var(--bg);
+  transition: border-color 120ms ease;
+}
+
+.composer-wrap:focus-within {
+  border-top-color: var(--panel-muted-border-strong);
+}
+
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+}
+
+.composer-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.composer textarea {
+  width: 100%;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 4px 0;
+  min-height: 28px;
+  max-height: 180px;
+  line-height: 1.5;
+}
+
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+.mention-menu {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  min-width: min(220px, 100%);
+  max-width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--panel-muted-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px color-mix(in srgb, #000 24%, transparent);
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mention-option.active {
+  background: var(--accent-soft);
+}
+
+.mention-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.mention-name {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.mention-description {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mention-option kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--panel-muted-border);
+  border-radius: 4px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 4px 5px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  font-size: 12px;
+}
+
+.composer-attachment img,
+.composer-attachment-icon {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 5px;
+}
+
+.composer-attachment-thumb {
+  display: block;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  line-height: 0;
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.composer-attachment img {
+  object-fit: cover;
+  display: block;
+}
+
+.composer-attachment-thumb:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.composer-attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-muted-strong);
+  color: var(--muted);
+}
+
+.composer-attachment-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-size {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.composer-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.composer-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 11.5px;
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 6px;
+}
+
+.composer button.stop {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+
+.composer-input button.stop {
+  padding-inline-start: 4px;
+}
+
+.composer-meta {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.composer-context {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+}
+
+.composer-model {
+  max-width: 200px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-wrap:not([data-welcome]) .composer-model {
+  margin-inline-start: auto;
+}
+
+.composer-usage {
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+button.composer-usage:is(:hover, [aria-expanded="true"]):not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+  opacity: 1;
+}
+
+.context-inspector {
+  position: absolute;
+  left: -8px;
+  bottom: calc(100% + 10px);
+  z-index: 10;
+  width: min(300px, calc(100vw - 40px));
+  padding: 12px 14px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.context-inspector h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.context-inspector-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.context-inspector-summary strong {
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.context-inspector-summary span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.context-inspector-bar {
+  display: flex;
+  gap: 1px;
+  height: 8px;
+  margin: 10px 0 8px;
+  border-radius: 999px;
+  background: var(--panel-muted-strong);
+  overflow: hidden;
+}
+
+.context-inspector-bar span {
+  flex: none;
+  height: 100%;
+}
+
+.context-inspector [data-kind="system"] {
+  background: var(--context-system);
+}
+
+.context-inspector [data-kind="instructions"] {
+  background: var(--context-instructions);
+}
+
+.context-inspector [data-kind="skills"] {
+  background: var(--context-skills);
+}
+
+.context-inspector [data-kind="tools"] {
+  background: var(--context-tools);
+}
+
+.context-inspector [data-kind="conversation"] {
+  background: var(--context-conversation);
+}
+
+.context-inspector [data-kind="tool_results"] {
+  background: var(--context-tool-results);
+}
+
+.context-inspector-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-inspector-rows {
+  display: flex;
+  flex-direction: column;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.context-inspector-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 2px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.context-inspector-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.context-inspector-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-inspector-tokens {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.context-inspector-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.8;
+}
+
+.context-meter {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 26px;
+  margin-inline-start: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.context-meter:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: transparent;
+}
+
+.context-meter:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.context-meter.compacting {
+  animation: context-pulse 1.2s ease-in-out infinite;
+}
+
+.context-meter.elevated {
+  color: var(--yellow);
+}
+
+.context-meter.high {
+  color: color-mix(in srgb, var(--red) 60%, var(--yellow));
+}
+
+.context-meter.critical {
+  color: var(--red);
+}
+
+@keyframes context-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.shortcut-trigger-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.shortcut-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.shortcut-trigger:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+}
+
+.shortcuts-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 10;
+  width: 180px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--text) 14%, transparent);
+}
+
+.shortcuts-popover::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+
+.shortcuts-popover h3 {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.shortcuts-popover dl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shortcut dt,
+.shortcut dd {
+  margin: 0;
+}
+
+.shortcut kbd {
+  display: inline-block;
+  min-width: 34px;
+  padding: 2px 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.shortcut dd {
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+/* The welcome screen keeps the framed composer from before the dock. */
+.composer-wrap[data-welcome] {
+  padding: 10px 18px 16px;
+  border-top: 0;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in srgb, var(--bg) 95%, transparent) 40%
+  );
+}
+
+.composer-wrap[data-welcome] .composer {
+  margin: 0 30px 0 calc(30px + var(--scrollbar-size) - 17px);
+  gap: 6px;
+  padding: 10px 12px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.composer-wrap[data-welcome] .composer:focus-within {
+  border-color: var(--accent-border-strong);
+}
+
+.composer-wrap[data-welcome] .composer textarea {
+  padding: 4px 2px;
+  min-height: 24px;
+}
+
+.composer-wrap[data-welcome] .composer-attachments,
+.composer-wrap[data-welcome] .composer-error {
+  margin: 0;
+  padding: 0 2px;
+}
+
+.composer-wrap[data-welcome] .composer-footer {
+  min-height: 24px;
+  padding: 0 2px;
+}
+
+.composer-wrap[data-welcome] .composer-footer button.stop {
+  width: 24px;
+  height: 24px;
+}
+
+.composer-wrap[data-welcome] .composer-model {
+  max-width: min(50vw, 260px);
+}
+
+.composer-wrap[data-welcome] .context-meter {
+  display: inline-flex;
+  flex: none;
+  width: auto;
+  height: auto;
+  margin: 0 0 0 -3px;
+  padding: 3px;
+}
+
+.composer-wrap[data-welcome] .shortcut-trigger {
+  width: auto;
+  height: auto;
+  gap: 3px;
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.composer-wrap[data-welcome] .shortcuts-popover {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.composer-wrap[data-welcome] .shortcuts-popover::after {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+}
