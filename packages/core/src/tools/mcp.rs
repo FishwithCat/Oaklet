@@ -1254,7 +1254,7 @@ rl.on("line", (line) => {
                                     }
                                 } else {
                                     let _ = stream.write_all(
-                                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n",
+                                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                                     );
                                 }
                             }
