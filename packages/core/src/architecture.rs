@@ -34,6 +34,8 @@ pub const DEFAULT_MODEL_PATH: &str = "architecture/model.c4";
 const MAX_DIAGNOSTICS: usize = 50;
 const MAX_DIAGNOSTIC_CHARS: usize = 2_000;
 pub(crate) const MAX_SOURCE_FILE_BYTES: u64 = 1_000_000;
+const STATE_UNAVAILABLE: &str = "Architecture state is unavailable.";
+const SUPERSEDED: &str = "Architecture load was superseded by a newer request.";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +152,20 @@ pub struct ArchitectureCache {
     generation: u64,
 }
 
+impl ArchitectureCache {
+    fn owns_slot(&self, workspace: &str, generation: u64) -> bool {
+        self.loads
+            .get(workspace)
+            .is_some_and(|slot| slot.generation == generation)
+    }
+
+    fn release_slot(&mut self, workspace: &str, generation: u64) {
+        if self.owns_slot(workspace, generation) {
+            self.loads.remove(workspace);
+        }
+    }
+}
+
 struct LoadSlot {
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -171,7 +187,7 @@ impl LoadTicket {
             let mut cache = shared
                 .architecture
                 .lock()
-                .map_err(|_| "Architecture state is unavailable.".to_string())?;
+                .map_err(|_| STATE_UNAVAILABLE.to_string())?;
             if let Some(previous) = cache.loads.remove(&workspace) {
                 previous.cancel.store(true, Ordering::SeqCst);
             }
@@ -199,15 +215,15 @@ impl LoadTicket {
             .shared
             .architecture
             .lock()
-            .map_err(|_| "Architecture state is unavailable.".to_string())?;
-        if cache
-            .loads
-            .get(&self.workspace)
-            .is_some_and(|slot| slot.generation == self.generation)
-        {
+            .map_err(|_| STATE_UNAVAILABLE.to_string())?;
+        self.require_in(&cache)
+    }
+
+    fn require_in(&self, cache: &ArchitectureCache) -> Result<(), String> {
+        if cache.owns_slot(&self.workspace, self.generation) {
             Ok(())
         } else {
-            Err("Architecture load was superseded by a newer request.".into())
+            Err(SUPERSEDED.into())
         }
     }
 }
@@ -221,13 +237,8 @@ impl ArchitectureCache {
 
 impl Drop for LoadTicket {
     fn drop(&mut self) {
-        if let Ok(mut cache) = self.shared.architecture.lock()
-            && cache
-                .loads
-                .get(&self.workspace)
-                .is_some_and(|slot| slot.generation == self.generation)
-        {
-            cache.loads.remove(&self.workspace);
+        if let Ok(mut cache) = self.shared.architecture.lock() {
+            cache.release_slot(&self.workspace, self.generation);
         }
     }
 }
