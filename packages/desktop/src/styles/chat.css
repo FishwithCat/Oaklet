@@ -1,3 +1,14 @@
+.chat-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-pane[hidden] {
+  display: none;
+}
+
 .chat {
   flex: 1;
   /* Always reserve the scrollbar so it can't shift the thread when it appears. */
@@ -10,8 +21,12 @@
   padding: 30px 18px 10px calc(18px + var(--scrollbar-size));
 }
 
-.chat[hidden] {
-  display: none;
+.pending-messages {
+  flex: none;
+  max-height: 35vh;
+  overflow: auto;
+  scrollbar-gutter: stable both-edges;
+  padding: 6px 18px 0;
 }
 
 .chat-drop {
@@ -206,13 +221,41 @@
   line-height: 1.55;
 }
 
-.msg.user.pending {
+.msg.user.pending .bubble {
+  position: relative;
+  padding-inline-end: 38px;
+  border: 1px dashed var(--panel-muted-border-strong);
+  background: transparent;
+}
+
+.msg.user.pending .bubble > :not(.pending-remove) {
   opacity: 0.68;
 }
 
-.msg.user.pending .bubble {
-  border: 1px dashed var(--panel-muted-border-strong);
-  background: transparent;
+.msg.user.pending .pending-remove {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 4px;
+  margin-block: auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  transition: none;
+}
+
+.msg.user.pending .message-images,
+.msg.user.pending .message-image {
+  max-width: 100%;
+}
+
+.msg.user.pending .message-images:not(:last-child) {
+  margin-bottom: 6px;
+}
+
+.msg.user.pending .message-image img {
+  max-width: min(300px, 100%);
 }
 
 .message-images {

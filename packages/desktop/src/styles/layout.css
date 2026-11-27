@@ -77,7 +77,7 @@
   padding-bottom: 40px;
 }
 
-.main.empty-state .chat {
+.main.empty-state .chat-pane {
   flex: none;
   margin-top: auto;
 }

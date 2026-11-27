@@ -55,6 +55,7 @@ pub fn run() {
             chat::commands::session_list,
             chat::commands::session_get,
             chat::commands::session_send,
+            chat::commands::session_remove_pending,
             chat::worktree::session_worktree,
             chat::worktree::session_worktree_recover,
             chat::worktree::session_archive,

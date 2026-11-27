@@ -13,7 +13,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ChatComposer, type ChatComposerHandle } from "./ChatComposer";
 import { ChatFind } from "./ChatFind";
 import { ChatTabs } from "./ChatTabs";
-import { ChatThread } from "./ChatThread";
+import { ChatThread, PendingMessages } from "./ChatThread";
 import { Welcome } from "./Welcome";
 import { quotePaths, readDroppedFile, type Attachment } from "./attachments";
 import type { WorktreeInfo } from "./WorktreeControl";
@@ -53,6 +53,7 @@ export function Chat({
   onCloseTab,
   items,
   pending,
+  onRemovePending,
   firstSeq,
   hasMore,
   loadingOlder,
@@ -88,6 +89,7 @@ export function Chat({
   onCloseTab: (id: string) => void;
   items: Item[];
   pending: PendingInput[];
+  onRemovePending: (sessionId: string, pendingId: string) => void;
   firstSeq: number | null;
   hasMore: boolean;
   loadingOlder: boolean;
@@ -123,7 +125,8 @@ export function Chat({
 }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const chatRef = useRef<HTMLElement>(null);
+  const chatPaneRef = useRef<HTMLElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ChatComposerHandle>(null);
   const stickToBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
@@ -147,7 +150,7 @@ export function Chat({
   activeRef.current = active;
   // Any blank thread is a welcome screen, including a new tab from Command+N.
   const welcome = items.length === 0 && !hasMore;
-  const selection = useSelectionAction({ active: active && !welcome, containerRef: chatRef });
+  const selection = useSelectionAction({ active: active && !welcome, containerRef: chatPaneRef });
 
   function pinToBottom() {
     const element = chatRef.current;
@@ -443,45 +446,48 @@ export function Chat({
         worktrees={worktrees}
       />
 
-      <main
-        className="chat"
-        hidden={!active}
-        ref={chatRef}
-        onScroll={onScroll}
-        onWheel={onWheel}
-      >
-        {hasMore && (
-          <div className="load-older">
-            <button
-              type="button"
-              disabled={loadingOlder || compacting}
-              onClick={loadEarlier}
-            >
-              {loadingOlder ? "Loading earlier…" : "Load earlier"}
-            </button>
-            {loadOlderError && (
-              <p className="load-older-error" role="alert">
-                {loadOlderError}
-              </p>
-            )}
-          </div>
-        )}
-        {items.length === 0 ? (
-          <Welcome />
-        ) : (
-          <ChatThread
+      <main className="chat-pane" hidden={!active} ref={chatPaneRef}>
+        <div className="chat" ref={chatRef} onScroll={onScroll} onWheel={onWheel}>
+          {hasMore && (
+            <div className="load-older">
+              <button
+                type="button"
+                disabled={loadingOlder || compacting}
+                onClick={loadEarlier}
+              >
+                {loadingOlder ? "Loading earlier…" : "Load earlier"}
+              </button>
+              {loadOlderError && (
+                <p className="load-older-error" role="alert">
+                  {loadOlderError}
+                </p>
+              )}
+            </div>
+          )}
+          {items.length === 0 ? (
+            <Welcome />
+          ) : (
+            <ChatThread
+              sessionId={activeTabId}
+              items={items}
+              running={running}
+              compacting={compacting}
+              activeRunId={activeRunId}
+              onApproval={onApproval}
+              onConfirmPlan={(version) => onConfirmPlan(activeTabId, version)}
+              onRevisePlan={() => composerRef.current?.focus()}
+              onCheckPlanBaseline={(version) => onCheckPlanBaseline(activeTabId, version)}
+              onLoadPlanCompare={(version, viewId) => onLoadPlanCompare(activeTabId, version, viewId)}
+              onOpenFile={onOpenFile}
+            />
+          )}
+        </div>
+        {active && pending.length > 0 && (
+          <PendingMessages
+            key={activeTabId}
             sessionId={activeTabId}
-            items={items}
             pending={pending}
-            running={running}
-            compacting={compacting}
-            activeRunId={activeRunId}
-            onApproval={onApproval}
-            onConfirmPlan={(version) => onConfirmPlan(activeTabId, version)}
-            onRevisePlan={() => composerRef.current?.focus()}
-            onCheckPlanBaseline={(version) => onCheckPlanBaseline(activeTabId, version)}
-            onLoadPlanCompare={(version, viewId) => onLoadPlanCompare(activeTabId, version, viewId)}
-            onOpenFile={onOpenFile}
+            onRemovePending={onRemovePending}
           />
         )}
       </main>

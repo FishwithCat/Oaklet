@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileRegular } from "@mingcute/react/core-regular";
+import { CloseRegular, FileRegular } from "@mingcute/react/core-regular";
 import { ImageLightbox } from "../../shared/ImageLightbox";
 import { MarkdownText } from "../../shared/Markdown";
 import type { SentAttachment } from "./attachments";
@@ -24,33 +24,47 @@ function UserMessage({
   text,
   attachments,
   onPreview,
+  onRemove,
 }: {
   text: string;
   attachments: SentAttachment[];
   onPreview: (attachment: ImageAttachment) => void;
+  onRemove?: () => void;
 }) {
   const images = attachments.filter(isImage);
   const files = attachments.filter((attachment) => attachment.kind === "file");
+  const imagePreviews = images.length > 0 && (
+    <div className="message-images">
+      {images.map((attachment, index) => (
+        <button
+          key={`${attachment.name}-${index}`}
+          type="button"
+          className="message-image"
+          aria-label={`Preview ${attachment.name}`}
+          title="Preview image"
+          onClick={() => onPreview(attachment)}
+        >
+          <img src={attachment.thumbnail} alt={attachment.name} />
+        </button>
+      ))}
+    </div>
+  );
   return (
     <>
-      {images.length > 0 && (
-        <div className="message-images">
-          {images.map((attachment, index) => (
-            <button
-              key={`${attachment.name}-${index}`}
-              type="button"
-              className="message-image"
-              aria-label={`Preview ${attachment.name}`}
-              title="Preview image"
-              onClick={() => onPreview(attachment)}
-            >
-              <img src={attachment.thumbnail} alt={attachment.name} />
-            </button>
-          ))}
-        </div>
-      )}
-      {(text || files.length > 0) && (
+      {!onRemove && imagePreviews}
+      {(text || files.length > 0 || onRemove) && (
         <div className="bubble">
+          {onRemove && (
+            <button
+              type="button"
+              className="icon-button pending-remove"
+              aria-label="Remove queued message"
+              onClick={onRemove}
+            >
+              <CloseRegular size={14} aria-hidden="true" />
+            </button>
+          )}
+          {onRemove && imagePreviews}
           {files.length > 0 && (
             <div className="bubble-attachments">
               {files.map((attachment, index) => (
@@ -74,7 +88,6 @@ function UserMessage({
 export function ChatThread({
   sessionId,
   items,
-  pending,
   running,
   compacting,
   activeRunId,
@@ -87,7 +100,6 @@ export function ChatThread({
 }: {
   sessionId: string;
   items: Item[];
-  pending: PendingInput[];
   running: boolean;
   compacting: boolean;
   activeRunId: string | null;
@@ -206,15 +218,6 @@ export function ChatThread({
           </div>
         );
       })}
-      {pending.map((input) => (
-        <div className="msg user pending" key={`pending-${input.id}`}>
-          <UserMessage
-            text={input.text}
-            attachments={input.attachments ?? []}
-            onPreview={setPreview}
-          />
-        </div>
-      ))}
       {compacting && (
         <div className="notice" role="status">
           Compacting context…
@@ -229,5 +232,40 @@ export function ChatThread({
         />
       )}
     </div>
+  );
+}
+
+export function PendingMessages({
+  sessionId,
+  pending,
+  onRemovePending,
+}: {
+  sessionId: string;
+  pending: PendingInput[];
+  onRemovePending: (sessionId: string, pendingId: string) => void;
+}) {
+  const [preview, setPreview] = useState<ImageAttachment | null>(null);
+  return (
+    <section className="pending-messages" aria-label="Queued messages" aria-live="polite">
+      <div className="thread">
+        {pending.map((input) => (
+          <div className="msg user pending" key={input.id}>
+            <UserMessage
+              text={input.text}
+              attachments={input.attachments ?? []}
+              onPreview={setPreview}
+              onRemove={() => onRemovePending(sessionId, input.id)}
+            />
+          </div>
+        ))}
+      </div>
+      {preview && (
+        <ImageLightbox
+          src={preview.thumbnail}
+          alt={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
+    </section>
   );
 }

@@ -235,6 +235,30 @@ pub async fn session_send(
 }
 
 #[tauri::command]
+pub async fn session_remove_pending(
+    window: WebviewWindow,
+    state: State<'_, SharedState>,
+    session_id: String,
+    pending_id: String,
+) -> Result<bool, String> {
+    let workspace = workspace_for_window(&state, window.label())?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = state
+            .chat
+            .store
+            .session_meta(&session_id)?
+            .ok_or_else(|| "This session no longer exists.".to_string())?;
+        if Path::new(&meta.workspace) != workspace.as_path() {
+            return Err("This chat belongs to another workspace.".into());
+        }
+        Ok(state.chat.remove_pending(&session_id, &pending_id))
+    })
+    .await
+    .map_err(|error| format!("Could not remove the queued message: {error}"))?
+}
+
+#[tauri::command]
 pub async fn session_confirm_plan(
     app: AppHandle,
     window: WebviewWindow,

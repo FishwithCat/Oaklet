@@ -421,6 +421,7 @@ function App() {
           onCloseTab={session.closeTab}
           items={session.items}
           pending={session.pending}
+          onRemovePending={session.removePending}
           firstSeq={session.firstSeq}
           hasMore={session.hasMore}
           loadingOlder={session.loadingOlder}

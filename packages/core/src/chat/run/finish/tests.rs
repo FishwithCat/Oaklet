@@ -505,6 +505,27 @@ fn queue_message(ctx: &RunContext, text: &str) {
 }
 
 #[tokio::test]
+async fn a_removed_queue_message_never_starts_a_turn() {
+    let (ctx, store, root) = live_run();
+    queue_message(&ctx, "@queue remove me");
+    queue_message(&ctx, "@queue keep me");
+    let chat = &ctx.state.chat;
+    let pending = chat.pending_views("s");
+
+    assert!(chat.remove_pending("s", &pending[0].id));
+    assert!(!chat.remove_pending("s", &pending[0].id));
+    let live = chat.live_view("s").unwrap();
+    assert_eq!(live.pending.len(), 1);
+    assert_eq!(live.pending[0].id, pending[1].id);
+    assert!(chat.remove_pending("s", &pending[1].id));
+
+    ctx.finish_done(Vec::new()).await;
+    assert!(chat.pending_views("s").is_empty());
+    assert_eq!(store.get_session("s").unwrap().unwrap().turns, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
     let (ctx, store, root) = live_run();
     let first = "@queue @arch plan the worker change";
@@ -540,6 +561,8 @@ async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
     assert_eq!(view.items.last().unwrap()["text"], first);
     assert_eq!(store.get_session("s").unwrap().unwrap().turns, 2);
     drop(view);
+    let claimed_id = format!("pending-{first}");
+    assert!(!ctx.state.chat.remove_pending("s", &claimed_id));
     assert!(ctx.prepare_resume("/tmp").is_err());
     assert_eq!(ctx.state.chat.pending_views("s")[0].text, "second");
     std::fs::remove_dir_all(root).ok();

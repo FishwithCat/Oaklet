@@ -409,6 +409,24 @@ impl ChatState {
         Ok(Ok(view.clone()))
     }
 
+    fn remove_pending(&self, session_id: &str, pending_id: &str) -> bool {
+        let mut live = self.live();
+        let Some(queue) = live.pending.get_mut(session_id) else {
+            return false;
+        };
+        let Some(index) = queue.iter().position(|input| input.id == pending_id) else {
+            return false;
+        };
+        queue.remove(index);
+        if queue.is_empty() {
+            live.pending.remove(session_id);
+        }
+        if let Some(run) = live.runs.values().find(|run| run.session_id == session_id) {
+            run.view().pending.retain(|input| input.id != pending_id);
+        }
+        true
+    }
+
     /// Take every steer message queued for this session's next step.
     pub(crate) fn take_steer_inputs<F>(
         &self,

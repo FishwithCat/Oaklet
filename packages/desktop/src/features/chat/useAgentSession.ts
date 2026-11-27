@@ -81,6 +81,7 @@ export function useAgentSession({
   const workspaceRef = useRef(workspace);
   const tabCountRef = useRef(0);
   const compactingIdsRef = useRef(new Set<string>());
+  const pendingRemovalsRef = useRef(new Map<string, Map<string, "removing" | "removed">>());
   const loadingOlderRef = useRef(false);
   const startedForRef = useRef<string | null>(null);
   const onWorkspaceRefreshRef = useRef(onWorkspaceRefresh);
@@ -92,6 +93,11 @@ export function useAgentSession({
   }
 
   function putSession(view: SessionView) {
+    const removals = pendingRemovalsRef.current.get(view.id);
+    // An earlier send or run snapshot can arrive after a removal succeeds.
+    if (removals && view.pending.length > 0) {
+      view = { ...view, pending: view.pending.filter((input) => removals.get(input.id) !== "removed") };
+    }
     commitSessions({ ...sessionsRef.current, [view.id]: view });
   }
 
@@ -124,6 +130,7 @@ export function useAgentSession({
   }
 
   function reset() {
+    pendingRemovalsRef.current.clear();
     commitSessions({});
     commitTabs([]);
     activate("");
@@ -400,6 +407,7 @@ export function useAgentSession({
     const remaining = openTabsRef.current.filter((entry) => entry.id !== id);
     const next = { ...sessionsRef.current };
     delete next[id];
+    pendingRemovalsRef.current.delete(id);
     commitSessions(next);
 
     if (remaining.length === 0) {
@@ -496,6 +504,33 @@ export function useAgentSession({
   function stop() {
     const tab = sessionsRef.current[activeTabIdRef.current];
     if (tab?.running) void invoke("session_stop", { sessionId: tab.id });
+  }
+
+  async function removePending(sessionId: string, pendingId: string) {
+    let removals = pendingRemovalsRef.current.get(sessionId);
+    if (!removals) {
+      removals = new Map();
+      pendingRemovalsRef.current.set(sessionId, removals);
+    }
+    if (removals.has(pendingId)) return;
+    removals.set(pendingId, "removing");
+
+    try {
+      const removed = await invoke<boolean>("session_remove_pending", {
+        sessionId,
+        pendingId,
+      });
+      if (pendingRemovalsRef.current.get(sessionId) !== removals) return;
+      removals.set(pendingId, "removed");
+      updateSession(sessionId, (view) =>
+        removed ? view : appendNotice(view, "muted", "This message is no longer queued."),
+      );
+    } catch (error) {
+      removals.delete(pendingId);
+      if (pendingRemovalsRef.current.get(sessionId) === removals) {
+        updateSession(sessionId, (view) => appendNotice(view, "error", errorText(error)));
+      }
+    }
   }
 
   /** Start the implementation run bound to one validated plan version. */
@@ -785,6 +820,7 @@ export function useAgentSession({
     moveTab,
     closeTab,
     send,
+    removePending,
     confirmPlan,
     checkPlanBaseline,
     loadPlanCompare,
