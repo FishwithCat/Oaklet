@@ -175,7 +175,7 @@ pub async fn session_send(
     };
     let turn = waiting.turn;
 
-    let mode = mode.unwrap_or(SendMode::Normal);
+    let mode = mode.unwrap_or(SendMode::Normal).with_mentions(&text);
     let pending_id = state.next_id();
     let turn = match state.chat.enqueue_input(
         &session_id,

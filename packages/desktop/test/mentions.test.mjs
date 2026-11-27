@@ -28,6 +28,10 @@ test("completion filters by prefix and matches every command at @", () => {
     mentionOptions("AR").map((command) => command.name),
     ["arch"],
   );
+  assert.deepEqual(
+    mentionOptions("Queue").map((command) => command.name),
+    ["queue"],
+  );
   assert.deepEqual(mentionOptions("nope"), []);
 });
 

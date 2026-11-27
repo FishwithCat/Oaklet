@@ -20,6 +20,10 @@ export const MENTION_COMMANDS: MentionCommand[] = [
     name: "worktree",
     description: "Start this chat in a new Git worktree",
   },
+  {
+    name: "queue",
+    description: "Send after the current turn finishes",
+  },
 ];
 
 export type ActiveMention = {

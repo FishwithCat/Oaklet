@@ -434,8 +434,9 @@ export function useAgentSession({
 
     const workspaceAtSend = workspaceRef.current;
     const previous = tab;
+    let optimisticItem: Item | undefined;
     if (mode === "normal" && !compacting) {
-      const userItem: Item =
+      optimisticItem =
         attachments.length > 0
           ? {
               kind: "user",
@@ -446,7 +447,7 @@ export function useAgentSession({
       putSession(
         withItems(
           { ...tab, running: true, activeRunId: null },
-          [...tab.items, userItem],
+          [...tab.items, optimisticItem],
         ),
       );
     } else if (!compacting) {
@@ -469,7 +470,10 @@ export function useAgentSession({
       const current = sessionsRef.current[tab.id];
       // A terminal event may already have replaced the optimistic view.
       if (!current || (!current.running && !compacting)) return true;
-      putSession(applyAcceptedSend(current, mode, session, queued));
+      const confirmed = queued && optimisticItem
+        ? withItems(current, current.items.filter((item) => item !== optimisticItem))
+        : current;
+      putSession(applyAcceptedSend(confirmed, mode, session, queued));
       return true;
     } catch (error) {
       if (workspaceRef.current !== workspaceAtSend) return false;

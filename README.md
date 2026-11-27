@@ -135,6 +135,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   through them.
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
+- While the agent is working, send `@queue` with your message to start a new
+  turn after the current one finishes. A regular message steers the current turn.
 - **Stop** cancels the model request, a running command, or a pending approval.
 - Closing a window or quitting with **⌘Q** (**Alt+F4** on Windows and Linux)
   asks before discarding unsaved file edits or stopping a running chat. Oaklet

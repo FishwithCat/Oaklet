@@ -492,7 +492,7 @@ fn queue_message(ctx: &RunContext, text: &str) {
         .enqueue_input(
             &ctx.session_id,
             "test",
-            SendMode::Steer,
+            SendMode::Steer.with_mentions(text),
             format!("pending-{text}"),
             turn,
             |_| {},
@@ -504,7 +504,8 @@ fn queue_message(ctx: &RunContext, text: &str) {
 #[tokio::test]
 async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
     let (ctx, store, root) = live_run();
-    queue_message(&ctx, "first");
+    let first = "@queue @arch plan the worker change";
+    queue_message(&ctx, first);
     queue_message(&ctx, "second");
 
     let blocker = rusqlite::Connection::open(root.join("oaklet.db")).unwrap();
@@ -525,10 +526,11 @@ async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
     blocker.execute_batch("ROLLBACK").unwrap();
 
     let next = ctx.prepare_resume("/tmp").unwrap().unwrap();
+    assert!(next.ctx.access().planning_only());
     let view = next.ctx.view.lock().unwrap();
     assert_eq!(view.pending.len(), 1);
     assert_eq!(view.pending[0].text, "second");
-    assert_eq!(view.items.last().unwrap()["text"], "first");
+    assert_eq!(view.items.last().unwrap()["text"], first);
     assert_eq!(store.get_session("s").unwrap().unwrap().turns, 2);
     drop(view);
     assert!(ctx.prepare_resume("/tmp").is_err());

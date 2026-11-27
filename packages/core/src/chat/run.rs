@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter};
 
 use super::transcript::{settle_streaming, view_from_window};
-use super::{JobNotice, PendingInputView, RunHandle, SessionView, Tone};
+use super::{InputMode, JobNotice, PendingInputView, RunHandle, SessionView, Tone, mentions};
 use crate::agent::Usage;
 use crate::store::{self, EventPayload, NewUserTurn};
 use crate::tools::{Access, CancelHandle};
@@ -138,18 +138,28 @@ fn prepare_run(
     let auto_resume = matches!(input, RunInput::Queued);
     let (view, start_seq, messages, access, plan_state, plan_turn) = {
         let mut live = state.chat.live();
-        let turn = match input {
-            RunInput::Direct(turn) => turn,
+        let (turn, trigger) = match input {
+            RunInput::Direct(turn) => (turn, trigger),
             RunInput::Queued => {
                 let Some(input) = live.pending.get(session_id).and_then(|queue| queue.first())
                 else {
                     return Ok(None);
                 };
-                NewUserTurn {
+                let turn = NewUserTurn {
                     message: input.message.clone(),
                     display: Some(input.display.clone()),
                     title: None,
-                }
+                };
+                let trigger = if input.mode == InputMode::Queue
+                    && input.display["text"]
+                        .as_str()
+                        .is_some_and(|text| mentions::has(text, "arch"))
+                {
+                    RunTrigger::Arch
+                } else {
+                    trigger
+                };
+                (turn, trigger)
             }
         };
         let reserved = matches!(trigger, RunTrigger::Plan(_) | RunTrigger::Worktree(_));

@@ -58,6 +58,14 @@ pub enum SendMode {
 }
 
 impl SendMode {
+    fn with_mentions(self, text: &str) -> Self {
+        if mentions::has(text, "queue") {
+            Self::Queue
+        } else {
+            self
+        }
+    }
+
     fn input_mode(self) -> Option<InputMode> {
         match self {
             SendMode::Normal => None,

@@ -1,10 +1,9 @@
 //! Mention commands typed in the composer.
 //!
-//! `@arch` opts a turn into read-only architecture planning and `@worktree`
-//! creates the chat's worktree from the first message, so the backend decides
-//! from the raw text instead of asking the model to guess. Keep the desktop catalog in
-//! `packages/desktop/src/features/chat/mentions.ts` in sync; the desktop test
-//! reads this list and fails when the names drift.
+//! The backend reads `@arch` for read-only architecture planning, `@worktree`
+//! to create the chat's worktree, and `@queue` to wait for the next turn.
+//! The desktop test checks that `packages/desktop/src/features/chat/mentions.ts`
+//! and this list use the same command names.
 
 use serde::Serialize;
 
@@ -24,6 +23,10 @@ pub const COMMANDS: &[MentionCommand] = &[
     MentionCommand {
         name: "worktree",
         description: "Start this chat in a new Git worktree",
+    },
+    MentionCommand {
+        name: "queue",
+        description: "Send after the current turn finishes",
     },
 ];
 

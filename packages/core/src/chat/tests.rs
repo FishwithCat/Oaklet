@@ -258,15 +258,16 @@ fn a_steer_joins_the_queue_and_is_claimed_once() {
 }
 
 #[test]
-fn a_queued_message_waits_for_the_next_turn() {
+fn a_queue_mention_waits_for_the_next_turn() {
     let state = busy_state();
+    let text = "@Queue run tests afterward";
     let enqueued = state
         .enqueue_input(
             "s1",
             "main",
-            SendMode::Queue,
+            SendMode::Steer.with_mentions(text),
             "p1".into(),
-            queued_turn("later"),
+            queued_turn(text),
             |_| {},
         )
         .unwrap();
@@ -277,7 +278,8 @@ fn a_queued_message_waits_for_the_next_turn() {
     assert!(taken.is_empty());
     assert_eq!(pending.len(), 1);
 
-    assert_eq!(pending[0].text, "later");
+    assert_eq!(pending[0].mode, InputMode::Queue);
+    assert_eq!(pending[0].text, text);
 }
 
 #[test]
