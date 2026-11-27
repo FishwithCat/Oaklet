@@ -88,7 +88,11 @@ export function DiffLineView({
       <span className="diff-sign" aria-hidden="true">
         {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
       </span>
-      <span className="diff-text">{line.text === "" ? " " : line.text}</span>
+      <span
+        className="diff-text"
+        data-old-line={numbers ? oldLine : undefined}
+        data-new-line={numbers ? newLine : undefined}
+      >{line.text || (numbers ? "" : " ")}</span>
     </div>
   );
 }

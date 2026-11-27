@@ -2,6 +2,7 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type 
 import CodeMirror, { EditorView, keymap } from "@uiw/react-codemirror";
 import { search, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
+import { formatLineSpan, quoteExcerpt } from "../../shared/chat-quote";
 import type { ChangedLine } from "../source-control/git-diff";
 import { useResolvedTheme } from "../settings/theme";
 import { changedLinesField, setChangedLines } from "./file-gutter";
@@ -11,9 +12,12 @@ import { FileFindPanel } from "./find-panel";
 const BASIC_SETUP = { searchKeymap: false };
 
 /** Split from Files so opening the page does not load the editor bundle. */
-export type FileEditorHandle = { jumpToLine: (line: number) => void };
+export type FileEditorHandle = {
+  jumpToLine: (line: number) => void;
+  quoteSelection: () => string;
+};
 
-export default function FileEditor({ path, value, syntax, readOnly, marks, onChange, onReadyChange, ref }: {
+export default function FileEditor({ path, value, syntax, readOnly, marks, onChange, onReadyChange, onSelectionChange, ref }: {
   path: string;
   value: string;
   syntax: Extension;
@@ -21,6 +25,7 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
   marks: readonly ChangedLine[];
   onChange: (content: string) => void;
   onReadyChange: (path: string | null) => void;
+  onSelectionChange: (selected: boolean) => void;
   ref: Ref<FileEditorHandle>;
 }) {
   const theme = useResolvedTheme();
@@ -32,15 +37,23 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
       changedLinesField,
       search({ createPanel: (editor) => new FileFindPanel(editor) }),
       keymap.of(searchKeymap),
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          onSelectionChange(update.state.selection.ranges.some((range) => !range.empty));
+        }
+      }),
     ],
-    [syntax],
+    [syntax, onSelectionChange],
   );
 
   useEffect(() => {
     view.current?.dispatch({ effects: setChangedLines.of(marks) });
   }, [marks]);
 
-  useLayoutEffect(() => () => onReadyChange(null), [onReadyChange]);
+  useLayoutEffect(() => () => {
+    onReadyChange(null);
+    onSelectionChange(false);
+  }, [onReadyChange, onSelectionChange]);
 
   useImperativeHandle(ref, () => ({
     jumpToLine(line) {
@@ -53,7 +66,15 @@ export default function FileEditor({ path, value, syntax, readOnly, marks, onCha
       });
       editor.focus();
     },
-  }), []);
+    quoteSelection() {
+      const state = view.current?.state;
+      if (!state) return "";
+      return state.selection.ranges.filter((range) => !range.empty).map(({ from, to }) => {
+        const lines = formatLineSpan(state.doc.lineAt(from).number, state.doc.lineAt(to - 1).number);
+        return quoteExcerpt(`File ${path}:${lines}`, state.sliceDoc(from, to));
+      }).join("\n\n");
+    },
+  }), [path]);
 
   return (
     <CodeMirror

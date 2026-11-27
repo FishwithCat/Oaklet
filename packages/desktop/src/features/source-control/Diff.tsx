@@ -3,12 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowDownRegular, ArrowUpRegular } from "@mingcute/react/core-regular";
 import { DiffLineView } from "../../shared/DiffLineView";
 import { ImageLightbox } from "../../shared/ImageLightbox";
+import { QuoteToChatButton } from "../../shared/QuoteToChatButton";
 import { errorText } from "../../shared/error-text";
 import type { SourceSymbol } from "../../shared/source-symbol";
 import {
   affectedSymbols, contextGap, hunkOffsets, isImagePath, pageHunks, parseDiff,
   type ContextRange, type DiffFile, type DiffLine,
 } from "./git-diff";
+import { quoteDiffSelection, readDiffSelection } from "./diff-selection";
 import { statusInfo } from "./git-model";
 import type { ReviewTarget } from "./useSourceControl";
 
@@ -65,13 +67,15 @@ function ImageDiff({ target, file }: { target: ReviewTarget; file: DiffFile }) {
   );
 }
 
-function DiffBar({ target, navigation, current, count, added, removed }: {
+function DiffBar({ target, navigation, current, count, added, removed, onQuote, hasSelection = false }: {
   target: ReviewTarget;
   navigation: Navigation;
   current?: number;
   count?: number;
   added?: number;
   removed?: number;
+  onQuote?: () => void;
+  hasSelection?: boolean;
 }) {
   const { previous, next, previousFile, nextFile } = navigation;
   const info = statusInfo(target.status);
@@ -85,6 +89,7 @@ function DiffBar({ target, navigation, current, count, added, removed }: {
       {added !== undefined && removed !== undefined && (added > 0 || removed > 0) && (
         <span className="diff-stat"><span className="add">+{added}</span><span className="del">−{removed}</span></span>
       )}
+      {onQuote && <QuoteToChatButton disabled={!hasSelection} onClick={onQuote} />}
       <nav className="diff-navigation" aria-label="Change navigation">
         <button type="button" className="ghost icon-button" disabled={!previous} onClick={previous}
           aria-label={previousFile ? "Previous changed file" : "Previous change"}
@@ -154,6 +159,7 @@ type DiffProps = {
   landing: DiffEdge | null;
   onPreviousFile?: () => void;
   onNextFile?: () => void;
+  onQuote?: (quote: string) => void;
 };
 
 export function Diff(props: DiffProps) {
@@ -177,7 +183,7 @@ export function Diff(props: DiffProps) {
   );
 }
 
-function FileDiff({ target, files, landing, onPreviousFile, onNextFile }: DiffProps & { files: DiffFile[] }) {
+function FileDiff({ target, files, landing, onPreviousFile, onNextFile, onQuote }: DiffProps & { files: DiffFile[] }) {
   const hunks = useMemo(() => files.flatMap((file) => file.hunks), [files]);
   const { offsets, lineCount } = useMemo(() => hunkOffsets(hunks), [hunks]);
   const file = files.length === 1 ? files[0] : undefined;
@@ -191,9 +197,16 @@ function FileDiff({ target, files, landing, onPreviousFile, onNextFile }: DiffPr
   const [details, setDetails] = useState<ReviewDetails | null>(null);
   const [detailsError, setDetailsError] = useState("");
   const [gaps, setGaps] = useState<Record<number, GapState>>({});
+  const [hasSelection, setHasSelection] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const page = useMemo(() => pageHunks(hunks, offset, end - offset), [hunks, offset, end]);
   const snapshot = useMemo(() => readSnapshot(file), [file]);
+
+  useEffect(() => {
+    const sync = () => setHasSelection(readDiffSelection(scroll.current).length > 0);
+    document.addEventListener("selectionchange", sync);
+    return () => document.removeEventListener("selectionchange", sync);
+  }, []);
 
   useEffect(() => {
     if (!snapshot || !hunks.length) return;
@@ -296,6 +309,11 @@ function FileDiff({ target, files, landing, onPreviousFile, onNextFile }: DiffPr
       <DiffBar target={target} navigation={navigation} current={current} count={hunks.length}
         added={files.reduce((total, entry) => total + entry.added, 0)}
         removed={files.reduce((total, entry) => total + entry.removed, 0)}
+        hasSelection={hasSelection}
+        onQuote={onQuote && hunks.length > 0 ? () => {
+          const rows = readDiffSelection(scroll.current);
+          if (rows.length > 0) onQuote(quoteDiffSelection(target.path, target.oldPath, rows));
+        } : undefined}
       />
       <div className="diff-scroll" ref={scroll} tabIndex={0} aria-label="File diff" onScroll={followScroll}>
         {detailsError && <p className="diff-binary" role="status">{detailsError}</p>}

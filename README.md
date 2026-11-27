@@ -135,6 +135,8 @@ To build Oaklet from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
   through them.
 - Select text in chat and click **Send to Terminal** to run it in the active
   terminal tab.
+- Select text in a source-control diff, the file editor, or the terminal and
+  click **Quote in Chat** to add it to the current chat draft.
 - While the agent is working, send `@queue` with your message to start a new
   turn after the current one finishes. A regular message steers the current turn.
 - **Stop** cancels the model request, a running command, or a pending approval.

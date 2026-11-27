@@ -216,6 +216,11 @@ function App() {
     setView(next);
   }
 
+  const quoteInChat = session.activeTabId ? (quote: string) => {
+    chatRef.current?.prefill(quote);
+    setView("chat");
+  } : undefined;
+
   const openFileLink = useCallback((href: string) => {
     const path = workspaceFileLink(href);
     if (!path || !viewWorkspace) return;
@@ -464,6 +469,7 @@ function App() {
             workspace={directory}
             active={view === "terminal" && directory === viewWorkspace && !worktreeInfo?.missing}
             onClose={() => selectView("chat")}
+            onQuote={quoteInChat}
           />
         ))}
 
@@ -477,6 +483,7 @@ function App() {
             changesReady={changesReady}
             refreshToken={workspaceTick + savedTick}
             onRefresh={() => setWorkspaceTick((value) => value + 1)}
+            onQuote={quoteInChat}
           />
         )}
 
@@ -493,6 +500,7 @@ function App() {
             changes={directory === viewWorkspace ? changes : null}
             onRefresh={() => setWorkspaceTick((value) => value + 1)}
             onSaved={() => setSavedTick((value) => value + 1)}
+            onQuote={quoteInChat}
           />
         ))}
 

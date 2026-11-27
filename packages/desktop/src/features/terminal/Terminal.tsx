@@ -1,6 +1,8 @@
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { AddRegular, CloseRegular, TerminalBoxRegular } from "@mingcute/react/core-regular";
 import { createCompositionGuard, isImeEvent } from "../../app/shortcuts";
+import { QuoteToChatButton } from "../../shared/QuoteToChatButton";
+import { quoteExcerpt } from "../../shared/chat-quote";
 import { moveItem, useTabDrag } from "../../shared/useTabDrag";
 import {
   newSessionId,
@@ -20,16 +22,19 @@ export function Terminal({
   active,
   workspace,
   onClose,
+  onQuote,
 }: {
   ref?: Ref<TerminalHandle>;
   active: boolean;
   workspace: string;
   onClose: () => void;
+  onQuote?: (quote: string) => void;
 }) {
   const [tabs, setTabs] = useState<Tab[]>(() => [
     { id: newSessionId(), title: "Terminal 1" },
   ]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selections, setSelections] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<{ id: string; width: number } | null>(null);
   const [composition] = useState(createCompositionGuard);
   const handles = useRef(new Map<string, TerminalPaneHandle>());
@@ -65,6 +70,7 @@ export function Terminal({
   function closeTab(id: string) {
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
+    setSelections(({ [id]: _, ...remaining }) => remaining);
 
     const remaining = tabs.filter((tab) => tab.id !== id);
     if (remaining.length === 0) {
@@ -171,6 +177,12 @@ export function Terminal({
         >
           <AddRegular size={14} />
         </button>
+        {onQuote && <QuoteToChatButton disabled={!activeId || !selections[activeId]} onClick={() => {
+          const tab = tabs.find((tab) => tab.id === activeId);
+          if (!tab) return;
+          const text = handles.current.get(tab.id)?.getSelection();
+          if (text) onQuote(quoteExcerpt(`${tab.title} output`, text));
+        }} />}
       </header>
 
       {tabs.map((tab) => (
@@ -178,6 +190,7 @@ export function Terminal({
           key={tab.id}
           workspace={workspace}
           active={active && tab.id === activeId}
+          onSelectionChange={(selected) => setSelections((current) => ({ ...current, [tab.id]: selected }))}
           ref={(handle) => {
             if (handle) handles.current.set(tab.id, handle);
             else handles.current.delete(tab.id);

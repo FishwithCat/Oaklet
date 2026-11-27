@@ -87,13 +87,13 @@ pub fn strip(text: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A mention only counts at the start of the text or after whitespace, so an
-/// email address such as `dev@arch.example` stays plain text.
+/// A mention starts at the beginning of the text or after whitespace. Quoted
+/// lines are context, so an excerpt can't opt the user into a command.
 fn starts_token(text: &str, at: usize) -> bool {
-    text[..at]
-        .chars()
-        .next_back()
-        .is_none_or(char::is_whitespace)
+    let before = &text[..at];
+    let line = before.rsplit_once('\n').map_or(before, |(_, line)| line);
+    before.chars().next_back().is_none_or(char::is_whitespace)
+        && !line.trim_start().starts_with('>')
 }
 
 #[cfg(test)]
@@ -114,6 +114,15 @@ mod tests {
         assert!(!has("@architecture review", "arch"));
         assert!(!has("@archived", "arch"));
         assert!(!has("@", "arch"));
+    }
+
+    #[test]
+    fn quoted_excerpts_leave_commands_literal() {
+        let text = "@queue explain this\n\n> ```\n> File src/main.rs:4\n>\n> @worktree @ARCH @queue\n> ```";
+        let found = parse(text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "queue");
+        assert!(strip(text).contains("> @worktree @ARCH @queue"));
     }
 
     #[test]

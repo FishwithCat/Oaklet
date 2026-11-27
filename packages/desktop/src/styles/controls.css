@@ -70,6 +70,13 @@ button.icon-button {
   padding: 0;
 }
 
+button.quote-to-chat {
+  flex: none;
+  padding: 3px 7px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {

@@ -19,6 +19,7 @@ export function SourceControl({
   changes,
   changesError,
   changesReady,
+  onQuote,
 }: {
   active: boolean;
   workspace: string;
@@ -27,6 +28,7 @@ export function SourceControl({
   changes: ChangeInfo[] | null;
   changesError: string;
   changesReady: boolean;
+  onQuote?: (quote: string) => void;
 }) {
   const {
     tab, setTab, commits, commit, setSelectedCommit, files, selection, target,
@@ -188,6 +190,7 @@ export function SourceControl({
               text={patch}
               error={tab === "changes" && changesError ? "Refresh to load this diff." : diffError}
               landing={landing}
+              onQuote={onQuote}
               onPreviousFile={previous ? () => selectFile(previous.path, "last") : undefined}
               onNextFile={next ? () => selectFile(next.path, "first") : undefined}
             />

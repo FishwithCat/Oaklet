@@ -22,6 +22,7 @@ type TerminalExit = { id: string; code: number | null };
 export type TerminalPaneHandle = {
   focus: () => void;
   run: (command: string) => void;
+  getSelection: () => string;
 };
 
 function getTerminalTheme() {
@@ -40,10 +41,12 @@ export function newSessionId(): string {
 export function TerminalPane({
   active,
   workspace,
+  onSelectionChange,
   ref,
 }: {
   active: boolean;
   workspace: string;
+  onSelectionChange: (selected: boolean) => void;
   ref?: Ref<TerminalPaneHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -246,6 +249,7 @@ export function TerminalPane({
     const stopScroll = term.onScroll(sync);
     const stopWrite = term.onWriteParsed(sync);
     const stopBuffer = term.buffer.onBufferChange(sync);
+    const stopSelection = term.onSelectionChange(() => onSelectionChange(term.hasSelection()));
     const observer = new ResizeObserver(fitToHost);
     observer.observe(host);
 
@@ -302,6 +306,7 @@ export function TerminalPane({
       stopScroll.dispose();
       stopWrite.dispose();
       stopBuffer.dispose();
+      stopSelection.dispose();
       for (const unlisten of unlisteners) unlisten();
       void invoke("terminal_close", { id: sessionId });
       term.dispose();
@@ -339,6 +344,7 @@ export function TerminalPane({
     () => ({
       focus: () => termRef.current?.focus(),
       run,
+      getSelection: () => termRef.current?.getSelection() ?? "",
     }),
     [],
   );
