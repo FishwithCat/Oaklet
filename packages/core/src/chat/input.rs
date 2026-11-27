@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::mentions;
 use crate::spill;
 
 const MAX_ATTACHMENTS: usize = 20;
@@ -63,7 +64,9 @@ pub(super) fn build_user_turn(
     spill_root: &Path,
     session_id: &str,
 ) -> Result<(Value, Value, Vec<String>), String> {
-    if text.is_empty() && attachments.is_empty() {
+    let content = mentions::strip_queue(text);
+    let content = content.trim();
+    if content.is_empty() && attachments.is_empty() {
         return Err("A message is required.".into());
     }
     if attachments.len() > MAX_ATTACHMENTS {
@@ -73,8 +76,8 @@ pub(super) fn build_user_turn(
     }
 
     let mut parts = Vec::new();
-    if !text.is_empty() {
-        parts.push(json!({ "type": "text", "text": text }));
+    if !content.is_empty() {
+        parts.push(json!({ "type": "text", "text": content }));
     }
 
     let mut sent = Vec::new();
@@ -139,7 +142,7 @@ pub(super) fn build_user_turn(
     }
 
     let message = if attachments.is_empty() {
-        json!({ "role": "user", "content": text })
+        json!({ "role": "user", "content": content })
     } else {
         json!({ "role": "user", "content": parts })
     };

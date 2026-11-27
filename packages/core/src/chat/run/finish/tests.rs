@@ -481,9 +481,12 @@ async fn a_failed_finish_keeps_the_partial_reply_until_its_window_drains() {
 }
 
 fn queue_message(ctx: &RunContext, text: &str) {
+    let (message, display, _) =
+        crate::chat::input::build_user_turn(text, &[], &ctx.state.spill_root, &ctx.session_id)
+            .unwrap();
     let turn = NewUserTurn {
-        message: json!({ "role": "user", "content": text }),
-        display: Some(json!({ "text": text })),
+        message,
+        display: Some(display),
         title: None,
     };
     let queued = ctx
@@ -527,6 +530,10 @@ async fn queued_input_survives_write_failures_until_its_own_turn_commits() {
 
     let next = ctx.prepare_resume("/tmp").unwrap().unwrap();
     assert!(next.ctx.access().planning_only());
+    assert_eq!(
+        next.messages.last().unwrap()["content"],
+        "@arch plan the worker change"
+    );
     let view = next.ctx.view.lock().unwrap();
     assert_eq!(view.pending.len(), 1);
     assert_eq!(view.pending[0].text, "second");

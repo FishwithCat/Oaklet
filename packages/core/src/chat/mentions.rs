@@ -33,23 +33,8 @@ pub const COMMANDS: &[MentionCommand] = &[
 /// Commands mentioned in `text`, in order, without duplicates.
 pub fn parse(text: &str) -> Vec<&'static MentionCommand> {
     let mut found: Vec<&'static MentionCommand> = Vec::new();
-    for (start, _) in text.match_indices('@') {
-        if !starts_token(text, start) {
-            continue;
-        }
-        let rest = &text[start + 1..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-            .unwrap_or(rest.len());
-        let name = &rest[..end];
-        if name.is_empty() {
-            continue;
-        }
-        if let Some(command) = COMMANDS
-            .iter()
-            .find(|command| command.name.eq_ignore_ascii_case(name))
-            && !found.iter().any(|found| found.name == command.name)
-        {
+    for (_, _, command) in tokens(text) {
+        if !found.contains(&command) {
             found.push(command);
         }
     }
@@ -62,29 +47,44 @@ pub fn has(text: &str, name: &str) -> bool {
 
 /// Drop known mention tokens so a session title reads as the user's request.
 pub fn strip(text: &str) -> String {
+    strip_tokens(text, |_| true)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub(super) fn strip_queue(text: &str) -> String {
+    strip_tokens(text, |command| command.name == "queue")
+}
+
+fn strip_tokens(text: &str, remove: impl Fn(&MentionCommand) -> bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0;
-    for (start, _) in text.match_indices('@') {
-        if start < cursor || !starts_token(text, start) {
-            continue;
+    for (start, end, _) in tokens(text).filter(|(_, _, command)| remove(command)) {
+        out.push_str(&text[cursor..start]);
+        cursor = end;
+        if out.ends_with(' ') && text[cursor..].starts_with(' ') {
+            cursor += 1;
+        }
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+fn tokens(text: &str) -> impl Iterator<Item = (usize, usize, &'static MentionCommand)> {
+    text.match_indices('@').filter_map(move |(start, _)| {
+        if !starts_token(text, start) {
+            return None;
         }
         let rest = &text[start + 1..];
         let end = rest
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
             .unwrap_or(rest.len());
-        let name = &rest[..end];
-        if name.is_empty()
-            || !COMMANDS
-                .iter()
-                .any(|command| command.name.eq_ignore_ascii_case(name))
-        {
-            continue;
-        }
-        out.push_str(&text[cursor..start]);
-        cursor = start + 1 + end;
-    }
-    out.push_str(&text[cursor..]);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+        let command = COMMANDS
+            .iter()
+            .find(|command| command.name.eq_ignore_ascii_case(&rest[..end]))?;
+        Some((start, start + 1 + end, command))
+    })
 }
 
 /// A mention starts at the beginning of the text or after whitespace. Quoted

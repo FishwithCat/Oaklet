@@ -33,7 +33,7 @@ fn reads_the_composer_attachment_shape() {
 #[test]
 fn builds_user_content_and_display_items_for_attachments() {
     let (message, display, names) = build_user_turn(
-        "look",
+        "@queue look",
         &[
             IncomingAttachment::Image {
                 name: "shot.png".into(),
@@ -65,7 +65,7 @@ fn builds_user_content_and_display_items_for_attachments() {
         message["content"][2],
         json!({ "type": "text", "text": "Attached file notes.md:\n\nhi" })
     );
-    assert_eq!(display["text"], "look");
+    assert_eq!(display["text"], "@queue look");
     assert_eq!(
         display["attachments"][0]["thumbnail"],
         "data:image/jpeg;base64,BBB"
@@ -81,6 +81,39 @@ fn plain_text_keeps_the_string_content_shape() {
     assert_eq!(display["text"], "hello");
     assert!(names.is_empty());
     assert!(build_user_turn("", &[], Path::new(env!("CARGO_MANIFEST_DIR")), "run-1").is_err());
+}
+
+#[test]
+fn queue_mentions_only_appear_in_the_display_text() {
+    let spill_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (text, expected) in [
+        ("@queue 有什么亮点?", "有什么亮点?"),
+        (
+            "Please @QUEUE review this @arch\n\n> @queue is a command\n\n- Keep this line",
+            "Please review this @arch\n\n> @queue is a command\n\n- Keep this line",
+        ),
+        (
+            "Email dev@queue.example about @queue-later",
+            "Email dev@queue.example about @queue-later",
+        ),
+    ] {
+        let (message, display, _) = build_user_turn(text, &[], spill_root, "run-1").unwrap();
+        assert_eq!(message["content"], expected);
+        assert_eq!(display["text"], text);
+    }
+    assert!(build_user_turn("@queue", &[], spill_root, "run-1").is_err());
+
+    let file = IncomingAttachment::File {
+        name: "notes.md".into(),
+        bytes: 6,
+        text: "@queue".into(),
+    };
+    let (message, display, _) = build_user_turn("@queue", &[file], spill_root, "run-1").unwrap();
+    assert_eq!(
+        message["content"],
+        json!([{ "type": "text", "text": "Attached file notes.md:\n\n@queue" }])
+    );
+    assert_eq!(display["text"], "@queue");
 }
 
 #[test]
