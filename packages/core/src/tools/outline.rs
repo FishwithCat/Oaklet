@@ -160,7 +160,7 @@ fn file_outline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::test_support::context;
+    use crate::tools::test_support::{Allow, context};
     use crate::tools::{Access, ToolRegistry};
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         let outline = registry
             .execute(
                 &ctx,
-                &super::super::tests::Allow,
+                &Allow,
                 "file_outline",
                 "outline",
                 json!({ "path": "code.rs" }),
@@ -293,7 +293,7 @@ mod tests {
         let read = registry
             .execute(
                 &ctx,
-                &super::super::tests::Allow,
+                &Allow,
                 "read_file",
                 "read",
                 json!({ "path": "code.rs", "offset": 3, "limit": 3 }),

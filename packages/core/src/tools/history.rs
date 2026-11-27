@@ -618,7 +618,8 @@ mod oversized_history_tests {
         );
         let page = tool.page(1, 1).unwrap();
         let (ctx, root, _handle) = crate::tools::test_support::context("history-spill");
-        let output = ctx.bound_output("history_read", "call-history", page.clone());
+        let output =
+            crate::tools::output::bound_output(&ctx, "history_read", "call-history", page.clone());
         let path = crate::tools::spill_pointer(&output).unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), page);
         assert!(output.contains("Use read_file with offset and limit"));
