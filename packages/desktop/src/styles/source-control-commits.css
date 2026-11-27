@@ -1,0 +1,242 @@
+.sc-commit-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.sc-commit-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.sc-commit-trigger svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.sc-commit-trigger:hover:not(:disabled),
+.sc-commit-trigger[aria-expanded="true"] {
+  border-color: var(--accent-border-strong);
+  background: var(--panel-2);
+}
+
+.sc-commit-subject,
+.sc-commit-author {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-commit-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.sc-commit-meta code {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.sc-commit-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-height: min(320px, 55vh);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px var(--shadow-color);
+}
+
+.sc-commit-menu > input {
+  flex: none;
+}
+
+.sc-commit-results {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sc-commit-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.sc-commit-option:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+.sc-commit-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sc-commit-option .sc-commit-meta {
+  align-items: center;
+  gap: 5px;
+}
+
+.sc-commit-option time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sc-commit-empty {
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.sc-commit-meta > .sc-commit-details-trigger {
+  margin-left: auto;
+}
+
+.sc-commit-meta > .sc-commit-details-trigger,
+.sc-commit-hash-row .icon-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+}
+
+.sc-commit-details-trigger[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sc-commit-details-panel {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 16px);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(400px, 52vw);
+  max-height: min(440px, 68vh);
+  border: 1px solid var(--panel-muted-border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px var(--shadow-color);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: normal;
+  overflow: hidden;
+}
+
+.sc-commit-details-panel:focus {
+  outline: none;
+}
+
+.sc-commit-message {
+  min-height: 0;
+  padding: 14px 16px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.sc-commit-message:focus-visible {
+  outline: 1px solid var(--panel-muted-border-strong);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+
+.sc-commit-message h2 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.sc-commit-message p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.sc-commit-details-footer {
+  flex: none;
+  display: grid;
+  gap: 3px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--panel-muted-border);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.sc-commit-byline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+
+.sc-commit-byline time {
+  white-space: nowrap;
+}
+
+.sc-commit-hash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sc-commit-hash-row code {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.sc-commit-copy-error {
+  color: var(--red);
+}
+
+.sc-commit-refs {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+}
+
+.commit-ref {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--commit-ref);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

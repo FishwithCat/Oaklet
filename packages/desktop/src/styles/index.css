@@ -13,6 +13,9 @@
 @import "./process.css";
 @import "./architecture.css";
 @import "./source-control.css";
+@import "./branch-menu.css";
+@import "./source-control-commits.css";
+@import "./source-control-diff.css";
 @import "./overlays.css";
 @import "./settings.css";
 @import "./responsive.css";
