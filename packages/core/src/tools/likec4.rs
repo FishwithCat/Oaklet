@@ -93,7 +93,7 @@ impl Tool for LikeC4 {
                 request.insert("readOnly".into(), Value::Bool(true));
             }
             let node = self.node.as_ref().ok_or(
-                "LikeC4 MCP requires Node.js 22.23.3 or newer. Set OAKLET_NODE if needed."
+                "LikeC4 MCP requires the bundled Node.js runtime. Reinstall Oaklet, or set OAKLET_NODE."
                     .to_string(),
             )?;
             let helper = self.helper.as_ref().ok_or("LikeC4 MCP helper is missing. Install architecture-helper dependencies or reinstall Oaklet.".to_string())?;

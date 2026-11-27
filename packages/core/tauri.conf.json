@@ -4,9 +4,9 @@
   "version": "0.3.0",
   "identifier": "com.oaklet.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --dir desktop run dev",
+    "beforeDevCommand": "node core/scripts/fetch-node-sidecar.mjs && pnpm --dir desktop run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --dir architecture-helper run build && pnpm --dir desktop run build",
+    "beforeBuildCommand": "node core/scripts/fetch-node-sidecar.mjs && pnpm --dir architecture-helper run build && pnpm --dir desktop run build",
     "frontendDist": "../desktop/dist"
   },
   "app": {
@@ -27,6 +27,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "externalBin": ["binaries/oaklet-node"],
     "resources": {
       "../architecture-helper/dist": "architecture-helper"
     },
@@ -46,6 +48,11 @@
         ]
       }
     },
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
+      "minimumSystemVersion": "11.0"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
@@ -54,6 +61,18 @@
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENCMzM2MjVGOUEwMjdGNTUKUldSVmZ3S2FYMkl6eTF3dWF3VUhYMTFZZDNLeVVjdlhCOUpsdGk1b3NpK2VlRHptUlBJdmVwU3gK",
+      "endpoints": [
+        "https://github.com/FishwithCat/Oaklet/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

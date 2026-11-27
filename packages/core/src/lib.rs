@@ -23,6 +23,7 @@ mod store;
 mod syntax;
 mod terminal;
 mod tools;
+mod update;
 mod windows;
 mod worktrees;
 
@@ -41,6 +42,7 @@ pub fn run() {
         .on_window_event(windows::handle_window_event)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(app::setup)
         .invoke_handler(tauri::generate_handler![
             config::load_config,
@@ -49,6 +51,9 @@ pub fn run() {
             shutdown::close_workspace,
             config::save_config,
             connection::test_connection,
+            update::app_version,
+            update::check_for_update,
+            update::install_update,
             storage::storage_usage,
             storage::storage_purge,
             chat::commands::session_create,

@@ -12,6 +12,7 @@ import { errorText } from "../../shared/error-text";
 import { DataSettings } from "./DataSettings";
 import { McpSettings } from "./McpSettings";
 import { ModelSettings, type TestStatus } from "./ModelSettings";
+import { UpdatesSettings } from "./UpdatesSettings";
 import {
   AppearanceSettings,
   CommandSettings,
@@ -33,7 +34,8 @@ type SettingsTab =
   | "commands"
   | "mcp"
   | "appearance"
-  | "data";
+  | "data"
+  | "updates";
 
 type SettingsDraft = Omit<AppConfig, "mcpServers"> & {
   mcpText: string;
@@ -52,6 +54,7 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "mcp", label: "MCP" },
   { id: "appearance", label: "Appearance" },
   { id: "data", label: "Data" },
+  { id: "updates", label: "Updates" },
 ];
 
 const SUBTITLES: Record<SettingsTab, string> = {
@@ -62,6 +65,7 @@ const SUBTITLES: Record<SettingsTab, string> = {
   mcp: "Connect MCP servers and choose which ones the agent can use.",
   appearance: "Choose how Oaklet looks. Auto follows your system appearance.",
   data: "Review the history stored on this machine and delete what you no longer need.",
+  updates: "Check for a new version only when you choose to.",
 };
 
 const FIRST_RUN_SUBTITLE =
@@ -104,6 +108,7 @@ export function SettingsPanel({
     mcp: null,
     appearance: null,
     data: null,
+    updates: null,
   });
 
   useEffect(() => {
@@ -271,7 +276,9 @@ export function SettingsPanel({
               aria-labelledby={`settings-tab-${tab}`}
               tabIndex={0}
             >
-              {tab === "data" ? (
+              {tab === "updates" ? (
+                <UpdatesSettings />
+              ) : tab === "data" ? (
                 <DataSettings />
               ) : tab === "model" ? (
                 <ModelSettings
@@ -322,7 +329,7 @@ export function SettingsPanel({
         {error && <p className="error-text settings-error">{error}</p>}
 
         <div className="modal-actions settings-actions">
-          {tab === "data" ? (
+          {tab === "data" || tab === "updates" ? (
             <button type="button" onClick={close} disabled={saving}>
               Close
             </button>

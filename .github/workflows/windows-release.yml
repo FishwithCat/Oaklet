@@ -2,12 +2,14 @@ name: Windows release
 
 # Builds the NSIS user-level installer for Windows 11 x64 and verifies it before
 # uploading. Manual runs upload workflow artifacts for internal testing; pushing a
-# v* tag also attaches the installer to that tag's GitHub Release, which the macOS
-# workflow creates independently.
+# v* tag also attaches the installer to that tag's GitHub Release.
 #
-# Signing is optional. Add these repository secrets to enable Authenticode signing
-# (see CONTRIBUTING.md, "Releasing"):
-#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+# Update signing is required for tag releases. Set these repository secrets:
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# Authenticode signing is optional until a certificate is available. Add these
+# secrets to sign every executable in the installer (see CONTRIBUTING.md):
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD,
+#   WINDOWS_CERTIFICATE_THUMBPRINT
 # Without them the installer is unsigned: Windows SmartScreen warns on first run.
 
 on:
@@ -27,6 +29,11 @@ jobs:
   build:
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       TARGET: x86_64-pc-windows-msvc
 
@@ -64,15 +71,75 @@ jobs:
         # The helper ships as plain JavaScript next to the app resources.
         run: pnpm --dir packages/architecture-helper build
 
+      - uses: actions/cache@v4
+        with:
+          path: packages/core/binaries
+          key: node-sidecar-x86_64-pc-windows-msvc-22.23.3
+
+      - name: Fetch the bundled Node.js runtime
+        run: node packages/core/scripts/fetch-node-sidecar.mjs --target "$env:TARGET"
+
       - name: Build the installer
         shell: pwsh
-        run: pnpm tauri build --ci --target $env:TARGET --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          $sidecar = Join-Path $env:GITHUB_WORKSPACE "packages/core/binaries/oaklet-node-x86_64-pc-windows-msvc.exe"
+          $signScript = Join-Path $env:GITHUB_WORKSPACE ".github/scripts/sign-windows.ps1"
+          if ($env:WINDOWS_CERTIFICATE) {
+            # Sign the sidecar before bundling so Tauri keeps our signature
+            # instead of leaving the upstream Node.js one.
+            & $signScript -File $sidecar
+          }
+
+          $bundle = @{}
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            if ($env:GITHUB_EVENT_NAME -eq "push") {
+              throw "TAURI_SIGNING_PRIVATE_KEY is required for a tagged release."
+            }
+            Write-Host "::notice::No updater signing key; building without updater artifacts."
+            $bundle.createUpdaterArtifacts = $false
+          }
+
+          $buildArgs = @("tauri", "build", "--ci", "--target", $env:TARGET, "--bundles", "nsis")
+          if ($env:WINDOWS_CERTIFICATE) {
+            $bundle.windows = @{
+              webviewInstallMode = @{
+                type = "downloadBootstrapper"
+                silent = $true
+              }
+              nsis = @{
+                installMode = "currentUser"
+                displayLanguageSelector = $false
+              }
+              signCommand = @{
+                cmd = "powershell.exe"
+                args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $signScript, "%1")
+              }
+            }
+          } else {
+            Write-Host "::notice::No code-signing certificate; the installer stays unsigned."
+          }
+
+          if ($bundle.Count -gt 0) {
+            $configPath = Join-Path $env:RUNNER_TEMP "oaklet-windows.json"
+            @{ bundle = $bundle } | ConvertTo-Json -Depth 10 |
+              Set-Content -Path $configPath -Encoding utf8
+            $buildArgs += @("--config", $configPath)
+          }
+          & pnpm @buildArgs
 
       - name: Verify and collect the installer
         shell: pwsh
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
           $bundle = "packages/core/target/$env:TARGET/release/bundle/nsis"
           $installer = Get-ChildItem -Path $bundle -Filter "*-setup.exe" |
@@ -82,27 +149,61 @@ jobs:
           }
 
           if ($env:WINDOWS_CERTIFICATE) {
-            $pfx = Join-Path $env:RUNNER_TEMP "oaklet.pfx"
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-              Sort-Object FullName -Descending | Select-Object -First 1
-            if (-not $signtool) { throw "signtool.exe was not found in the Windows SDK" }
-            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
-              /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
-            if ($LASTEXITCODE -ne 0) { throw "Signing the installer failed" }
-            Remove-Item $pfx
+            if (-not $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+              throw "WINDOWS_CERTIFICATE_THUMBPRINT is required when signing."
+            }
+            $expected = $env:WINDOWS_CERTIFICATE_THUMBPRINT.Replace(" ", "").ToUpperInvariant()
+            $binaries = @(
+              (Join-Path "packages/core/target/$env:TARGET/release" "oaklet.exe"),
+              (Join-Path "packages/core/target/$env:TARGET/release" "oaklet-node.exe")
+            )
+            foreach ($file in @($installer.FullName) + $binaries) {
+              if (-not (Test-Path $file)) { continue }
+              $signature = Get-AuthenticodeSignature -FilePath $file
+              Write-Host "$file`: $($signature.Status)"
+              if ($signature.Status -ne "Valid") {
+                throw "Authenticode signature is not valid for ${file}: $($signature.StatusMessage)"
+              }
+              $thumbprint = $signature.SignerCertificate.Thumbprint.Replace(" ", "").ToUpperInvariant()
+              if ($expected -and $thumbprint -ne $expected) {
+                throw "Certificate thumbprint mismatch for ${file}: $thumbprint"
+              }
+            }
+          } else {
+            $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
+            Write-Host "::notice::Installer is unsigned ($($signature.Status)); SmartScreen warns on first run."
           }
 
-          $signature = Get-AuthenticodeSignature -FilePath $installer.FullName
-          Write-Host "$($installer.FullName): $($signature.Status)"
-          if ($env:WINDOWS_CERTIFICATE -and $signature.Status -ne "Valid") {
-            throw "Authenticode signature is not valid: $($signature.StatusMessage)"
-          }
-          if (-not $env:WINDOWS_CERTIFICATE) {
-            Write-Host "::notice::Installer is unsigned; SmartScreen warns on first run."
-          }
           New-Item -ItemType Directory -Force release-assets | Out-Null
           Copy-Item $installer.FullName "release-assets/$($installer.Name)"
+
+          $sig = "$($installer.FullName).sig"
+          if (Test-Path $sig) {
+            Copy-Item $sig "release-assets/$($installer.Name).sig"
+            $version = (node -p "require('./packages/core/tauri.conf.json').version").Trim()
+            node scripts/release/latest-json.mjs fragment `
+              --version $version `
+              --platform windows-x86_64 `
+              --artifact $installer.FullName `
+              --signature $sig `
+              --output release-assets/latest.windows-x86_64.fragment.json `
+              --notes "See the release notes on GitHub."
+          } elseif ($env:GITHUB_EVENT_NAME -eq "push") {
+            throw "No updater signature was produced for the installer."
+          }
+
+          $sums = Get-ChildItem release-assets -File |
+            Where-Object { $_.Name -notlike "SHA256SUMS*" -and $_.Name -notlike "*.fragment.json" } |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+          Set-Content -Path release-assets/SHA256SUMS.windows-x86_64 -Value ($sums -join "`n") -Encoding ascii
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release-assets/*-setup.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -117,16 +218,59 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      # Serialize the three platform publishers so latest.json and SHA256SUMS
+      # are merged instead of overwritten.
+      group: oaklet-release-publish-${{ github.ref }}
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: Oaklet-windows-x64
           path: release-assets
 
+      - name: Merge the update manifest and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="$(node -p "require('./packages/core/tauri.conf.json').version")"
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::Tag $tag does not match tauri.conf.json version $version"
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release download "$tag" --pattern latest.json --output latest.json --clobber || rm -f latest.json
+            gh release download "$tag" --pattern SHA256SUMS --output SHA256SUMS --clobber || rm -f SHA256SUMS
+          fi
+
+          if [ -f latest.json ]; then
+            node scripts/release/latest-json.mjs merge \
+              --base latest.json --output release-assets/latest.json \
+              --overlay release-assets/*.fragment.json
+          else
+            node scripts/release/latest-json.mjs merge \
+              --output release-assets/latest.json \
+              --overlay release-assets/*.fragment.json
+          fi
+
+          {
+            find release-assets -maxdepth 1 -name 'SHA256SUMS.*' -exec cat {} +
+            if [ -f SHA256SUMS ]; then cat SHA256SUMS; fi
+          } | awk 'NF == 2 && !seen[$2]++' | sort -k2 > release-assets/SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*-setup.exe
+          files: |
+            release-assets/*-setup.exe
+            release-assets/*-setup.exe.sig
+            release-assets/latest.json
+            release-assets/SHA256SUMS
           fail_on_unmatched_files: true
+          overwrite_files: true
           append_body: true
           body: |
             ## Install (Windows 11 x64)
@@ -134,8 +278,12 @@ jobs:
             Download and run the `-setup.exe` installer. It installs for the
             current user only and needs no administrator rights.
 
-            The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3
-            or newer on `PATH` or set through `OAKLET_NODE`; the rest of Oaklet
-            works without it. Without a code-signing certificate Windows
-            SmartScreen asks before running the installer: choose **More info**,
-            then **Run anyway**.
+            Builds published without an Authenticode certificate are unsigned,
+            so SmartScreen may hold the first run with **Windows protected your
+            PC**. Choose **More info**, then **Run anyway**. Signed releases
+            carry a valid Authenticode signature; SmartScreen can still warn
+            until the certificate builds reputation.
+
+            Oaklet updates itself only from **Settings → Updates**. Every
+            update package is checked with the minisign key compiled into the
+            app.

@@ -191,7 +191,7 @@ impl Tool for ValidateDiff {
                     include_ignored,
                     &model.digest,
                     args.dsl,
-                    "LikeC4 validation requires Node.js 22.23.3 or newer. Set OAKLET_NODE if needed.".into(),
+                    "LikeC4 validation requires the bundled Node.js runtime. Reinstall Oaklet, or set OAKLET_NODE.".into(),
                     model.warnings,
                 );
                 return Ok(respond(ctx, plan, false));

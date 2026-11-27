@@ -19,6 +19,12 @@ Oaklet supports macOS (Apple Silicon and Intel), Windows 11 x64, and Ubuntu
 Linux are not supported yet. Keyboard shortcuts use **⌘** on macOS and **Ctrl**
 on Windows and Linux.
 
+> **Current build status (v0.3.0):** released installers are not code-signed yet.
+> macOS asks for **Open Anyway** (or one `xattr` command), and Windows
+> SmartScreen asks for **More info → Run anyway**. Update packages are signed
+> and verified independently of the operating system whenever an update is
+> offered.
+
 ### macOS
 
 Download the `.dmg` for your Mac from
@@ -31,8 +37,9 @@ Older releases may offer a `_universal.dmg` that works on both. Open the `.dmg`
 and drag Oaklet into Applications. If no build is available there, see
 [CONTRIBUTING.md](CONTRIBUTING.md) to build from source.
 
-If macOS blocks the first launch of an ad-hoc signed build, open Oaklet once
-and use the steps for your version of macOS.
+Releases published without Apple Developer ID credentials are ad-hoc signed,
+so macOS blocks the first launch. Open Oaklet once and use the steps for your
+version of macOS. Signed and notarized releases need none of these steps.
 
 - **macOS 15 or newer**: **System Settings → Privacy & Security → Open Anyway**.
 - **macOS 14 or earlier**: right-click Oaklet and choose **Open**.
@@ -89,11 +96,55 @@ keeps its settings in `~/.config/com.oaklet.desktop/` and its sessions,
 attachments, and logs in `~/.local/share/com.oaklet.desktop/`, so uninstalling
 or upgrading keeps your data.
 
-## Optional Node.js
+Oaklet is distributed through GitHub Releases for now. A Homebrew cask will be
+submitted after Developer ID signing and notarization pass, and a winget
+manifest after the Windows installer passes clean-machine validation. Until
+then, use the `.dmg`, `.exe`, or `.deb` above.
 
-The Architecture view and the `likec4_mcp` tool need Node.js 22.23.3 or newer.
-Oaklet finds it on `PATH`, in common install locations, or via `OAKLET_NODE`;
-the rest of Oaklet works without it.
+## Verify downloads
+
+Every release publishes `SHA256SUMS` and a GitHub build provenance attestation.
+Download the file and `SHA256SUMS` into the same folder, then check the hash:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+On Windows 11, `certutil -hashfile <file> SHA256` prints the same hash. To
+confirm that a file came from this repository's CI rather than a local machine:
+
+```sh
+gh attestation verify Oaklet_<version>_<arch>.dmg --repo FishwithCat/Oaklet
+```
+
+Use the same command for the `-setup.exe` installer or the `.deb` package.
+The hashes and attestations are independent of macOS notarization and Windows
+Authenticode.
+
+## Bundled Node.js runtime
+
+The Architecture view and the `likec4_mcp` tool use a Node.js 22.23.3 runtime
+bundled with Oaklet, so no separate Node.js installation is needed. Set
+`OAKLET_NODE` to an explicit executable to use a system Node.js instead; Oaklet
+otherwise falls back to `PATH` and common install locations. The rest of
+Oaklet works without Node.js.
+
+## Updates
+
+Open **Settings → Updates** and click **Check for updates**. That is the only
+time Oaklet contacts the update server: startup, window focus, and idle time do
+not trigger a check. The result shows the current version, the available
+version, its release notes, and a link to the GitHub release.
+
+Choose **Download and install** only when you are ready. The downloaded package
+is checked against the minisign key compiled into Oaklet; a tampered or
+unexpected package is discarded and the error is shown, with no option to
+ignore it. Oaklet never restarts itself. On macOS and Linux the update is
+installed in place, so quit and reopen Oaklet to use the new version. On
+Windows the installer runs after Oaklet closes; reopen Oaklet when it finishes.
+
+If the check, download, or install fails, Oaklet keeps running the current
+version and shows the reason in the same panel.
 
 ## Quick start
 
@@ -243,6 +294,9 @@ Open **Settings** in the sidebar. Changes apply to the next run.
 | Search URL                    | provider default                           |
 | MCP servers                   | none                                       |
 | Workspace                     | the last opened workspace                  |
+
+**Settings → Updates** is the only place that checks for a new version. It
+never runs in the background. See [Updates](#updates).
 
 For another OpenAI-compatible provider, set its base URL (for example
 `https://api.openai.com/v1`) and model. For a local setup with

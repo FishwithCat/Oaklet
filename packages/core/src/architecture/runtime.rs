@@ -24,6 +24,15 @@ pub(crate) fn find_node() -> Option<PathBuf> {
         }
     }
 
+    // Packaged builds ship their own runtime next to the application binary.
+    // OAKLET_NODE still wins so a developer can point Oaklet at a system Node.
+    if let Some(path) = bundled_node()
+        && let Some(version) = node_version(&path)
+        && node_supported(&version)
+    {
+        return Some(path);
+    }
+
     let mut candidates = BTreeSet::new();
 
     if let Some(path) = shell_env::var_os("PATH") {
@@ -99,6 +108,20 @@ pub(crate) fn find_node() -> Option<PathBuf> {
 
 fn node_name() -> &'static str {
     if cfg!(windows) { "node.exe" } else { "node" }
+}
+
+fn bundled_node() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    bundled_node_path(&executable)
+}
+
+fn bundled_node_path(executable: &Path) -> Option<PathBuf> {
+    let candidate = executable.parent()?.join(if cfg!(windows) {
+        "oaklet-node.exe"
+    } else {
+        "oaklet-node"
+    });
+    candidate.is_file().then_some(candidate)
 }
 
 fn add_versioned_nodes(candidates: &mut BTreeSet<PathBuf>, root: &Path, suffix: &str) {
@@ -193,9 +216,8 @@ pub(super) fn runtime_status_for(node: Option<&Path>, helper: Option<&Path>) -> 
             node: None,
             node_version: None,
             helper,
-            message:
-                "Node.js was not found. Install Node.js 22.23.3 or newer, or set OAKLET_NODE to the executable."
-                    .into(),
+            message: "The bundled Node.js runtime is missing. Reinstall Oaklet, or set OAKLET_NODE to a Node.js 22.23.3 or newer executable."
+                .into(),
         };
     };
     let Some(version) = node_version(node) else {
@@ -213,7 +235,9 @@ pub(super) fn runtime_status_for(node: Option<&Path>, helper: Option<&Path>) -> 
             node: Some(node.to_string_lossy().into_owned()),
             node_version: Some(version.clone()),
             helper,
-            message: format!("Node.js {version} is too old. Install Node.js 22.23.3 or newer."),
+            message: format!(
+                "Node.js {version} is too old. Use Node.js 22.23.3 or newer, or unset OAKLET_NODE to use the bundled runtime."
+            ),
         };
     }
     let Some(helper) = helper else {
@@ -284,6 +308,33 @@ mod tests {
 
         fs::write(root.join("bundle.json"), "{}").unwrap();
         assert!(helper_ready(&root));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn bundled_node_is_looked_up_next_to_the_executable() {
+        let root = temp_root("bundled-node");
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(bundled_node_path(&root.join("oaklet")), None);
+
+        fs::write(
+            root.join(if cfg!(windows) {
+                "oaklet-node.exe"
+            } else {
+                "oaklet-node"
+            }),
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            bundled_node_path(&root.join("oaklet")),
+            Some(root.join(if cfg!(windows) {
+                "oaklet-node.exe"
+            } else {
+                "oaklet-node"
+            }))
+        );
 
         fs::remove_dir_all(&root).ok();
     }

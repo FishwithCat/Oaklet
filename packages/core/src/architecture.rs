@@ -379,7 +379,10 @@ pub async fn load(
             base,
             cached_match,
             Vec::new(),
-            Some("Node.js was not found. Install Node.js 22.23.3 or newer.".into()),
+            Some(
+                "The bundled Node.js runtime is missing. Reinstall Oaklet, or set OAKLET_NODE."
+                    .into(),
+            ),
         ));
     };
     let Some(helper) = helper else {
@@ -573,7 +576,10 @@ pub(crate) async fn plan_compare(
     }
 
     let Some(node) = find_node() else {
-        return Err("LikeC4 preview requires Node.js 22.23.3 or newer.".into());
+        return Err(
+            "LikeC4 preview requires the bundled Node.js runtime. Reinstall Oaklet, or set OAKLET_NODE."
+                .into(),
+        );
     };
     let Some(helper) = find_helper(app) else {
         return Err("The LikeC4 compiler helper is missing. Reinstall Oaklet.".into());

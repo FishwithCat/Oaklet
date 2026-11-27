@@ -351,7 +351,7 @@ async fn verify_confirmation(
 ) -> Result<(), String> {
     let model = verify_baseline(workspace, validation).await?;
     let node = architecture::find_node()
-        .ok_or("LikeC4 requires Node.js to recheck this architecture draft.")?;
+        .ok_or("LikeC4 requires the bundled Node.js runtime to recheck this architecture draft.")?;
     let helper = architecture::find_helper(app)
         .ok_or("The LikeC4 compiler helper is missing. Reinstall Oaklet.")?;
     let draft = crate::tools::draft_path(&model.root, &model.sources);

@@ -3,7 +3,11 @@ name: Linux release
 # Builds the Debian package for Ubuntu 24.04 LTS x64 and verifies its metadata
 # and contents before uploading. Manual runs upload a workflow artifact for
 # internal testing; pushing a v* tag also attaches the package to that tag's
-# GitHub Release, which the macOS workflow creates independently.
+# GitHub Release.
+#
+# Update signing is required for tag releases. Set these repository secrets:
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# The .deb itself needs no code signature; only an apt repository would.
 #
 # The build runs on the oldest supported baseline (Ubuntu 24.04) so the linked
 # glibc and WebKitGTK stay inside what the first supported release ships.
@@ -25,6 +29,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       TARGET: x86_64-unknown-linux-gnu
 
@@ -69,8 +78,30 @@ jobs:
         # The helper ships as plain JavaScript next to the app resources.
         run: pnpm --dir packages/architecture-helper build
 
+      - uses: actions/cache@v4
+        with:
+          path: packages/core/binaries
+          key: node-sidecar-x86_64-unknown-linux-gnu-22.23.3
+
+      - name: Fetch the bundled Node.js runtime
+        run: node packages/core/scripts/fetch-node-sidecar.mjs --target "$TARGET"
+
       - name: Build the Debian package
-        run: pnpm tauri build --ci --target "$TARGET" --bundles deb
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for a tagged release."
+              exit 1
+            fi
+            echo "::notice::No updater signing key; building without updater artifacts."
+            pnpm tauri build --ci --target "$TARGET" --bundles deb \
+              --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            pnpm tauri build --ci --target "$TARGET" --bundles deb
+          fi
 
       - name: Verify and collect the package
         run: |
@@ -122,6 +153,13 @@ jobs:
               exit 1
               ;;
           esac
+          case "$contents" in
+            *usr/bin/oaklet-node*) ;;
+            *)
+              echo "::error::The package has no bundled Node.js runtime"
+              exit 1
+              ;;
+          esac
 
           binary="packages/core/target/$TARGET/release/oaklet"
           if ldd "$binary" | grep -Eq 'libssl|libcrypto'; then
@@ -136,6 +174,32 @@ jobs:
 
           mkdir -p release-assets
           cp "$deb" release-assets/
+          if [ -f "$deb.sig" ]; then
+            cp "$deb.sig" release-assets/
+            version="$(node -p "require('./packages/core/tauri.conf.json').version")"
+            node scripts/release/latest-json.mjs fragment \
+              --version "$version" \
+              --platform linux-x86_64-deb \
+              --artifact "$deb" \
+              --signature "$deb.sig" \
+              --output release-assets/latest.linux-x86_64-deb.fragment.json \
+              --notes "See the release notes on GitHub."
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "::error::No updater signature was produced for the .deb"
+            exit 1
+          fi
+
+          cd release-assets
+          for file in *; do
+            case "$file" in
+              SHA256SUMS|SHA256SUMS.*|*.fragment.json) continue ;;
+            esac
+            [ -f "$file" ] && sha256sum "$file"
+          done > SHA256SUMS.linux-x86_64
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release-assets/*.deb
 
       - uses: actions/upload-artifact@v4
         with:
@@ -150,16 +214,59 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      # Serialize the three platform publishers so latest.json and SHA256SUMS
+      # are merged instead of overwritten.
+      group: oaklet-release-publish-${{ github.ref }}
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: Oaklet-linux-x64
           path: release-assets
 
+      - name: Merge the update manifest and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="$(node -p "require('./packages/core/tauri.conf.json').version")"
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::Tag $tag does not match tauri.conf.json version $version"
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release download "$tag" --pattern latest.json --output latest.json --clobber || rm -f latest.json
+            gh release download "$tag" --pattern SHA256SUMS --output SHA256SUMS --clobber || rm -f SHA256SUMS
+          fi
+
+          if [ -f latest.json ]; then
+            node scripts/release/latest-json.mjs merge \
+              --base latest.json --output release-assets/latest.json \
+              --overlay release-assets/*.fragment.json
+          else
+            node scripts/release/latest-json.mjs merge \
+              --output release-assets/latest.json \
+              --overlay release-assets/*.fragment.json
+          fi
+
+          {
+            find release-assets -maxdepth 1 -name 'SHA256SUMS.*' -exec cat {} +
+            if [ -f SHA256SUMS ]; then cat SHA256SUMS; fi
+          } | awk 'NF == 2 && !seen[$2]++' | sort -k2 > release-assets/SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*.deb
+          files: |
+            release-assets/*.deb
+            release-assets/*.deb.sig
+            release-assets/latest.json
+            release-assets/SHA256SUMS
           fail_on_unmatched_files: true
+          overwrite_files: true
           append_body: true
           body: |
             ## Install (Ubuntu 24.04 x64)
@@ -172,6 +279,10 @@ jobs:
 
             The first supported target is Ubuntu 24.04 LTS x64 on GNOME Wayland
             or Xorg. Other distributions, ARM64, and network filesystems are not
-            covered yet. The Architecture view and the `likec4_mcp` tool need
-            Node.js 22.23.3 or newer on `PATH` or set through `OAKLET_NODE`; the
-            rest of Oaklet works without it.
+            covered yet. The Architecture view and the `likec4_mcp` tool use the
+            Node.js runtime bundled in the package, so no separate installation
+            is needed.
+
+            Oaklet updates itself only from **Settings → Updates**. Every
+            update package is checked with the minisign key compiled into the
+            app.

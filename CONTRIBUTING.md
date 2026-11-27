@@ -12,7 +12,9 @@ For how to use the app, see [README.md](README.md).
 
 ## Requirements
 
-- Node.js 22.12 or newer; the architecture helper needs 22.23.3 or newer
+- Node.js 22.12 or newer; building the architecture helper needs 22.23.3 or
+  newer. The desktop app bundles Node.js 22.23.3, fetched by
+  `beforeDevCommand`/`beforeBuildCommand`
 - pnpm 10
 - A Rust toolchain and the Tauri 2 prerequisites for your platform
 - Git, for the commit hooks and source-control view
@@ -60,10 +62,15 @@ Run `pnpm build` in `packages/architecture-helper` before `cargo test` or a
 Tauri build. It produces `packages/architecture-helper/dist`, the self-contained
 helper bundle that Tauri embeds as an application resource.
 
+Run `pnpm fetch:node` once before a bare `cargo test` or `cargo clippy` as well.
+`tauri-build` copies the declared sidecar during every Rust build, and the
+script downloads the matching pinned Node.js runtime for the host target.
+
 Set `OAKLET_NODE` to a different Node executable, or
 `OAKLET_ARCHITECTURE_HELPER` to a different helper directory, if the defaults do
-not fit. When the runtime or helper is missing, the Architecture view explains
-the problem and the rest of Oaklet keeps working.
+not fit. The app normally uses the bundled `oaklet-node` sidecar; `OAKLET_NODE`
+wins when set. When the runtime or helper is missing, the Architecture view
+explains the problem and the rest of Oaklet keeps working.
 
 ### Frontend only
 
@@ -146,6 +153,17 @@ dependency and is not shipped. The packaged helper is resolved from the app's
 resource directory, while development builds fall back to the helper in the
 Oaklet checkout. Both macOS builds ship the helper as plain JavaScript.
 
+`build.beforeBuildCommand` also runs
+`packages/core/scripts/fetch-node-sidecar.mjs`, which downloads the pinned
+Node.js 22.23.3 runtime for the target triple into
+`packages/core/binaries/oaklet-node-<triple>`. The sidecar is not committed and
+is copied next to the app binary by Tauri. A local bundle without updater
+signing credentials must turn updater artifacts off:
+
+```sh
+pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
 ### Packaging (Windows)
 
 With the helper built, create the NSIS user-level installer from the repository
@@ -158,7 +176,7 @@ pnpm tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis
 The installer is written to
 `packages/core/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It installs
 for the current user and downloads the WebView2 bootstrapper when the runtime is
-missing.
+missing. The package includes `oaklet-node.exe` next to `oaklet.exe`.
 
 ### Packaging (Linux)
 
@@ -172,8 +190,9 @@ pnpm tauri build --ci --target x86_64-unknown-linux-gnu --bundles deb
 The package is written to
 `packages/core/target/x86_64-unknown-linux-gnu/release/bundle/deb/`. It declares
 `libwebkit2gtk-4.1-0`, `libgtk-3-0`, and `libssl3t64` through
-`bundle.linux.deb.depends` in `packages/core/tauri.conf.json`. Check the
-metadata and contents before sharing a build:
+`bundle.linux.deb.depends` in `packages/core/tauri.conf.json`, and installs
+`/usr/bin/oaklet-node` as the bundled runtime. Check the metadata and contents
+before sharing a build:
 
 ```sh
 dpkg-deb -f packages/core/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb \
@@ -186,6 +205,42 @@ ldd packages/core/target/x86_64-unknown-linux-gnu/release/oaklet | grep -E "libs
 Build on the oldest distribution you intend to support: a newer glibc or
 WebKitGTK is not forward compatible with an older one.
 
+### Update signing key
+
+Every release package is signed with Tauri's minisign key. The public key is in
+`bundle > updater > pubkey` in `packages/core/tauri.conf.json`; the private key
+is only ever a repository secret. Generate a replacement pair only when the old
+private key is lost, because applications already installed trust the old
+public key:
+
+```sh
+pnpm tauri signer generate -w ~/.tauri/oaklet-updater.key
+```
+
+Put the base64 content of the generated `.key.pub` file in `pubkey`, and add
+the private key file's content as `TAURI_SIGNING_PRIVATE_KEY` (plus
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when it has a password). Back the private
+key up offline. The workflows set
+`bundle.createUpdaterArtifacts = true` and `requireSignedVersion = true`, so a
+tagged release fails instead of publishing an unsigned update package, and an
+update whose manifest version does not match the version in the signed
+comment is rejected.
+
+The three build workflows produce `.sig` files and a per-platform
+`latest.json` fragment. Each publish job merges the fragment into the release's
+`latest.json`, regenerates `SHA256SUMS`, and uploads them with the packages.
+The publish jobs share one concurrency group so the three platforms cannot
+overwrite each other's manifest.
+
+Each build job also attests its primary installers with
+`actions/attest-build-provenance`. After downloading a release, check the hash
+file and the provenance:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+gh attestation verify Oaklet_<version>_<arch>.dmg --repo FishwithCat/Oaklet
+```
+
 ### Releasing (macOS, GitHub Actions)
 
 `.github/workflows/macos-release.yml` builds separate `.dmg` and `.app.zip` files
@@ -196,17 +251,20 @@ for Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`).
 - Push a `v*` tag (matching the `version` in `packages/core/tauri.conf.json`)
   to publish both builds in a single GitHub Release after they pass validation.
 
-By default, both builds use **ad-hoc signing**, which needs no Apple Developer
-account. macOS may block the first launch. The release notes tell users to drag
-Oaklet into `/Applications`, try to open it once, then allow it under **System
-Settings → Privacy & Security → Open Anyway** (macOS 15+) or run
-`xattr -dr com.apple.quarantine /Applications/Oaklet.app`.
+Without Apple credentials the builds are **ad-hoc signed**, which needs no Apple
+Developer account; macOS blocks the first launch and the README documents the
+allowance steps. Once a Developer ID certificate is available, add:
 
-If a Developer ID certificate ever becomes available, add the
-`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` repository secrets; the
-workflow then signs and notarizes instead of falling back to ad-hoc. See
-<https://v2.tauri.app/distribute/sign/macos/>.
+- `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and
+  `APPLE_SIGNING_IDENTITY`
+- either `APPLE_API_KEY` (Key ID), `APPLE_API_ISSUER`, and
+  `APPLE_API_KEY_CONTENT` (the `.p8` file's contents), or `APPLE_ID`,
+  `APPLE_PASSWORD`, and `APPLE_TEAM_ID`
+
+The workflow then signs with hardened runtime, lets Tauri notarize and staple
+the app and dmg, and fails unless `codesign --verify`, `spctl --assess`, and
+`xcrun stapler validate` pass for both. A signing failure never falls back to an
+unsigned upload. See <https://v2.tauri.app/distribute/sign/macos/>.
 
 ### Releasing (Windows, GitHub Actions)
 
@@ -220,10 +278,15 @@ workflow then signs and notarizes instead of falling back to ad-hoc. See
   does not hold back the macOS release.
 
 Without a code-signing certificate the installer is unsigned and SmartScreen
-warns on first run; the workflow reports that in the log. Add the
-`WINDOWS_CERTIFICATE` (base64 PFX) and `WINDOWS_CERTIFICATE_PASSWORD` repository
-secrets to sign the installer with the Windows SDK's `signtool`, after which the
-workflow fails if `Get-AuthenticodeSignature` does not report a valid signature.
+warns on first run; the workflow reports that in the log. Add
+`WINDOWS_CERTIFICATE` (base64 PFX), `WINDOWS_CERTIFICATE_PASSWORD`, and
+`WINDOWS_CERTIFICATE_THUMBPRINT` repository secrets to sign. The workflow passes
+`bundle.windows.signCommand` to `.github/scripts/sign-windows.ps1`, so
+`signtool` signs the application executable, the bundled `oaklet-node.exe`, and
+the NSIS installer before bundling finishes. It then fails unless every signed
+binary has a valid Authenticode signature and the expected certificate
+thumbprint. `WINDOWS_TIMESTAMP_URL` can override the default DigiCert timestamp
+server.
 Before publishing a Windows build, install, launch, upgrade, and uninstall it as
 a standard user on a clean Windows 11 virtual machine.
 
@@ -240,6 +303,10 @@ that matches the binary's `ldd` output.
   and Windows builds. The three workflows publish independently. Tag a release
   only after the checklist below passes, because the tag publishes the package.
 
+The build signs the `.deb` with the update key and records
+`linux-x86_64-deb` in `latest.json`. No code-signing certificate is involved;
+only an apt repository would need a separate GPG signature.
+
 Before publishing a Linux build, install it on a clean Ubuntu 24.04 virtual
 machine as a standard user and launch it from both GNOME's application menu
 (Wayland and Xorg) and a terminal. Verify the workspace, chat history, file
@@ -247,6 +314,18 @@ editing, Git, `@worktree`, terminal, MCP transports, the proxy modes, and input
 methods, then upgrade from the previous `.deb` and reinstall over it to confirm
 the user data directory survives. Hold the Linux release when the workspace
 boundary, process cleanup, dependency resolution, or upgrade loses data.
+
+### Distribution channels
+
+- **macOS:** keep publishing the `.dmg` until Developer ID signing and
+  notarization pass, then submit a Homebrew cask. Casks now add quarantine
+  themselves, so a cask must not be used to bypass Gatekeeper.
+- **Windows:** after the clean-machine checklist, generate a winget manifest
+  with `wingetcreate new` from the release URL and open the pull request
+  against `microsoft/winget-pkgs`. The NSIS installer already installs for the
+  current user, which matches winget's default install scope.
+- **Linux:** publish the existing `.deb`. AUR, AppImage, and RPM are outside
+  the current support boundary.
 
 ## Tool architecture
 
