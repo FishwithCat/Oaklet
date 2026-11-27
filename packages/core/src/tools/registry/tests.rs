@@ -433,6 +433,28 @@ fn summarizes_paths_and_commands() {
         "src/main.rs"
     );
     assert_eq!(
+        registry.summary(
+            "read_file",
+            &json!({ "path": "src/main.rs", "offset": 40, "limit": 20 })
+        ),
+        "src/main.rs:40-59"
+    );
+    assert_eq!(
+        registry.summary("read_file", &json!({ "path": "src/main.rs", "offset": 40 })),
+        "src/main.rs:40-"
+    );
+    assert_eq!(
+        registry.summary("read_file", &json!({ "path": "src/main.rs", "limit": 20 })),
+        "src/main.rs:1-20"
+    );
+    assert_eq!(
+        registry.summary(
+            "read_file",
+            &json!({ "path": "src/main.rs", "offset": 0, "limit": 0 })
+        ),
+        "src/main.rs:1-1"
+    );
+    assert_eq!(
         registry.summary("run_command", &json!({ "command": " cargo test " })),
         "cargo test"
     );

@@ -105,6 +105,22 @@ fn path_arg(args: &Value) -> String {
         .to_string()
 }
 
+/// Path plus the requested line window, so two pages of one file stay apart in
+/// the transcript. An open-ended page keeps the window open with a trailing `-`.
+fn read_summary(args: &Value) -> String {
+    let path = path_arg(args);
+    let offset = args.get("offset").and_then(Value::as_u64);
+    let limit = args.get("limit").and_then(Value::as_u64);
+    if offset.is_none() && limit.is_none() {
+        return path;
+    }
+    let start = offset.unwrap_or(1).max(1);
+    match limit {
+        Some(limit) => format!("{path}:{start}-{}", start + limit.max(1) - 1),
+        None => format!("{path}:{start}-"),
+    }
+}
+
 pub struct ReadFile;
 
 impl Tool for ReadFile {
@@ -138,7 +154,7 @@ impl Tool for ReadFile {
     }
 
     fn summary(&self, args: &Value) -> String {
-        path_arg(args)
+        read_summary(args)
     }
 
     fn is_concurrency_safe(&self) -> bool {
